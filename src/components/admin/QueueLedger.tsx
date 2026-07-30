@@ -1,0 +1,137 @@
+import { DeliveryStatus } from '@prisma/client';
+import { AlertTriangle, Clock, ExternalLink, ImageOff } from 'lucide-react';
+
+import { QueueCardActions } from '@/components/admin/QueueCardActions';
+import { StatusBadge } from '@/components/admin/StatusBadge';
+
+export interface QueueEntry {
+  id: string;
+  companyName: string;
+  whatsappNumber: string;
+  cronTime: string;
+  dayNumber: number;
+  theme: string;
+  caption: string;
+  hashtags: string;
+  scheduledLabel: string;
+  status: DeliveryStatus;
+  /** Lightweight Drive thumbnail; falls back to the raw view URL. */
+  thumbnailUrl: string | null;
+  viewUrl: string | null;
+  errorMessage: string | null;
+}
+
+export function QueueLedger({
+  entries,
+  emptyMessage = 'No calendar entries queued. Seed a client’s ContentCalendar to populate this feed.',
+}: {
+  entries: QueueEntry[];
+  /** Overrides the empty copy on filtered views, where "seed a calendar" is the wrong advice. */
+  emptyMessage?: string;
+}) {
+  if (entries.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed border-border bg-muted/60 px-4 py-10 text-center text-xs text-muted-foreground">
+        {emptyMessage}
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+      {entries.map((entry) => (
+        <QueueCard key={entry.id} entry={entry} />
+      ))}
+    </div>
+  );
+}
+
+function QueueCard({ entry }: { entry: QueueEntry }) {
+  const hasAsset = Boolean(entry.viewUrl);
+
+  return (
+    <article className="flex flex-col overflow-hidden rounded-xl border border-border bg-card transition-all duration-300 hover:border-primary/40 hover:shadow-brand-glow-sm">
+      {/* Creative preview, pulled from the recorded Drive asset. */}
+      <div className="relative aspect-square w-full overflow-hidden border-b border-border bg-muted">
+        {entry.thumbnailUrl ? (
+          /* Drive serves these; a plain img avoids per-host remotePatterns
+             config and keeps the optimizer out of a high-density grid. */
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={entry.thumbnailUrl}
+            alt={`Day ${entry.dayNumber} creative for ${entry.companyName}`}
+            loading="lazy"
+            decoding="async"
+            // Google's content host can reject a request that carries a
+            // localhost referrer; it needs none to serve a link-readable file.
+            referrerPolicy="no-referrer"
+            className="h-full w-full object-cover transition-transform duration-500 hover:scale-105"
+          />
+        ) : (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground/50">
+            <ImageOff className="h-7 w-7" />
+            <span className="text-[10px] uppercase tracking-widest">Not generated</span>
+          </div>
+        )}
+
+        <div className="absolute left-2.5 top-2.5">
+          <StatusBadge status={entry.status} />
+        </div>
+
+        {/* Overlays the creative itself, so it stays light-on-dark whatever
+            the page theme is doing. */}
+        <div className="absolute right-2.5 top-2.5 rounded-full bg-slate-950/80 px-2 py-0.5 font-mono text-[10px] text-slate-200 backdrop-blur-sm">
+          Day {String(entry.dayNumber).padStart(3, '0')}
+        </div>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-3 p-4">
+        <header className="space-y-1">
+          <h4 className="truncate text-sm font-semibold text-foreground">
+            {entry.companyName}
+          </h4>
+          <p className="line-clamp-1 text-xs font-medium text-primary">{entry.theme}</p>
+          <p className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+            <Clock className="h-3 w-3" />
+            {entry.scheduledLabel} · {entry.cronTime} · +{entry.whatsappNumber}
+          </p>
+        </header>
+
+        <p className="line-clamp-3 flex-1 text-[11px] leading-relaxed text-muted-foreground">
+          {entry.caption}
+        </p>
+
+        {entry.hashtags && (
+          <p className="line-clamp-1 text-[10px] text-muted-foreground/70">{entry.hashtags}</p>
+        )}
+
+        {entry.errorMessage && (
+          <p className="flex items-start gap-1.5 rounded-md border border-red-500/20 bg-red-500/5 p-2 text-[10px] leading-relaxed text-red-600">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span className="line-clamp-3">{entry.errorMessage}</span>
+          </p>
+        )}
+
+        {/* Only a failed row is safe to drop: anything else is either still
+            queued for its day or already delivered. */}
+        <QueueCardActions
+          calendarId={entry.id}
+          hasAsset={hasAsset}
+          deletable={entry.status === DeliveryStatus.FAILED}
+        />
+
+        {entry.viewUrl && (
+          <a
+            href={entry.viewUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="inline-flex items-center gap-1 text-[10px] text-muted-foreground transition-colors duration-200 hover:text-primary"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Open in Drive
+          </a>
+        )}
+      </div>
+    </article>
+  );
+}

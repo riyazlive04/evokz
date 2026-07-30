@@ -1,0 +1,167 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* --------------------------------------------------------------------
+     Palette sampled from the evokz.in marketing site.
+     Source pixels (evokz-home.png):
+       #151821  nav bar surface        -> 225 22% 11%
+       #4460E5  wordmark gradient head -> 230 76% 58%
+       #2E7DDA  wordmark mid-stop      -> 212 70% 52%
+       #16A1D8  wordmark gradient tail -> 197 82% 47%
+       #5046E5  feature-icon indigo    -> 244 75% 59%
+       #F1F1FD  icon tile wash         -> 240 76% 97%
+       #F8F9FB  page background        -> 220 20% 97%
+       #101728  heading ink            -> 222 43% 11%
+       #6A727E  body copy grey         -> 216  9% 45%
+
+     The site pairs a dark nav bar with light page surfaces, and the app now
+     mirrors that: :root is the light body, and `.dark` is an opt-in island
+     applied to the header bar and the brand canvas workspace.
+     -------------------------------------------------------------------- */
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222 43% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 43% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 43% 11%;
+    /* The indigo the site itself uses for icons on light surfaces. At 6.3:1
+       on white it clears AA for body text, which the cyan stop does not. */
+    --primary: 244 75% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 76% 97%;
+    --secondary-foreground: 244 60% 32%;
+    --muted: 220 20% 97%;
+    --muted-foreground: 216 9% 45%;
+    --accent: 240 76% 97%;
+    --accent-foreground: 244 60% 32%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 16% 90%;
+    --input: 220 16% 86%;
+    --ring: 244 75% 59%;
+    --radius: 0.65rem;
+
+    /* Brand gradient stops, in the order they run across the Evokz wordmark
+       (indigo -> blue -> cyan). Every gradient utility below composes these,
+       so re-theming means editing these three lines and nothing else.
+
+       The light ramp is darkened past the site's own values: measured on
+       white, #16A1D8 lands at 2.95:1 and fails even the 3:1 large-text bar,
+       so the blue and cyan stops drop to 45%/38% lightness (4.3:1). Hue is
+       untouched, so the ramp still reads as the same sweep. */
+    --brand-from: 244 75% 59%;
+    --brand-via: 212 70% 45%;
+    --brand-to: 197 82% 38%;
+
+    /* Raw RGB channels for the two stops that also drive glow shadows, where
+       an hsl() call can't be nested inside rgba(). */
+    --brand-from-rgb: 80 70 229;
+    --brand-to-rgb: 17 131 176;
+  }
+
+  /* Dark island. Applied to the header bar and the brand canvas, not to
+     <html> — the body stays light. Restores the site's nav-bar surface and
+     the undarkened brand ramp, which was already tuned to sit on #151821. */
+  .dark {
+    --background: 225 25% 7%;
+    --foreground: 220 33% 97%;
+    --card: 225 22% 11%;
+    --card-foreground: 220 33% 97%;
+    --popover: 225 22% 13%;
+    --popover-foreground: 220 33% 97%;
+    --primary: 230 76% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 226 20% 17%;
+    --secondary-foreground: 220 33% 97%;
+    --muted: 226 20% 15%;
+    --muted-foreground: 216 15% 65%;
+    --accent: 244 75% 59%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 226 20% 19%;
+    --input: 226 20% 19%;
+    --ring: 197 82% 47%;
+
+    --brand-from: 244 75% 59%;
+    --brand-via: 212 70% 52%;
+    --brand-to: 197 82% 47%;
+    --brand-to-rgb: 22 161 216;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+
+  /* Slim scrollbars keep the high-density grids from feeling chunky. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--card));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 9999px;
+    border: 2px solid hsl(var(--card));
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--brand-via));
+  }
+}
+
+@layer utilities {
+  /* Vignette mask used by the blueprint canvas. */
+  .mask-radial-fade {
+    -webkit-mask-image: radial-gradient(ellipse 75% 70% at 50% 40%, #000 55%, transparent 100%);
+    mask-image: radial-gradient(ellipse 75% 70% at 50% 40%, #000 55%, transparent 100%);
+  }
+
+  /* Blueprint plane. Previously two hand-written linear-gradients with a
+     hardcoded #1e293b line colour duplicated across the dashboard and the
+     brand canvas; both now share this utility and track --border. */
+  .bg-blueprint-grid {
+    background-image:
+      linear-gradient(to right, hsl(var(--border)) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border)) 1px, transparent 1px);
+    background-size: 4rem 4rem;
+  }
+
+  /* Brand gradient applied to text — mirrors the evokz.in wordmark. */
+  .text-gradient-brand {
+    background-image: linear-gradient(
+      100deg,
+      hsl(var(--brand-from)),
+      hsl(var(--brand-via)),
+      hsl(var(--brand-to))
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  /* Hairline divider that fades out along the brand ramp. */
+  .border-gradient-brand {
+    border-image: linear-gradient(
+        to right,
+        hsl(var(--brand-from)),
+        hsl(var(--brand-to)),
+        transparent
+      )
+      1;
+  }
+}

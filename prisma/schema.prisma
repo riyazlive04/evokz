@@ -1,0 +1,176 @@
+// Evokz ACE — multi-tenant creative automation data layer.
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum DeliveryStatus {
+  PENDING
+  GENERATED
+  DELIVERED
+  FAILED
+}
+
+enum UsageProvider {
+  OPENAI // Copy + brand tokenizer, billed per token
+  FAL // Flux.1 image synthesis, billed per image
+  EVOLUTION // WhatsApp broadcast, billed per message (often self-hosted, ₹0)
+}
+
+model Plan {
+  id           String   @id @default(uuid())
+  name         String // e.g., "100-Day Blitz", "365-Day Scale"
+  durationDays Int
+  // Campaign fee in whole rupees for the full duration — not per month. Drives
+  // the margin column on the dashboard; null means "not priced yet", which
+  // reads as unknown margin rather than zero.
+  priceInr     Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  clients      Client[]
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String // e.g., "Real Estate", "Heavy Construction"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  clients   Client[]
+}
+
+model Client {
+  id             String            @id @default(uuid())
+  companyName    String
+  whatsappNumber String // E.164 without "+", e.g., "919876543210"
+  cronTime       String            @default("09:00") // Per-client delivery time (HH:MM)
+  startDate      DateTime
+  endDate        DateTime
+  isActive       Boolean           @default(true)
+  // Sales-demo tenant. Behaves like a client everywhere except the dispatch
+  // sweep, which skips it — demo creatives are sent on demand, never on cron.
+  isDemo         Boolean           @default(false)
+  // Spend cap for the current calendar month, in whole rupees. Null disables
+  // the alert for this client rather than treating it as a ₹0 cap.
+  monthlyBudgetInr Int?
+  brandGuideline Json? // Extracted design-system tokens
+  gDriveFolderId String? // Client-isolated Google Drive subfolder ID
+
+  // Output-size preset id from src/lib/image-sizes.ts, e.g. "whatsapp-status",
+  // "linkedin-portrait", "desktop-4k". A plain String rather than an enum: the
+  // catalogue is presentation data that gains entries whenever a platform
+  // changes its spec, and each addition would otherwise need a migration.
+  // Null means "use the fleet default" (FAL_IMAGE_SIZE, else WhatsApp Status),
+  // which is what every row predating this column carries.
+  imageSizePreset String?
+
+  // ---- Poster identity -----------------------------------------------------
+  // Composited onto every creative by the poster renderer. Kept as real columns
+  // rather than inside `brandGuideline` because that column is rewritten
+  // wholesale by the brand tokenizer — an operator-uploaded logo must survive a
+  // re-extraction.
+  //
+  // Fetchable image URL for the logo lockup. Populated either by uploading a
+  // file (which lands in the client's Drive folder and is published
+  // link-readable) or by pasting an existing URL.
+  logoUrl         String?
+  // Set only when we own the file, so a re-upload can trash the previous one.
+  logoDriveFileId String?
+  // Letterspaced caps line under the logo, e.g. "BUILDING TRUST SINCE 1998".
+  brandTagline    String?
+  // Contact bar, right cell. Stored as typed, e.g. "www.example.com".
+  websiteUrl      String?
+  // Contact bar, left cell. Display formatting is preserved verbatim, so
+  // "+91 98765 43210" renders with its spacing. Falls back to whatsappNumber.
+  displayPhone    String?
+
+  planId         String
+  plan           Plan              @relation(fields: [planId], references: [id], onDelete: Restrict)
+  categoryId     String
+  category       Category          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  calendarDays   ContentCalendar[]
+  usageEvents    UsageEvent[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  // Drives the per-minute dispatch sweep: (cronTime IN window) AND isActive.
+  @@index([cronTime, isActive])
+}
+
+model ContentCalendar {
+  id             String         @id @default(uuid())
+  clientId       String
+  client         Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dayNumber      Int
+  scheduledDate  DateTime
+  theme          String
+  caption        String         @db.Text
+  hashtags       String
+  // Background-photo prompt only. The poster's text is never diffusion-rendered;
+  // it is composited as vector type from `posterCopy`.
+  imagePrompt    String         @db.Text
+  // Slot content for the poster layer: headline lines, accent line index, body,
+  // feature items, CTA labels. Shape validated by `posterCopySchema`
+  // (src/lib/types/poster.ts). Null on rows seeded before the poster layer
+  // existed — `ensurePosterCopy` backfills them on first render.
+  posterCopy     Json?
+  // Which of the five layout archetypes to compose. Null means "let the
+  // renderer pick deterministically from dayNumber", which keeps a long
+  // campaign visually varied without storing a choice per row.
+  posterArchetype String?
+  gDriveFileId   String? // Storage reference inside Google Drive
+  gDriveViewUrl  String? // Public link used by Evolution API + the dashboard
+  deliveryStatus DeliveryStatus @default(PENDING)
+  errorMessage   String?        @db.Text
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([clientId, dayNumber])
+  // Ultra-fast time-window scanning for the dispatch engine.
+  @@index([scheduledDate, deliveryStatus])
+}
+
+/// One billable provider call. Append-only: rows are never updated, so the
+/// ledger stays a faithful record of what was spent even as rates change.
+model UsageEvent {
+  id       String  @id @default(uuid())
+  clientId String?
+  // SetNull, not Cascade: money spent on a since-removed client still counts
+  // toward the agency's total and must not disappear from the ledger.
+  client   Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  /// Owning ContentCalendar day, when the spend belongs to one. Deliberately not
+  /// a relation — deleting a failed calendar entry must not erase its cost.
+  calendarId String?
+
+  provider UsageProvider
+  /// Which stage spent it: "calendar", "brand-tokenizer", "image", "whatsapp".
+  operation String
+  /// Model or endpoint identifier, e.g. "gpt-4o-mini", "fal-ai/flux/schnell".
+  model String?
+
+  inputTokens  Int @default(0)
+  /// Subset of inputTokens served from OpenAI's prompt cache at a lower rate.
+  cachedTokens Int @default(0)
+  outputTokens Int @default(0)
+  imageCount   Int @default(0)
+  messageCount Int @default(0)
+
+  /// Cost in USD millionths, priced at the rates in force when recorded.
+  /// Integer micros avoid float drift across millions of summed rows.
+  costUsdMicros Int @default(0)
+
+  /// Reconstructed from historical calendar rows rather than observed at call
+  /// time, so it carries an exact count but today's rate.
+  backfilled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  // Per-client spend over a window is the dashboard's hottest query.
+  @@index([clientId, createdAt])
+  @@index([provider, createdAt])
+  @@index([createdAt])
+}
