@@ -321,15 +321,19 @@ crontab -e
 ```
 
 ```cron
-*/5 * * * * curl -fsS -m 300 -H "Authorization: Bearer YOUR_CRON_SECRET" https://evokz.in/api/cron >> /home/YOUR_USER/evokz/backups/cron.log 2>&1
+*/5 * * * * /opt/evokz/scripts/dispatch-cron.sh >> /opt/evokz/backups/cron.log 2>&1
 ```
+
+`scripts/dispatch-cron.sh` issues the request from *inside* the app container
+over loopback rather than curling the public URL. `CRON_SECRET` therefore never
+crosses the internet, the sweep keeps running while DNS is mid-change or a
+certificate is renewing, and the `/api/cron` exclusion in the Caddyfile is not
+load-bearing for scheduled runs — it only matters if you trigger the sweep
+externally.
 
 Keep the interval and `CRON_WINDOW_MINUTES` in `.env` in agreement: the sweep
 matches clients whose delivery time falls inside the window, so a window shorter
 than the interval drops deliveries in the gap.
-
-`-m 300` matches the route's own `maxDuration`. Without it, a stuck sweep holds a
-curl process open until the next one starts.
 
 ---
 
