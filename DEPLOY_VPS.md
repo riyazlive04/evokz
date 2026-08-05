@@ -337,7 +337,7 @@ curl process open until the next one starts.
 
 ```bash
 mkdir -p backups
-(crontab -l 2>/dev/null; echo "30 2 * * * cd $PWD && ./scripts/backup-db.sh >> backups/backup.log 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "30 2 * * * /opt/evokz/scripts/backup-db.sh >> /opt/evokz/backups/backup.log 2>&1") | crontab -
 ./scripts/backup-db.sh          # run once now to prove it works
 ls -lh backups/
 ```

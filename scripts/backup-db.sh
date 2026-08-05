@@ -25,12 +25,13 @@ mkdir -p "$BACKUP_DIR"
 
 # Credentials come from .env rather than being repeated here, so a rotated
 # password cannot leave the backup job authenticating with a stale one.
-# `set -a` exports every assignment; the subshell keeps them out of this script's
-# own environment afterwards.
-set -a
-# shellcheck disable=SC1091
-. ./.env
-set +a
+#
+# Read with grep rather than `. ./.env`: sourcing runs the file through the
+# shell, so a `$` anywhere in a credential — an API key, a generated password —
+# expands to another variable or to nothing. The failure would be silent and
+# would only surface as an authentication error at 3am.
+POSTGRES_USER="$(grep -m1 '^POSTGRES_USER=' .env | cut -d= -f2- | tr -d '"')"
+POSTGRES_DB="$(grep -m1 '^POSTGRES_DB=' .env | cut -d= -f2- | tr -d '"')"
 
 : "${POSTGRES_USER:?POSTGRES_USER is not set in .env}"
 : "${POSTGRES_DB:?POSTGRES_DB is not set in .env}"
