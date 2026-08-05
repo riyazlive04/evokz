@@ -8,7 +8,7 @@ import {
   relativeLuminance,
   rgbToHsl,
 } from '@/lib/poster/color';
-import type { BrandGuideline } from '@/lib/types/brand';
+import type { BrandColorSource, BrandGuideline } from '@/lib/types/brand';
 import type { AccentFamily, PosterFontChoice, PosterTheme } from '@/lib/types/poster';
 
 /**
@@ -136,6 +136,13 @@ interface Candidate {
   score: number;
   luminance: number;
   saturation: number;
+  /**
+   * Absent on every palette the tokenizer guessed. Present only when the colour
+   * was measured off the client's own site, which is what licenses the theme to
+   * trust the role label instead of re-deriving it.
+   */
+  source: BrandColorSource | undefined;
+  confidence: number;
 }
 
 function toCandidates(guideline: BrandGuideline): Candidate[] {
@@ -156,6 +163,8 @@ function toCandidates(guideline: BrandGuideline): Candidate[] {
       score: accentScore(color.hex),
       luminance: relativeLuminance(rgb),
       saturation: rgbToHsl(rgb).s,
+      source: color.source,
+      confidence: color.confidence ?? 0,
     });
   }
 
@@ -195,12 +204,89 @@ function pickAccent(candidates: Candidate[]): string | null {
 }
 
 /**
+ * Saturation floor for a measured palette.
+ *
+ * `isNeutral`'s 0.18 is tuned for guessed palettes, where a low-saturation hex
+ * is usually the model reaching for "professional grey" rather than reporting a
+ * brand colour. A measured `--brand-primary` at 0.12 is a real decision someone
+ * made, and rejecting it would drop the client straight back to house amber.
+ *
+ * Deliberately a local constant rather than a change to `isNeutral`: that helper
+ * is shared with the legacy path, which must keep behaving exactly as it does.
+ */
+const MEASURED_MIN_SATURATION = 0.1;
+
+/**
+ * How accent-like the extractor's `primary` must be before it is taken on trust.
+ *
+ * A brand whose primary is near-black or near-white — common for wordmark-led
+ * identities — is well evidenced but unusable as a headline accent, so those
+ * fall through to ranking instead.
+ */
+const MEASURED_MIN_ACCENT_SCORE = 0.25;
+
+/**
+ * Picks the accent from a palette that was measured rather than guessed.
+ *
+ * Two things change versus `pickAccent`. The saturation floor drops, and the
+ * role label is trusted — with provenance, "primary" was assigned by measuring
+ * where the colour appeared on the site, not by a model's say-so, so it is
+ * evidence rather than a hint.
+ *
+ * Returns null when nothing qualifies so the caller can fall through to the
+ * legacy picker; a provenanced palette of pure greys should still land on a
+ * readable house theme rather than forcing a grey accent.
+ */
+function pickMeasuredAccent(candidates: Candidate[]): string | null {
+  const chromatic = candidates.filter(
+    (candidate) => candidate.saturation >= MEASURED_MIN_SATURATION,
+  );
+  if (chromatic.length === 0) return null;
+
+  const labelled = chromatic.filter((candidate) =>
+    /^(?:primary|accent)$/.test(candidate.role),
+  );
+  const pool = labelled.length > 0 ? labelled : chromatic;
+
+  // The extractor already ranked the whole palette by evidence, and `primary` is
+  // what that ranking settled on. Re-deriving it here from colour geometry alone
+  // throws that away and turns near-ties into coin flips — a site's green and
+  // blue can score within a thousandth of each other while only one of them is
+  // the colour the brand leads with.
+  const primary = pool.find((candidate) => candidate.role === 'primary');
+  if (primary && primary.score >= MEASURED_MIN_ACCENT_SCORE) return primary.hex;
+
+  // Confidence modulates rather than decides. Ranking on it alone hands the
+  // accent to whichever colour was most confidently *identified*, which is not
+  // the same question as which colour can carry a headline: a site's stock
+  // grey-blue gets declared far more explicitly than the green it actually
+  // paints its buttons with. `accentScore` measures the latter.
+  const weigh = (candidate: Candidate): number =>
+    candidate.score * (0.5 + candidate.confidence / 2);
+
+  const ranked = [...pool].sort((a, b) => weigh(b) - weigh(a));
+
+  return ranked[0]?.hex ?? null;
+}
+
+/**
  * Picks the dark ground. Prefers a genuinely dark brand colour so the panel
  * reads as the client's own, but rejects anything above 0.12 luminance — the
  * spec's headline contrast target of 7:1 is unreachable on a mid-tone, and a
  * "dark" panel that isn't dark makes every archetype look washed out.
+ *
+ * `neutralFallback` forces the achromatic near-black when the palette supplies
+ * no dark of its own. Measured palettes use it so the ground stays neutral and
+ * the brand colour is the only chromatic element on the poster — otherwise a
+ * green brand would inherit the navy alternative, since `classifyFamily` puts
+ * greens in the cool band, and the poster would carry a colour the client
+ * never chose.
  */
-function pickDarkNeutral(candidates: Candidate[], family: AccentFamily): string {
+function pickDarkNeutral(
+  candidates: Candidate[],
+  family: AccentFamily,
+  neutralFallback = false,
+): string {
   const dark = candidates
     .filter((candidate) => candidate.luminance <= 0.12)
     .sort((a, b) => a.luminance - b.luminance);
@@ -208,6 +294,8 @@ function pickDarkNeutral(candidates: Candidate[], family: AccentFamily): string 
   const branded = dark.find((candidate) => candidate.saturation >= 0.15);
   if (branded) return branded.hex;
   if (dark[0]) return dark[0].hex;
+
+  if (neutralFallback) return HOUSE_THEME.darkNeutral;
 
   // Nothing dark in the palette: cool brands get navy, warm brands near-black,
   // matching how the reference set pairs grounds with accent families.
@@ -234,9 +322,24 @@ function pickLightNeutral(candidates: Candidate[]): string {
 export function resolvePosterTheme(guideline: BrandGuideline): PosterTheme {
   const candidates = toCandidates(guideline);
 
-  const accent = pickAccent(candidates) ?? HOUSE_THEME.accent;
+  /**
+   * Whether this palette was measured off the client's own site.
+   *
+   * Every record written before provenance existed leaves `source` undefined, so
+   * this is false for them and each expression below collapses to exactly the
+   * line it replaced. That is the whole safety property: existing clients keep
+   * receiving byte-identical posters until someone re-extracts their colours.
+   */
+  const measured = candidates.some(
+    (candidate) => candidate.source !== undefined && candidate.source !== 'llm',
+  );
+
+  const accent =
+    (measured ? pickMeasuredAccent(candidates) : null) ??
+    pickAccent(candidates) ??
+    HOUSE_THEME.accent;
   const family = classifyFamily(accent);
-  const darkNeutral = pickDarkNeutral(candidates, family);
+  const darkNeutral = pickDarkNeutral(candidates, family, measured);
   const lightNeutral = pickLightNeutral(candidates);
 
   // Text on the grounds. Pure white on near-black is the reference look; the

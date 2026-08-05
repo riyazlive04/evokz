@@ -11,8 +11,8 @@ import { z } from 'zod';
  *   PosterSpec  — the two joined with the tenant's identity and the photo.
  *                 Fully resolved; an archetype reads it and nothing else.
  *
- * Keeping copy and theme apart is what lets one day's copy render in any of the
- * five archetypes, and one client's theme apply to all 365 days.
+ * Keeping copy and theme apart is what lets one day's copy render in any
+ * archetype, and one client's theme apply to all 365 days.
  *
  * See docs/creative-style-spec.md for where each field lands on the canvas.
  */
@@ -21,13 +21,16 @@ import { z } from 'zod';
 // Archetypes
 // ---------------------------------------------------------------------------
 
-/** The five compositions in §5 of the style spec. */
+/** The compositions in §5 of the style spec. */
 export const POSTER_ARCHETYPES = [
   'scrim', // A — full-bleed photo, dark gradient scrim over the copy side
   'diagonal', // B — solid panel left, photo right, straight diagonal boundary
   'bands', // C — three stacked horizontal bands with hard edges
   'curve', // D — light field with a dark curved sweep rising from bottom-left
   'editorial', // E — high-key light field, photo dissolving into it
+  'spotlight', // F — full-bleed photo under an even wash, copy centred
+  'corner', // G — light field, photo inset bottom-right, stacked contact bar
+  'inverted', // H — photo band on top, copy below it on the dark ground
 ] as const;
 
 export type PosterArchetype = (typeof POSTER_ARCHETYPES)[number];
@@ -45,9 +48,40 @@ export const ARCHETYPE_PHOTO_SHAPE: Record<PosterArchetype, PosterPhotoShape> = 
   bands: 'landscape',
   curve: 'landscape',
   editorial: 'portrait',
+  spotlight: 'portrait', // full-bleed, so it needs the canvas shape
+  corner: 'portrait', // tall inset panel down the right side
+  inverted: 'landscape', // wide establishing band across the top
 };
 
 export type PosterPhotoShape = 'portrait' | 'landscape';
+
+function greatestCommonDivisor(a: number, b: number): number {
+  return b === 0 ? a : greatestCommonDivisor(b, a % b);
+}
+
+/**
+ * Step size for the archetype walk: the smallest stride above 1 that is coprime
+ * with the set size, so the cycle visits every archetype before repeating.
+ *
+ * Computed rather than written down. The literal `2` that used to live here was
+ * correct only while there were five archetypes — at six, `gcd(2, 6) === 2` and
+ * the walk silently visits three of them forever, with no error and nothing to
+ * catch it. Deriving the stride makes adding an archetype safe by construction.
+ *
+ * At eight archetypes this resolves to 3, so a day with no stored archetype now
+ * maps to a different layout than it would have under the old five. Days that
+ * have already shipped are unaffected: the pipeline writes the resolved choice
+ * back to `ContentCalendar.posterArchetype`, and that stored value wins on every
+ * later render, so a retry still reproduces the poster the client received.
+ */
+const ARCHETYPE_STRIDE = ((): number => {
+  const size = POSTER_ARCHETYPES.length;
+  for (let candidate = 2; candidate < size; candidate += 1) {
+    if (greatestCommonDivisor(candidate, size) === 1) return candidate;
+  }
+  // Sizes 1 and 2 have no candidate in range; stepping by 1 is a full cycle.
+  return 1;
+})();
 
 /**
  * Deterministic archetype for a campaign day.
@@ -55,13 +89,12 @@ export type PosterPhotoShape = 'portrait' | 'landscape';
  * Deliberately *not* random: re-rendering day 47 after a failure must produce
  * the same layout it would have produced the first time, or an operator
  * comparing a retry against the original sees a spurious difference. Stepping by
- * a coprime of the set size cycles all five before repeating, so a week never
- * shows the same composition twice.
+ * a coprime of the set size cycles every archetype before repeating, so a week
+ * never shows the same composition twice.
  */
 export function archetypeForDay(dayNumber: number): PosterArchetype {
-  const size = POSTER_ARCHETYPES.length; // 5
-  const stride = 2; // gcd(2, 5) === 1, so the walk is a full cycle
-  const index = ((dayNumber - 1) * stride) % size;
+  const size = POSTER_ARCHETYPES.length;
+  const index = ((dayNumber - 1) * ARCHETYPE_STRIDE) % size;
   return POSTER_ARCHETYPES[((index % size) + size) % size]!;
 }
 

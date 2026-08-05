@@ -9,16 +9,16 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: 'border-transparent bg-primary/15 text-primary',
+        default: 'border-primary/25 bg-primary/15 text-foreground',
         secondary: 'border-transparent bg-secondary text-secondary-foreground',
-        // Status tints read on the light body, so the text steps down to the
-        // -700 ramp; the -400 ink these used to carry was tuned for the old
-        // dark-only shell and fails contrast on white.
-        destructive: 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-400',
         outline: 'border-border text-foreground',
         slate: 'border-border bg-muted text-muted-foreground',
-        amber: 'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-400',
-        emerald: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+        // Status tints. The `-ink` token is the ink for a status colour sitting
+        // on a page surface; it is retuned per theme, which is why no `dark:`
+        // override is needed — one class is correct in both modes.
+        destructive: 'border-danger/25 bg-danger/10 text-danger-ink',
+        amber: 'border-warning/25 bg-warning/10 text-warning-ink',
+        emerald: 'border-success/25 bg-success/10 text-success-ink',
       },
     },
     defaultVariants: { variant: 'default' },

@@ -327,15 +327,15 @@ function UnitCell({
 
 function BudgetAlerts({ report }: { report: CostReport }) {
   return (
-    <div className="space-y-2 rounded-xl border border-red-500/30 bg-red-500/[0.06] p-4">
-      <p className="flex items-center gap-2 text-xs font-semibold text-red-600">
+    <div className="space-y-2 rounded-xl border border-danger/30 bg-danger/[0.06] p-4">
+      <p className="flex items-center gap-2 text-xs font-semibold text-danger-ink">
         <BellRing className="h-4 w-4 shrink-0" />
         {report.alerts.length} client{report.alerts.length === 1 ? '' : 's'} over the monthly
         cap
       </p>
       <ul className="space-y-1">
         {report.alerts.map((row) => (
-          <li key={row.clientId ?? 'orphan'} className="text-[11px] text-red-600">
+          <li key={row.clientId ?? 'orphan'} className="text-[11px] text-danger-ink">
             <span className="font-medium">{row.companyName}</span> — spent{' '}
             <span className="font-mono">{formatInr(row.monthSpendInr)}</span> this month against
             a <span className="font-mono">{formatInr(row.monthlyBudgetInr ?? 0)}</span> cap
@@ -395,7 +395,7 @@ function ClientSplit({ report }: { report: CostReport }) {
                             ? `/admin/demo?tenant=${row.clientId}`
                             : `/admin/clients/${row.clientId}`
                         }
-                        className="font-medium text-foreground underline-offset-4 transition-colors duration-200 hover:text-primary hover:underline"
+                        className="font-medium text-foreground underline-offset-4 decoration-primary/40 transition-colors duration-200 hover:underline hover:decoration-primary"
                       >
                         {row.companyName}
                       </Link>
@@ -436,7 +436,7 @@ function ClientSplit({ report }: { report: CostReport }) {
 
                 <TableCell className="text-right font-mono text-xs tabular-nums text-muted-foreground">
                   {row.priceInr === null ? (
-                    <span className="text-amber-600" title="Set a price on this plan">
+                    <span className="text-warning-ink" title="Set a price on this plan">
                       unpriced
                     </span>
                   ) : (
@@ -452,7 +452,7 @@ function ClientSplit({ report }: { report: CostReport }) {
                       <span
                         className={cn(
                           'block font-mono text-xs font-medium tabular-nums',
-                          row.marginInr >= 0 ? 'text-emerald-600' : 'text-red-600',
+                          row.marginInr >= 0 ? 'text-success-ink' : 'text-danger-ink',
                         )}
                       >
                         {formatInr(row.marginInr)}
@@ -474,7 +474,7 @@ function ClientSplit({ report }: { report: CostReport }) {
                       <span
                         className={cn(
                           'block font-mono text-[10px] tabular-nums',
-                          row.overBudget ? 'text-red-600' : 'text-muted-foreground',
+                          row.overBudget ? 'text-danger-ink' : 'text-muted-foreground',
                         )}
                       >
                         {formatInr(row.monthSpendInr)} / {formatInr(row.monthlyBudgetInr)}
@@ -483,7 +483,7 @@ function ClientSplit({ report }: { report: CostReport }) {
                         <div
                           className={cn(
                             'h-full rounded-full',
-                            row.overBudget ? 'bg-red-500' : 'bg-gradient-brand',
+                            row.overBudget ? 'bg-danger' : 'bg-primary',
                           )}
                           style={{
                             width: `${Math.min(100, Math.round(row.budgetUsedPercent ?? 0))}%`,

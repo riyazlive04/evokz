@@ -3,13 +3,14 @@ import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
-// `brand` tracks the palette; the rest stay literal because they are semantic
-// status colours, not brand colours.
+// Every tone is a token now. The status three are `-ink`, the variant tuned for
+// text on a page surface, so each is legible in both themes from one class.
+// Keys keep their colour names so no `tone=` call site has to change.
 const TONE_CLASSES = {
   brand: 'text-brand-to',
-  amber: 'text-amber-600',
-  emerald: 'text-emerald-600',
-  red: 'text-red-600',
+  amber: 'text-warning-ink',
+  emerald: 'text-success-ink',
+  red: 'text-danger-ink',
   slate: 'text-muted-foreground',
 } as const;
 

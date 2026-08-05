@@ -317,7 +317,7 @@ export function CalendarImportPanel({
       </div>
 
       {readError && (
-        <p role="alert" className="text-[11px] text-red-600">
+        <p role="alert" className="text-[11px] text-danger-ink">
           {readError}
         </p>
       )}
@@ -325,7 +325,7 @@ export function CalendarImportPanel({
       {parse.error && (
         <p
           role="alert"
-          className="flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/5 p-3 text-[11px] text-red-600"
+          className="flex items-start gap-2 rounded-lg border border-danger/25 bg-danger/5 p-3 text-[11px] text-danger-ink"
         >
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>{parse.error}</span>
@@ -342,22 +342,22 @@ export function CalendarImportPanel({
               {parse.format === 'json' ? ' · JSON' : ''}
             </span>
             {counts.create > 0 && (
-              <span className="text-emerald-600">{counts.create} new day(s)</span>
+              <span className="text-success-ink">{counts.create} new day(s)</span>
             )}
             {counts.overwrite > 0 && (
-              <span className="text-amber-600">{counts.overwrite} replaced</span>
+              <span className="text-warning-ink">{counts.overwrite} replaced</span>
             )}
             {counts.skip > 0 && <span>{counts.skip} skipped (day already written)</span>}
             {counts.blocked > 0 && (
-              <span className="text-amber-600">
+              <span className="text-warning-ink">
                 {counts.blocked} locked (already generated or delivered)
               </span>
             )}
             {counts['no-slot'] > 0 && (
-              <span className="text-amber-600">{counts['no-slot']} with no free day left</span>
+              <span className="text-warning-ink">{counts['no-slot']} with no free day left</span>
             )}
             {counts.invalid > 0 && (
-              <span className="text-red-600">{counts.invalid} invalid</span>
+              <span className="text-danger-ink">{counts.invalid} invalid</span>
             )}
             {parse.hasPosterColumns && (
               <span>
@@ -367,14 +367,14 @@ export function CalendarImportPanel({
           </div>
 
           {parse.truncated && (
-            <p className="text-[11px] text-amber-600">
+            <p className="text-[11px] text-warning-ink">
               Only the first {IMPORT_ROW_LIMIT} rows were read — the rest of the sheet is
               ignored. Import these, then load the remainder.
             </p>
           )}
 
           {parse.ignoredColumns.length > 0 && (
-            <p className="text-[11px] text-amber-600">
+            <p className="text-[11px] text-warning-ink">
               Unrecognised column{parse.ignoredColumns.length === 1 ? '' : 's'} ignored:{' '}
               <span className="font-mono">{parse.ignoredColumns.join(', ')}</span>. Check for a
               typo if one of those was meant to be a content field.
@@ -445,12 +445,12 @@ export function CalendarImportPanel({
           </div>
 
           {problems.length > 0 && (
-            <div className="space-y-1 rounded-lg border border-red-500/25 bg-red-500/5 p-3">
-              <p className="text-[11px] font-semibold text-red-600">
+            <div className="space-y-1 rounded-lg border border-danger/25 bg-danger/5 p-3">
+              <p className="text-[11px] font-semibold text-danger-ink">
                 {problems.length} row{problems.length === 1 ? '' : 's'} cannot be imported and
                 will be left out:
               </p>
-              <ul className="space-y-0.5 text-[11px] text-red-600/90">
+              <ul className="space-y-0.5 text-[11px] text-danger-ink/90">
                 {problems.slice(0, PROBLEM_LIMIT).map((entry) => (
                   <li key={entry.row.line}>
                     <span className="font-mono">
@@ -461,7 +461,7 @@ export function CalendarImportPanel({
                 ))}
               </ul>
               {problems.length > PROBLEM_LIMIT && (
-                <p className="text-[11px] text-red-600/70">
+                <p className="text-[11px] text-danger-ink/70">
                   + {problems.length - PROBLEM_LIMIT} more.
                 </p>
               )}
@@ -533,7 +533,7 @@ export function CalendarImportPanel({
           )}
 
           {armed && !importRows.pending && (
-            <span className="text-[11px] text-amber-600">
+            <span className="text-[11px] text-warning-ink">
               Replaces the stored theme, caption, hashtags, and image prompt on{' '}
               {counts.overwrite} of {companyName}&apos;s days. The previous copy is not
               recoverable.
@@ -541,14 +541,14 @@ export function CalendarImportPanel({
           )}
 
           {result && (
-            <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-emerald-600">
+            <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-success-ink">
               <Check className="h-3.5 w-3.5" />
               {describeResult(result)}
             </span>
           )}
 
           {importRows.error && (
-            <span role="alert" className="text-[11px] text-red-600">
+            <span role="alert" className="text-[11px] text-danger-ink">
               {importRows.error}
             </span>
           )}

@@ -1,7 +1,10 @@
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import { Resvg } from '@resvg/resvg-js';
 import satori from 'satori';
 
-import { intEnv } from '@/lib/env';
+import { intEnv, optionalEnv } from '@/lib/env';
 import { renderArchetype } from '@/lib/poster/archetypes';
 import { loadFonts } from '@/lib/poster/fonts';
 import {
@@ -84,6 +87,7 @@ export async function renderPoster(
   const archetype = resolveArchetype(input.archetype, input.dayNumber);
   const theme = resolvePosterTheme(input.guideline);
   const metrics = resolveMetrics(input.width, input.height);
+  assertRenderableCanvas(metrics, input.width, input.height);
 
   const photoDimensions = readImageDimensions(input.photo);
   if (!photoDimensions) {
@@ -136,6 +140,19 @@ export async function renderPoster(
     },
   );
 
+  // Diagnostic escape hatch. resvg is a native addon: impossible geometry makes
+  // it panic in Rust and abort the entire process, so there is no post-mortem to
+  // read and no exception to catch. The SVG therefore has to be captured
+  // *before* it is handed over. Set POSTER_DEBUG_SVG_DIR to keep a copy.
+  const debugDir = optionalEnv('POSTER_DEBUG_SVG_DIR', '');
+  if (debugDir) {
+    const name = `poster-${input.width}x${input.height}-${archetype}.svg`;
+    await writeFile(join(debugDir, name), svg, 'utf8').catch((error: unknown) => {
+      console.warn(`[ace:poster] could not write debug SVG: ${describe(error)}`);
+    });
+    console.info(`[ace:poster] debug SVG written: ${name}`);
+  }
+
   // Stage 2 — rasterise. `fitTo` is pinned to the intended width rather than left
   // at resvg's default: satori writes the SVG's own width/height, and any
   // disagreement between the two would silently rescale the whole poster.
@@ -161,6 +178,85 @@ export async function renderPoster(
   }
 
   return { body, mimeType: 'image/png', archetype, dropped };
+}
+
+// ---------------------------------------------------------------------------
+// Pre-render sanity
+// ---------------------------------------------------------------------------
+
+/**
+ * Widest canvas the poster layer will attempt.
+ *
+ * `desktop-ultrawide` (3440×1440) is 2.39:1 and composes correctly; the retired
+ * `linkedin-banner` was 5.9:1 and panicked resvg. 4:1 sits between them with
+ * room for a future preset, while still refusing anything genuinely extreme.
+ */
+const MAX_RENDERABLE_ASPECT = 4;
+
+/** Below this the slot skeleton has no room on either axis. */
+const MIN_RENDERABLE_EDGE = 240;
+
+/**
+ * Refuses a canvas whose resolved metrics cannot produce positive geometry.
+ *
+ * This exists because a bad layout does not fail gracefully downstream.
+ * `@resvg/resvg-js` is a native addon: impossible geometry makes it panic in
+ * Rust (`called Option::unwrap() on a None value`), which **terminates the Node
+ * process outright**. It cannot be caught by the pipeline's try/catch, so a
+ * single mis-sized preset would kill an entire cron sweep mid-flight and leave
+ * every row in it PENDING with no error message to debug from.
+ *
+ * Throwing a normal Error here keeps the failure inside the pipeline's error
+ * handling, where it lands in `ContentCalendar.errorMessage` as a readable
+ * `[compose]` failure and only that one row is affected.
+ */
+function assertRenderableCanvas(
+  metrics: { margin: number; copyWidth: number; mode: string },
+  width: number,
+  height: number,
+): void {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+    throw new Error(
+      `Poster canvas ${width}×${height} is not a renderable size.`,
+    );
+  }
+
+  if (metrics.margin * 2 >= height || metrics.margin * 2 >= width) {
+    throw new Error(
+      `Poster canvas ${width}×${height} is too small for its own margins ` +
+        `(${metrics.margin.toFixed(1)}px each side in "${metrics.mode}" mode). ` +
+        'Choose a preset with more room.',
+    );
+  }
+
+  if (metrics.copyWidth < 1) {
+    throw new Error(
+      `Poster canvas ${width}×${height} leaves no width for the copy column ` +
+        `in "${metrics.mode}" mode.`,
+    );
+  }
+
+  // The one that actually bites. Beyond roughly 4:1 the photo layer cover-fits
+  // its source into a strip a fraction of the image's own height, and satori's
+  // nested overflow masks over that make resvg panic in Rust — which aborts the
+  // process rather than throwing. Refusing here keeps the failure inside the
+  // pipeline, where it becomes a readable `[compose]` error on one row instead
+  // of taking down a whole dispatch sweep.
+  const aspect = width / height;
+  if (aspect > MAX_RENDERABLE_ASPECT) {
+    throw new Error(
+      `Poster canvas ${width}×${height} is ${aspect.toFixed(1)}:1, beyond the ` +
+        `${MAX_RENDERABLE_ASPECT}:1 the poster layer can compose. Choose a less ` +
+        'extreme output size.',
+    );
+  }
+
+  if (height < MIN_RENDERABLE_EDGE || width < MIN_RENDERABLE_EDGE) {
+    throw new Error(
+      `Poster canvas ${width}×${height} is below the ${MIN_RENDERABLE_EDGE}px ` +
+        'minimum edge the poster layer can compose.',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

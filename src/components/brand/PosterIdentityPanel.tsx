@@ -134,7 +134,7 @@ export function PosterIdentityPanel({
         <CardTitle className="flex items-center gap-2">
           Poster identity
           {saved && (
-            <span className="flex items-center gap-1 text-xs font-normal text-emerald-600">
+            <span className="flex items-center gap-1 text-xs font-normal text-success-ink">
               <Check className="h-3.5 w-3.5" />
               Saved
             </span>
@@ -213,7 +213,7 @@ export function PosterIdentityPanel({
                 Drive folder and published link-readable, because the renderer fetches
                 it server-side.
                 {!hasDriveFolder && (
-                  <span className="mt-1 block text-red-600">
+                  <span className="mt-1 block text-danger-ink">
                     This client has no Drive folder yet — repair it first, or point at
                     an external URL below.
                   </span>
@@ -302,7 +302,7 @@ export function PosterIdentityPanel({
           </div>
         </form>
 
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && <p className="text-xs text-danger-ink">{error}</p>}
       </CardContent>
     </Card>
   );

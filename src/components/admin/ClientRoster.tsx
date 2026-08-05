@@ -68,19 +68,19 @@ export function ClientRoster({ clients }: { clients: ClientRosterRow[] }) {
                 <div className="flex items-center gap-2">
                   <Link
                     href={`/admin/clients/${client.id}`}
-                    className="font-medium text-foreground underline-offset-4 transition-colors duration-200 hover:text-primary hover:underline"
+                    className="font-medium text-foreground underline-offset-4 decoration-primary/40 transition-colors duration-200 hover:underline hover:decoration-primary"
                     title="Open client detail"
                   >
                     {client.companyName}
                   </Link>
                   {client.hasDriveFolder ? (
                     <FolderCheck
-                      className="h-3.5 w-3.5 shrink-0 text-emerald-600/70"
+                      className="h-3.5 w-3.5 shrink-0 text-success-ink/70"
                       aria-label="Drive folder provisioned"
                     />
                   ) : (
                     <CloudOff
-                      className="h-3.5 w-3.5 shrink-0 text-red-600"
+                      className="h-3.5 w-3.5 shrink-0 text-danger-ink"
                       aria-label="Drive folder missing"
                     />
                   )}
@@ -112,7 +112,7 @@ export function ClientRoster({ clients }: { clients: ClientRosterRow[] }) {
                 <div className="space-y-1">
                   <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full rounded-full bg-gradient-brand transition-all duration-500"
+                      className="h-full rounded-full bg-primary transition-all duration-500"
                       style={{ width: `${progressPercent}%` }}
                     />
                   </div>

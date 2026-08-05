@@ -17,8 +17,11 @@ import {
 
 import { CalendarImportPanel } from '@/components/admin/CalendarImportPanel';
 import { ClientControls } from '@/components/admin/ClientControls';
+import { ClientDangerZone } from '@/components/admin/ClientDangerZone';
 import { PageHeader } from '@/components/admin/PageHeader';
+import { ClientAssignment } from '@/components/admin/ClientAssignment';
 import { QueueLedger, type QueueEntry } from '@/components/admin/QueueLedger';
+import { RetryFailedButton } from '@/components/admin/RetryFailedButton';
 import { SeedCalendarButton } from '@/components/admin/SeedCalendarButton';
 import { StatTile } from '@/components/admin/StatTile';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +42,7 @@ import {
 import { prisma } from '@/lib/prisma';
 import { queueSelect, toQueueEntry } from '@/lib/queue-entry';
 import {
+  describeDeliveryDays,
   formatDisplayDate,
   formatDisplayDateTime,
   getAppTimeZone,
@@ -85,6 +89,9 @@ export default async function ClientDetailPage({
       displayPhone: true,
       websiteUrl: true,
       createdAt: true,
+      planId: true,
+      categoryId: true,
+      deliveryDays: true,
       plan: { select: { name: true, durationDays: true } },
       category: { select: { name: true } },
     },
@@ -92,7 +99,14 @@ export default async function ClientDetailPage({
 
   if (!client) notFound();
 
-  const [statusGroups, failureRecords, upcomingRecords, seededRows] = await Promise.all([
+  const [
+    statusGroups,
+    failureRecords,
+    upcomingRecords,
+    seededRows,
+    planOptions,
+    categoryOptions,
+  ] = await Promise.all([
     prisma.contentCalendar.groupBy({
       by: ['deliveryStatus'],
       where: { clientId: client.id },
@@ -117,6 +131,14 @@ export default async function ClientDetailPage({
       where: { clientId: client.id },
       orderBy: { dayNumber: 'asc' },
       select: { dayNumber: true, deliveryStatus: true },
+    }),
+    prisma.plan.findMany({
+      orderBy: { durationDays: 'asc' },
+      select: { id: true, name: true, durationDays: true },
+    }),
+    prisma.category.findMany({
+      orderBy: { name: 'asc' },
+      select: { id: true, name: true },
     }),
   ]);
 
@@ -246,8 +268,9 @@ export default async function ClientDetailPage({
           <CardHeader>
             <CardTitle>Tenant record</CardTitle>
             <CardDescription>
-              Provisioning facts written at onboarding. Plan and vertical are fixed for the
-              life of the campaign.
+              Provisioning facts written at onboarding. Plan and vertical can be changed
+              from Operations — a shorter plan is refused while calendar days fall beyond
+              it.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -261,7 +284,10 @@ export default async function ClientDetailPage({
               </Fact>
               <Fact label="Vertical">{client.category.name}</Fact>
               <Fact label="Delivery minute">
-                <span className="font-mono">{client.cronTime}</span>
+                <span className="font-mono">{client.cronTime}</span>{' '}
+                <span className="text-muted-foreground">
+                  · {describeDeliveryDays(client.deliveryDays)}
+                </span>
               </Fact>
               <Fact label="Campaign start">
                 <span className="font-mono">
@@ -285,7 +311,7 @@ export default async function ClientDetailPage({
                   {sizePreset.width}×{sizePreset.height}
                 </span>
                 {photoIsUpscaledAt(sizePreset) && (
-                  <span className="text-[11px] text-amber-600"> · soft photo</span>
+                  <span className="text-[11px] text-warning-ink"> · soft photo</span>
                 )}
               </Fact>
               <Fact label="Drive folder">
@@ -294,14 +320,14 @@ export default async function ClientDetailPage({
                     {client.gDriveFolderId}
                   </span>
                 ) : (
-                  <span className="text-red-600">Not provisioned</span>
+                  <span className="text-danger-ink">Not provisioned</span>
                 )}
               </Fact>
               <Fact label="Poster logo">
                 {client.logoUrl ? (
-                  <span className="text-emerald-600">On file</span>
+                  <span className="text-success-ink">On file</span>
                 ) : (
-                  <span className="text-amber-600">
+                  <span className="text-warning-ink">
                     Wordmark fallback — add one on the brand canvas
                   </span>
                 )}
@@ -328,7 +354,7 @@ export default async function ClientDetailPage({
                     </span>
                   </span>
                 ) : (
-                  <span className="text-amber-600">Not extracted</span>
+                  <span className="text-warning-ink">Not extracted</span>
                 )}
               </Fact>
             </dl>
@@ -353,7 +379,7 @@ export default async function ClientDetailPage({
               </div>
               <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full rounded-full bg-gradient-brand transition-all duration-500"
+                  className="h-full rounded-full bg-primary transition-all duration-500"
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
@@ -370,6 +396,16 @@ export default async function ClientDetailPage({
               imageSizePreset={client.imageSizePreset}
             />
 
+            <ClientAssignment
+              clientId={client.id}
+              planId={client.planId}
+              categoryId={client.categoryId}
+              deliveryDays={client.deliveryDays}
+              plans={planOptions}
+              categories={categoryOptions}
+              hasCalendar={calendarCount > 0}
+            />
+
             {calendarCount < totalDays && (
               <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
                 <SeedCalendarButton
@@ -377,6 +413,7 @@ export default async function ClientDetailPage({
                   companyName={client.companyName}
                   calendarCount={calendarCount}
                   totalDays={totalDays}
+                  hasBrandTokens={brand.colors.length > 0}
                 />
               </div>
             )}
@@ -411,9 +448,9 @@ export default async function ClientDetailPage({
 
       {/* ---- Failures first: they need a human ---- */}
       {failureRecords.length > 0 && (
-        <Card className="border-red-500/25">
+        <Card className="border-danger/25">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-red-600">
+            <CardTitle className="flex items-center gap-2 text-danger-ink">
               <ShieldAlert className="h-4 w-4" />
               Failed deliveries
             </CardTitle>
@@ -422,7 +459,11 @@ export default async function ClientDetailPage({
               image stage.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            <RetryFailedButton
+              clientId={client.id}
+              failedCount={statusCounts[DeliveryStatus.FAILED]}
+            />
             <QueueLedger
               entries={failureRecords.map((entry) => toQueueEntry(entry, timeZone))}
             />
@@ -447,6 +488,18 @@ export default async function ClientDetailPage({
           <QueueLedger entries={timeline} />
         </CardContent>
       </Card>
+
+      {/* ---- Destructive actions, last and visually separated ---- */}
+      <ClientDangerZone
+        clientId={client.id}
+        companyName={client.companyName}
+        clearableDays={
+          statusCounts[DeliveryStatus.PENDING] + statusCounts[DeliveryStatus.FAILED]
+        }
+        lockedDays={
+          statusCounts[DeliveryStatus.GENERATED] + statusCounts[DeliveryStatus.DELIVERED]
+        }
+      />
     </>
   );
 }

@@ -14,6 +14,7 @@ import {
 import { ClientRoster, type ClientRosterRow } from '@/components/admin/ClientRoster';
 import { PageHeader } from '@/components/admin/PageHeader';
 import { QueueLedger, type QueueEntry } from '@/components/admin/QueueLedger';
+import { RetryFailedButton } from '@/components/admin/RetryFailedButton';
 import { StatTile } from '@/components/admin/StatTile';
 import { ConfigWarning, DatabaseErrorState } from '@/components/admin/SystemNotices';
 import { Button } from '@/components/ui/button';
@@ -194,9 +195,9 @@ export default async function AdminDashboardPage({
       {/* ---- Failures first: they need a human ---- */}
       {/* Suppressed while the failed drill-down is open — same rows, twice. */}
       {view !== 'failed' && data.failures.length > 0 && (
-        <Card className="border-red-500/25">
+        <Card className="border-danger/25">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-red-600">
+            <CardTitle className="flex items-center gap-2 text-danger-ink">
               <ShieldAlert className="h-4 w-4" />
               Failed deliveries
             </CardTitle>
@@ -206,7 +207,10 @@ export default async function AdminDashboardPage({
               when one exists; delete drops an entry you do not intend to chase.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            <RetryFailedButton
+              failedCount={data.statusCounts[DeliveryStatus.FAILED]}
+            />
             <QueueLedger entries={data.failures} />
           </CardContent>
         </Card>

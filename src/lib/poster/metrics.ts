@@ -33,6 +33,21 @@ export type CanvasMode = 'tall' | 'wide' | 'letterbox';
 const WIDE_ABOVE_ASPECT = 0.82;
 const LETTERBOX_ABOVE_ASPECT = 2.2;
 
+/**
+ * Reference height the letterbox row is fitted against.
+ *
+ * Letterbox keeps only the logo lockup, headline and contact bar, arranged
+ * side by side, so it does not need the full 1568 px stack. It does still need
+ * room for the tallest cell — the logo box, 180 reference px — plus its own
+ * vertical margins. 320 leaves comfortable headroom for both.
+ *
+ * Sized empirically against the shortest preset in the catalogue
+ * (`linkedin-banner`, 1128×191): scale resolves to 0.597, giving a 107 px logo
+ * box and 13 px margins inside 191 px. `desktop-ultrawide` (3440×1440) is
+ * unaffected — width still binds there.
+ */
+const LETTERBOX_REFERENCE_HEIGHT = 320;
+
 export function resolveCanvasMode(width: number, height: number): CanvasMode {
   const aspect = width / height;
   if (aspect > LETTERBOX_ABOVE_ASPECT) return 'letterbox';
@@ -122,8 +137,15 @@ export function resolveMetrics(width: number, height: number): PosterMetrics {
 
   const scale = Math.min(
     designWidth / REFERENCE_WIDTH,
-    // Letterbox has no full vertical stack to fit, so height stops constraining.
-    mode === 'letterbox' ? Number.POSITIVE_INFINITY : height / REFERENCE_HEIGHT,
+    // Letterbox lays its slots out in a ROW rather than a vertical stack, so it
+    // is fitted against a much shorter reference — but height never stops
+    // constraining entirely. It used to be Number.POSITIVE_INFINITY here, which
+    // meant a 1128×191 LinkedIn banner scaled purely off its width: the logo box
+    // alone came out 134 px tall in a 191 px canvas, the row overflowed, and
+    // resvg panicked on the resulting non-positive geometry — taking the whole
+    // Node process down, uncatchably, because it is a Rust panic and not a JS
+    // throw. See LETTERBOX_REFERENCE_HEIGHT.
+    height / (mode === 'letterbox' ? LETTERBOX_REFERENCE_HEIGHT : REFERENCE_HEIGHT),
   );
 
   const s = (referenceValue: number): number =>
@@ -131,7 +153,13 @@ export function resolveMetrics(width: number, height: number): PosterMetrics {
 
   // The spec's 48 px reference margin reads as too tight below ~5% of width on
   // small canvases and too loose above it on huge ones, so it is clamped.
-  const margin = clamp(s(48), width * 0.035, width * 0.07);
+  //
+  // The clamp is against the SHORT edge in letterbox mode. Basing it on width
+  // there put a 39 px floor on both vertical margins of a 191 px canvas — 41% of
+  // the available height gone before a single element was placed. Every other
+  // mode keeps the width basis, so no existing preset shifts.
+  const marginBasis = mode === 'letterbox' ? Math.min(width, height) : width;
+  const margin = clamp(s(48), marginBasis * 0.035, marginBasis * 0.07);
 
   const copyWidth =
     mode === 'tall'

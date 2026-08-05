@@ -25,13 +25,13 @@ import {
 import type { PosterArchetype, PosterPhoto, PosterSpec } from '@/lib/types/poster';
 
 /**
- * The five layout archetypes from §5 of docs/creative-style-spec.md, plus the two
+ * The layout archetypes from §5 of docs/creative-style-spec.md, plus the two
  * adaptations that keep non-portrait presets from producing a broken poster.
  *
  * Each archetype is responsible for exactly three things: where the photo sits,
  * which ground each slot lands on, and the shape that separates them. All type
  * and spacing decisions live in `slots.tsx` and `metrics.ts`, so a change to the
- * headline treatment lands in all five at once.
+ * headline treatment lands in all of them at once.
  *
  * Curves and diagonals are drawn as inline SVG paths rather than CSS. Satori has
  * no `clip-path`, and the rotated-overflow-hidden-div trick that substitutes for
@@ -56,14 +56,28 @@ const PHOTO_FOCUS: Record<PosterArchetype, { x: number; y: number }> = {
   bands: { x: 0.5, y: 0.5 }, // wide establishing shot, subject centred
   curve: { x: 0.72, y: 0.34 }, // subject upper-right, clean lower-left
   editorial: { x: 0.7, y: 0.46 }, // subject right, high-key
+  spotlight: { x: 0.5, y: 0.42 }, // full-bleed, subject slightly above centre
+  corner: { x: 0.55, y: 0.45 }, // inset panel, subject near its own centre
+  inverted: { x: 0.5, y: 0.42 }, // wide establishing band, horizon high
 };
 
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
+/**
+ * Fails the build when an archetype is added without a `case` below.
+ *
+ * Worth the two lines: `noImplicitReturns` is off and `renderArchetype` infers
+ * its return type, so a missing branch used to compile cleanly and hand satori an
+ * `undefined` tree — a blank poster at runtime, on a delivery path with no tests.
+ */
+function unreachableArchetype(archetype: never): never {
+  throw new Error(`No layout is wired for archetype "${String(archetype)}"`);
+}
+
 /** Composes the poster tree for `spec.archetype` at `metrics.mode`. */
-export function renderArchetype(props: ArchetypeProps) {
+export function renderArchetype(props: ArchetypeProps): React.ReactElement {
   if (props.metrics.mode === 'letterbox') return <LetterboxLayout {...props} />;
   if (props.metrics.mode === 'wide') return <WideLayout {...props} />;
 
@@ -78,12 +92,25 @@ export function renderArchetype(props: ArchetypeProps) {
       return <CurvedSplit {...props} />;
     case 'editorial':
       return <LightEditorial {...props} />;
+    case 'spotlight':
+      return <SpotlightCentre {...props} />;
+    case 'corner':
+      return <CornerInset {...props} />;
+    case 'inverted':
+      return <InvertedBand {...props} />;
+    default:
+      return unreachableArchetype(props.spec.archetype);
   }
 }
 
 /** Whether an archetype's copy sits on the dark ground or the light one. */
 export function archetypeGroundIsDark(archetype: PosterArchetype): boolean {
-  return archetype === 'scrim' || archetype === 'diagonal';
+  return (
+    archetype === 'scrim' ||
+    archetype === 'diagonal' ||
+    archetype === 'spotlight' ||
+    archetype === 'inverted'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -817,6 +844,351 @@ function LightEditorial({ spec, metrics, logoDimensions }: ArchetypeProps) {
             variant="dark"
           />
         </div>
+      </div>
+    </Canvas>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// F — Spotlight centre
+// ---------------------------------------------------------------------------
+
+/**
+ * Full-bleed photo under an *even* wash, copy centred down the frame.
+ *
+ * §3 lists three photo-legibility treatments; this is the third — global
+ * darkening (2/12) — and it was the only one no archetype used. It differs from
+ * `scrim` in kind, not degree: `scrim` keeps one side of the photo untouched and
+ * pays for it by anchoring copy to the corner, whereas here the whole image is
+ * dimmed evenly so the copy is free to sit anywhere. That buys the one thing the
+ * other seven cannot do — a vertically centred column — which is most of why a
+ * feed of these stops looking like a single template.
+ *
+ * The wash is a hair stronger at top and bottom so the logo and the feature list
+ * stay legible over a bright sky or a pale foreground, but the mid-frame stays at
+ * a flat 0.62 rather than ramping, which is what keeps it reading as one tone.
+ */
+function SpotlightCentre({ spec, metrics, logoDimensions }: ArchetypeProps) {
+  const { theme, copy, identity } = spec;
+  const ground = groundFor(theme, true);
+  const columnWidth = Math.min(metrics.copyWidth, metrics.width * 0.78);
+  const focus = PHOTO_FOCUS.spotlight;
+
+  return (
+    <Canvas metrics={metrics} background={theme.darkNeutral}>
+      <PhotoLayer
+        photo={spec.photo}
+        region={{ left: 0, top: 0, width: metrics.width, height: metrics.height }}
+        focusX={focus.x}
+        focusY={focus.y}
+      />
+
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          width: metrics.width,
+          height: metrics.height,
+          backgroundImage: `linear-gradient(180deg, ${withAlpha(
+            theme.darkNeutral,
+            0.78,
+          )} 0%, ${withAlpha(theme.darkNeutral, 0.62)} 26%, ${withAlpha(
+            theme.darkNeutral,
+            0.62,
+          )} 68%, ${withAlpha(theme.darkNeutral, 0.88)} 100%)`,
+        }}
+      />
+
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          position: 'relative',
+          width: metrics.width,
+          height: metrics.height,
+        }}
+      >
+        {/* Copy and features are centred as ONE block, not pinned to opposite
+            ends. Splitting them — copy centred, features bottom-anchored — opens
+            a dead band across the middle of the frame that reads as a rendering
+            fault rather than as space. flex:1 lets the pair absorb whatever the
+            headline's line count leaves over. */}
+        <div
+          style={{
+            display: 'flex',
+            flex: 1,
+            flexDirection: 'column',
+            justifyContent: 'center',
+            paddingLeft: metrics.margin,
+            paddingRight: metrics.margin,
+            paddingTop: metrics.margin,
+          }}
+        >
+          <CopyStack
+            spec={spec}
+            metrics={metrics}
+            logoDimensions={logoDimensions}
+            ground={ground}
+            columnWidth={columnWidth}
+          />
+
+          <div style={{ display: 'flex', marginTop: metrics.s(52) }}>
+            <FeatureList
+              metrics={metrics}
+              theme={theme}
+              ground={ground}
+              features={copy.features}
+              width={Math.min(metrics.width - metrics.margin * 2, metrics.width * 0.74)}
+            />
+          </div>
+        </div>
+
+        <ContactBar
+          metrics={metrics}
+          theme={theme}
+          identity={identity}
+          copy={copy}
+          variant="accent"
+        />
+      </div>
+    </Canvas>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// G — Corner inset
+// ---------------------------------------------------------------------------
+
+/**
+ * Light field, photo inset into the upper right, copy beside and below it,
+ * contact details stacked rather than side by side.
+ *
+ * The stacked contact bar is the point. §2 records it as the form 4 of the 12
+ * references use, `slots.tsx` has implemented it since the beginning, and no
+ * archetype had ever asked for it — so a quarter of the reference set's bottom
+ * edge simply never appeared in output. Pairing it with an inset photo (every
+ * other light archetype bleeds the photo off an edge) gives a composition whose
+ * silhouette differs from the rest at a glance, which is what "another template"
+ * has to mean to be worth adding.
+ */
+function CornerInset({ spec, metrics, logoDimensions }: ArchetypeProps) {
+  const { theme, copy, identity } = spec;
+  const ground = groundFor(theme, false);
+  const focus = PHOTO_FOCUS.corner;
+
+  const W = metrics.width;
+  const H = metrics.height;
+
+  // Bleeds off the right edge but is inset top and bottom, so the corner reads as
+  // deliberate rather than as a photo that failed to reach the edge.
+  //
+  // The height is the load-bearing number. At the 0.3 this started on, the panel
+  // sat high on the right and left roughly a third of the frame empty below it —
+  // a void, not negative space. Running it to 0.66 gives the right column
+  // something to do for as long as the left column is talking.
+  const photoLeft = W * 0.5;
+  const photoTop = H * 0.08;
+  const photoHeight = H * 0.68;
+
+  const columnWidth = Math.min(metrics.copyWidth, photoLeft - metrics.margin * 1.6);
+
+  return (
+    <Canvas metrics={metrics} background={theme.lightNeutral}>
+      <PhotoLayer
+        photo={spec.photo}
+        region={{
+          left: photoLeft,
+          top: photoTop,
+          width: W - photoLeft,
+          height: photoHeight,
+        }}
+        focusX={focus.x}
+        focusY={focus.y}
+      />
+
+      {/* A single accent hairline under the photo ties the inset to the field it
+          floats on. Without it the panel reads as a paste-up. */}
+      <div
+        style={{
+          position: 'absolute',
+          left: photoLeft,
+          top: photoTop + photoHeight,
+          width: W - photoLeft,
+          height: Math.max(2, metrics.s(5)),
+          backgroundColor: theme.accent,
+        }}
+      />
+
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          position: 'relative',
+          width: W,
+          height: H,
+        }}
+      >
+        {/* Copy and features share the left column and are centred as one block
+            against the photo panel opposite. Bottom-anchoring the features
+            instead — the obvious `space-between` — leaves the left half empty
+            from the body paragraph down, which on a portrait canvas is a third of
+            the poster showing nothing. */}
+        <div
+          style={{
+            display: 'flex',
+            flex: 1,
+            flexDirection: 'column',
+            justifyContent: 'center',
+            paddingLeft: metrics.margin,
+            paddingRight: metrics.margin,
+            paddingTop: metrics.margin,
+          }}
+        >
+          <CopyStack
+            spec={spec}
+            metrics={metrics}
+            logoDimensions={logoDimensions}
+            ground={ground}
+            columnWidth={columnWidth}
+          />
+
+          <div style={{ display: 'flex', marginTop: metrics.s(48) }}>
+            <FeatureList
+              metrics={metrics}
+              theme={theme}
+              ground={ground}
+              features={copy.features}
+              width={columnWidth}
+            />
+          </div>
+        </div>
+
+        <ContactBar
+          metrics={metrics}
+          theme={theme}
+          identity={identity}
+          copy={copy}
+          variant="dark"
+          stacked
+        />
+      </div>
+    </Canvas>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// H — Inverted band
+// ---------------------------------------------------------------------------
+
+/**
+ * Photo band across the top, all copy below it on the dark ground.
+ *
+ * The inverse of `bands`, and the only archetype where the photo is the first
+ * thing read rather than something the copy sits on or beside. On a phone feed
+ * that reordering is more noticeable than any amount of gradient work.
+ *
+ * The band is deliberately 30% rather than the half the name suggests: the full
+ * slot stack is not negotiable — `droppedSlots` reports omissions by canvas mode,
+ * not by archetype, so a layout that quietly dropped the feature block to buy
+ * height would be truncation nobody could see. 30% is what leaves room for a
+ * worst-case four-line headline plus the strip and the bar.
+ */
+function InvertedBand({ spec, metrics, logoDimensions }: ArchetypeProps) {
+  const { theme, copy, identity } = spec;
+  const ground = groundFor(theme, true);
+  const focus = PHOTO_FOCUS.inverted;
+
+  const photoHeight = metrics.height * 0.3;
+
+  return (
+    <Canvas metrics={metrics} background={theme.darkNeutral}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          width: metrics.width,
+          height: metrics.height,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            position: 'relative',
+            width: metrics.width,
+            height: photoHeight,
+            overflow: 'hidden',
+          }}
+        >
+          <PhotoLayer
+            photo={spec.photo}
+            region={{
+              left: 0,
+              top: 0,
+              width: metrics.width,
+              height: photoHeight,
+            }}
+            focusX={focus.x}
+            focusY={focus.y}
+          />
+        </div>
+
+        {/* Accent hairline on the seam. The band's lower edge is the poster's one
+            hard horizontal, and leaving it unmarked lets a dark photo bleed into
+            the dark ground until the structure disappears. */}
+        <div
+          style={{
+            display: 'flex',
+            width: metrics.width,
+            height: Math.max(2, metrics.s(6)),
+            backgroundColor: theme.accent,
+          }}
+        />
+
+        <div
+          style={{
+            display: 'flex',
+            flex: 1,
+            flexDirection: 'column',
+            justifyContent: 'center',
+            paddingLeft: metrics.margin,
+            paddingRight: metrics.margin,
+            paddingTop: metrics.s(40),
+          }}
+        >
+          <CopyStack
+            spec={spec}
+            metrics={metrics}
+            logoDimensions={logoDimensions}
+            ground={ground}
+            columnWidth={metrics.copyWidth}
+          />
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            paddingLeft: metrics.margin,
+            paddingRight: metrics.margin,
+            paddingBottom: metrics.s(40),
+          }}
+        >
+          <FeatureStrip
+            metrics={metrics}
+            theme={theme}
+            ground={ground}
+            features={copy.features}
+            width={metrics.width - metrics.margin * 2}
+          />
+        </div>
+
+        <ContactBar
+          metrics={metrics}
+          theme={theme}
+          identity={identity}
+          copy={copy}
+          variant="accent"
+        />
       </div>
     </Canvas>
   );

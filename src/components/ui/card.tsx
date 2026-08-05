@@ -7,7 +7,11 @@ const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElemen
     <div
       ref={ref}
       className={cn(
-        'rounded-xl border border-border bg-gradient-surface text-card-foreground shadow-lg backdrop-blur-sm',
+        // Flat `bg-card`, not `bg-gradient-surface`: background-image does not
+        // interpolate, so a gradient fill would hard-snap during the theme swap
+        // while every surface around it faded. Separation comes from the border
+        // and shadow instead.
+        'rounded-xl border border-border bg-card text-card-foreground shadow-lg backdrop-blur-sm',
         className,
       )}
       {...props}

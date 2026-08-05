@@ -1,23 +1,44 @@
 'use server';
 
-import { Prisma } from '@prisma/client';
+import { DeliveryStatus, Prisma } from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 
 import { describeError, runCreativePipeline } from '@/lib/ai-pipeline';
 import { tokenizeClientBrand } from '@/lib/ai/brand-tokenizer';
 import { generateContentCalendar } from '@/lib/ai/calendar-generator';
+import {
+  extractWebsiteColors,
+  toBrandColors,
+  WebsiteColorError,
+  type ExtractionReport,
+} from '@/lib/brand/website-colors';
+import { parseBrandGuideline, type BrandGuideline } from '@/lib/types/brand';
 import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
 import type { CalendarImportInput } from '@/lib/calendar-parse';
-import { trashDriveFile, uploadClientAsset } from '@/lib/google-drive';
+import {
+  ensureVerticalTemplateFolder,
+  trashDriveFile,
+  uploadClientAsset,
+} from '@/lib/google-drive';
+import { readImageDimensions } from '@/lib/poster/image-info';
 import { isImageSizePresetId } from '@/lib/image-sizes';
 import {
   clientProvisionSchema,
   provisionClient,
   repairClientDriveFolder,
 } from '@/lib/onboarding';
+import { mapWithConcurrency } from '@/lib/cron-worker';
+import { intEnv } from '@/lib/env';
 import { prisma } from '@/lib/prisma';
-import { HH_MM_PATTERN } from '@/lib/time';
+import {
+  describeDeliveryDays,
+  formatDisplayDate,
+  getAppTimeZone,
+  HH_MM_PATTERN,
+  normalizeDeliveryDays,
+  nthDeliveryDate,
+} from '@/lib/time';
 
 /**
  * Server actions for the admin dashboard.
@@ -196,7 +217,22 @@ export async function deleteCategory(id: string): Promise<ActionResult> {
       );
     }
 
+    // Template rows cascade with the vertical, but their Drive files do not —
+    // binning them here is the only chance to, because once the rows are gone
+    // nothing records which files they were.
+    const templates = await prisma.categoryTemplate.findMany({
+      where: { categoryId },
+      select: { gDriveFileId: true },
+    });
+
     await prisma.category.delete({ where: { id: categoryId } });
+
+    // After the delete: `trashDriveFile` never throws, and a leftover file is a
+    // tidiness problem, whereas failing here would leave the vertical undeleted.
+    for (const template of templates) {
+      await trashDriveFile(template.gDriveFileId);
+    }
+
     revalidateAdmin();
     return success();
   } catch (error) {
@@ -292,6 +328,273 @@ export async function updateClientImageSize(
     return success({ imageSizePreset: parsed });
   } catch (error) {
     return toFailure(error, 'Updating image size');
+  }
+}
+
+/**
+ * Reassigns the client's vertical.
+ *
+ * Safe and unguarded: `category.name` only feeds the LLM system prefix
+ * (`Industry: …`) for *future* generation. Days already seeded keep the copy
+ * written for the old vertical — reseeding them is the operator's call.
+ */
+export async function updateClientCategory(
+  clientId: string,
+  categoryId: string,
+): Promise<ActionResult> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+    const nextId = z.string().uuid('A valid vertical must be selected').parse(categoryId);
+
+    const category = await prisma.category.findUnique({
+      where: { id: nextId },
+      select: { id: true },
+    });
+    if (!category) return failure('That vertical no longer exists.');
+
+    await prisma.client.update({ where: { id }, data: { categoryId: nextId } });
+
+    revalidateAdmin();
+    return success();
+  } catch (error) {
+    return toFailure(error, 'Updating vertical');
+  }
+}
+
+/**
+ * Reassigns the client's plan, and moves the campaign window with it.
+ *
+ * Two things make this more than a column update:
+ *
+ * 1. **`endDate` must be recomputed.** It is derived from the plan duration at
+ *    provisioning (`lib/onboarding.ts`) and has never had a second writer, so
+ *    leaving it alone would keep the dispatcher on the old window — a longer
+ *    plan would stop delivering at the old end date while the UI showed more
+ *    days remaining.
+ *
+ * 2. **A shortening that would strand days is refused.** Those rows keep their
+ *    `scheduledDate`, but once `endDate` moves back they fall outside the
+ *    dispatcher's `endDate >= start` filter and are silently never delivered.
+ *    Clearing the calendar first is the deliberate, visible alternative.
+ */
+export async function updateClientPlan(
+  clientId: string,
+  planId: string,
+): Promise<ActionResult<{ durationDays: number }>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+    const nextId = z.string().uuid('A valid plan must be selected').parse(planId);
+
+    const [client, plan] = await Promise.all([
+      prisma.client.findUnique({
+        where: { id },
+        select: { startDate: true, planId: true, deliveryDays: true },
+      }),
+      prisma.plan.findUnique({
+        where: { id: nextId },
+        select: { name: true, durationDays: true },
+      }),
+    ]);
+
+    if (!client) return failure('That client no longer exists.');
+    if (!plan) return failure('That plan no longer exists.');
+    if (plan.durationDays < 1) {
+      return failure(`Plan "${plan.name}" has an invalid duration (${plan.durationDays}).`);
+    }
+    if (client.planId === nextId) return failure('That is already this client’s plan.');
+
+    const stranded = await prisma.contentCalendar.count({
+      where: { clientId: id, dayNumber: { gt: plan.durationDays } },
+    });
+    if (stranded > 0) {
+      return failure(
+        `${stranded} calendar day(s) fall beyond a ${plan.durationDays}-day plan and would never be delivered. ` +
+          'Clear the calendar first, then change the plan.',
+      );
+    }
+
+    await prisma.client.update({
+      where: { id },
+      data: {
+        planId: nextId,
+        endDate: nthDeliveryDate(
+          client.startDate,
+          plan.durationDays,
+          client.deliveryDays,
+          getAppTimeZone(),
+        ),
+      },
+    });
+
+    revalidateAdmin();
+    return success({ durationDays: plan.durationDays });
+  } catch (error) {
+    return toFailure(error, 'Updating plan');
+  }
+}
+
+/** Reschedule writes per transaction, matching the bulk importer's chunking. */
+const RESCHEDULE_CHUNK = 25;
+
+/**
+ * Sets the weekdays a client accepts delivery on, and moves everything that
+ * depends on them.
+ *
+ * The dispatcher is deliberately untouched by this feature: it already selects
+ * rows whose `scheduledDate` falls inside today, so a day with no row simply
+ * never sends. All the work is in placing dates correctly.
+ *
+ * Three things move together:
+ *  - `deliveryDays` itself.
+ *  - Every PENDING row's `scheduledDate`, recomputed from its day number under
+ *    the new weekday set. GENERATED and DELIVERED rows keep their dates —
+ *    those record what actually happened, and rewriting history to match a new
+ *    preference would be a lie.
+ *  - `endDate`, since the last deliverable day moves with the weekdays.
+ */
+export async function updateClientDeliveryDays(
+  clientId: string,
+  days: number[],
+): Promise<
+  ActionResult<{ rescheduled: number; kept: number; endsOn: string; label: string }>
+> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+    const parsed = normalizeDeliveryDays(
+      z.array(z.number().int().min(1).max(7)).parse(days),
+    );
+
+    // An empty set would mean a client who never receives anything. Pausing is
+    // what that is for, and it is reversible without touching the calendar.
+    if (parsed.length === 0) {
+      return failure('Pick at least one delivery day, or pause the campaign instead.');
+    }
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: { startDate: true, plan: { select: { durationDays: true } } },
+    });
+    if (!client) return failure('That client no longer exists.');
+
+    const timeZone = getAppTimeZone();
+    const stored = parsed.length === 7 ? [] : parsed;
+
+    const pending = await prisma.contentCalendar.findMany({
+      where: { clientId: id, deliveryStatus: DeliveryStatus.PENDING },
+      select: { id: true, dayNumber: true },
+      orderBy: { dayNumber: 'asc' },
+    });
+    const kept = await prisma.contentCalendar.count({
+      where: { clientId: id, deliveryStatus: { not: DeliveryStatus.PENDING } },
+    });
+
+    const endDate = nthDeliveryDate(
+      client.startDate,
+      client.plan.durationDays,
+      stored,
+      timeZone,
+    );
+
+    await prisma.client.update({
+      where: { id },
+      data: { deliveryDays: stored, endDate },
+    });
+
+    for (let offset = 0; offset < pending.length; offset += RESCHEDULE_CHUNK) {
+      const chunk = pending.slice(offset, offset + RESCHEDULE_CHUNK);
+      await prisma.$transaction(
+        chunk.map((row) =>
+          prisma.contentCalendar.update({
+            where: { id: row.id },
+            data: {
+              scheduledDate: nthDeliveryDate(
+                client.startDate,
+                row.dayNumber,
+                stored,
+                timeZone,
+              ),
+            },
+          }),
+        ),
+      );
+    }
+
+    revalidateAdmin();
+    return success({
+      rescheduled: pending.length,
+      kept,
+      endsOn: formatDisplayDate(endDate, timeZone),
+      label: describeDeliveryDays(stored),
+    });
+  } catch (error) {
+    return toFailure(error, 'Updating delivery days');
+  }
+}
+
+/**
+ * Rows retried per invocation.
+ *
+ * Capped because this runs as a single server action, and `vercel.json` raises
+ * `maxDuration` only for `/api/cron` and the Razorpay webhook — not for actions.
+ * An uncapped loop over a few hundred failures works in dev and is killed in
+ * production, which is the worst place to discover it.
+ */
+const RETRY_BATCH_LIMIT = 10;
+
+/**
+ * Re-runs the pipeline over the most recent failed deliveries.
+ *
+ * Uses `reuseExistingAsset`, so a row that already reached GENERATED re-sends
+ * its stored Drive file for free. A row that failed before the upload has no
+ * asset to reuse and will re-bill fal.ai — surfaced in the UI rather than
+ * hidden, since the two look identical on the card.
+ */
+export async function retryFailedDeliveries(
+  clientId?: string,
+): Promise<
+  ActionResult<{ attempted: number; delivered: number; failed: number; remaining: number }>
+> {
+  try {
+    const id = clientId ? z.string().uuid().parse(clientId) : null;
+    const where = {
+      deliveryStatus: DeliveryStatus.FAILED,
+      ...(id ? { clientId: id } : {}),
+    };
+
+    const [rows, total] = await Promise.all([
+      prisma.contentCalendar.findMany({
+        where,
+        orderBy: { updatedAt: 'desc' },
+        take: RETRY_BATCH_LIMIT,
+        select: { id: true },
+      }),
+      prisma.contentCalendar.count({ where }),
+    ]);
+
+    if (rows.length === 0) return failure('No failed deliveries to retry.');
+
+    const results = await mapWithConcurrency(
+      rows,
+      Math.max(1, intEnv('CRON_MAX_CONCURRENCY', 4)),
+      async (row) => ({
+        outcome: await runCreativePipeline(row.id, {
+          reuseExistingAsset: true,
+          allowRedelivery: true,
+        }),
+      }),
+    );
+
+    const delivered = results.filter((result) => result.outcome.ok).length;
+
+    revalidateAdmin();
+    return success({
+      attempted: results.length,
+      delivered,
+      failed: results.length - delivered,
+      remaining: Math.max(0, total - delivered),
+    });
+  } catch (error) {
+    return toFailure(error, 'Retrying failed deliveries');
   }
 }
 
@@ -400,6 +703,116 @@ export async function deleteCalendarEntry(
     return success({ dayNumber: deleted.dayNumber });
   } catch (error) {
     return toFailure(error, 'Deleting calendar entry');
+  }
+}
+
+/** Statuses a bulk clear may remove: nothing that owns a delivered creative. */
+const CLEARABLE: DeliveryStatus[] = [DeliveryStatus.PENDING, DeliveryStatus.FAILED];
+
+/**
+ * Drops every unsent calendar day for one client.
+ *
+ * Scoped to PENDING and FAILED deliberately. GENERATED and DELIVERED rows are
+ * the record of what a client actually received, so an operator correcting a
+ * bad seed must not be able to erase delivery history with one button.
+ *
+ * This is the recovery path for the worst mistake the console allows — seeding
+ * a whole campaign before extracting brand tokens. Without it, the only remedy
+ * is deleting rows one at a time, because `generateContentCalendar` fills gaps
+ * and never overwrites.
+ */
+export async function clearClientCalendar(
+  clientId: string,
+): Promise<ActionResult<{ deleted: number; kept: number }>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+
+    const [removable, kept] = await Promise.all([
+      prisma.contentCalendar.findMany({
+        where: { clientId: id, deliveryStatus: { in: CLEARABLE } },
+        select: { id: true, gDriveFileId: true },
+      }),
+      prisma.contentCalendar.count({
+        where: { clientId: id, deliveryStatus: { notIn: CLEARABLE } },
+      }),
+    ]);
+
+    if (removable.length === 0) {
+      return failure(
+        kept > 0
+          ? `Nothing to clear — all ${kept} day(s) are already generated or delivered, and those are never removed.`
+          : 'This client has no calendar days to clear.',
+      );
+    }
+
+    const { count } = await prisma.contentCalendar.deleteMany({
+      where: { id: { in: removable.map((row) => row.id) } },
+    });
+
+    // A FAILED row can still own an asset — upload succeeded, broadcast did
+    // not. Bin those so the vault does not accumulate unreachable files.
+    // `trashDriveFile` never throws, so a Drive fault cannot fail the clear.
+    for (const row of removable) {
+      if (row.gDriveFileId) await trashDriveFile(row.gDriveFileId);
+    }
+
+    revalidateAdmin();
+    return success({ deleted: count, kept });
+  } catch (error) {
+    return toFailure(error, 'Clearing calendar');
+  }
+}
+
+/**
+ * Removes a client outright. The only irreversible action in the console.
+ *
+ * Guarded by an exact company-name match rather than a click-twice confirm:
+ * everything else here is recoverable, this is not.
+ *
+ * Side effects are all deliberate:
+ *  - The Drive folder is trashed, not purged. Drive treats a folder as a file,
+ *    so `trashDriveFile` works unmodified and the contents go with it —
+ *    recoverable from the bin for 30 days.
+ *  - `ContentCalendar` cascades at the database level (schema.prisma).
+ *  - `UsageEvent.clientId` is SetNull, so spend survives and reappears on the
+ *    spend panel under "Removed clients". Money spent still counts.
+ */
+export async function deleteClient(
+  clientId: string,
+  confirmName: string,
+): Promise<ActionResult<{ companyName: string; calendarDays: number }>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: {
+        companyName: true,
+        gDriveFolderId: true,
+        _count: { select: { calendarDays: true } },
+      },
+    });
+    if (!client) return failure('That client no longer exists.');
+
+    if (confirmName.trim() !== client.companyName) {
+      return failure(`Type "${client.companyName}" exactly to confirm deletion.`);
+    }
+
+    // Trashed before the row is deleted — `gDriveFolderId` is only readable
+    // from it, and losing the reference would orphan the folder permanently.
+    if (client.gDriveFolderId) {
+      await trashDriveFile(client.gDriveFolderId);
+    }
+
+    await prisma.client.delete({ where: { id } });
+
+    revalidateAdmin();
+    return success({
+      companyName: client.companyName,
+      calendarDays: client._count.calendarDays,
+    });
+  } catch (error) {
+    return toFailure(error, 'Deleting client');
   }
 }
 
@@ -543,6 +956,74 @@ export async function extractBrandGuideline(
     // was a missing API key, a refusal, or thin source material.
     if (error instanceof z.ZodError) return toFailure(error, 'Extracting brand tokens');
     console.error('[ace:admin] Extracting brand tokens failed:', describeError(error));
+    return failure(describeError(error));
+  }
+}
+
+/**
+ * Reads a website's CSS and returns the palette it declares. Persists nothing.
+ *
+ * Split from `applyWebsiteColors` so an operator sees what was found before it
+ * can reach a live client. There is no undo on the poster a client already
+ * received, so the confirmation step is the safeguard.
+ */
+export async function previewWebsiteColors(
+  url: string,
+): Promise<ActionResult<ExtractionReport>> {
+  try {
+    return success(await extractWebsiteColors(z.string().min(1, 'Enter a website address').parse(url)));
+  } catch (error) {
+    // These messages name only a host and a reason, so they are safe to show and
+    // are the only way an operator can tell "site blocks us" from "no CSS here".
+    if (error instanceof WebsiteColorError) return failure(error.message);
+    if (error instanceof z.ZodError) return toFailure(error, 'Reading website colours');
+    console.error('[ace:admin] Reading website colours failed:', describeError(error));
+    return failure(describeError(error));
+  }
+}
+
+/**
+ * Persists an extracted palette to `Client.brandGuideline`.
+ *
+ * Replaces `colors` only. Typography, layout directives and the asset ledger are
+ * carried through untouched: they came from the tokenizer or the operator, and a
+ * colour extraction has no evidence to offer about any of them.
+ */
+export async function applyWebsiteColors(
+  clientId: string,
+  url: string,
+): Promise<ActionResult<{ colors: number; url: string }>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+    const report = await extractWebsiteColors(
+      z.string().min(1, 'Enter a website address').parse(url),
+    );
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: { brandGuideline: true },
+    });
+    if (!client) return failure('That client no longer exists.');
+
+    const guideline: BrandGuideline = {
+      ...parseBrandGuideline(client.brandGuideline),
+      colors: toBrandColors(report.colors),
+    };
+
+    await prisma.client.update({
+      where: { id },
+      // Cast: Prisma types Json input as InputJsonValue, which a structural
+      // interface does not satisfy without a widening step.
+      data: { brandGuideline: guideline as unknown as object },
+    });
+
+    revalidateAdmin();
+
+    return success({ colors: guideline.colors.length, url: report.url });
+  } catch (error) {
+    if (error instanceof WebsiteColorError) return failure(error.message);
+    if (error instanceof z.ZodError) return toFailure(error, 'Applying website colours');
+    console.error('[ace:admin] Applying website colours failed:', describeError(error));
     return failure(describeError(error));
   }
 }
@@ -699,6 +1180,132 @@ const LOGO_MIME_TYPES = new Set([
 ]);
 
 const MAX_LOGO_BYTES = 4 * 1024 * 1024;
+
+// ---------------------------------------------------------------------------
+// Vertical reference templates
+// ---------------------------------------------------------------------------
+
+/**
+ * Raster only. These are reference *posters* — photographs of finished
+ * creatives — and an SVG here would almost certainly be a logo filed in the
+ * wrong place.
+ */
+const TEMPLATE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+/** Comfortably under the 8 MB Server Action body limit set in next.config.mjs. */
+const MAX_TEMPLATE_BYTES = 6 * 1024 * 1024;
+
+/**
+ * Per-vertical cap. Not a database constraint — the limit exists to keep the
+ * gallery navigable and the eventual extraction pass bounded, which is an
+ * application judgement, not an invariant of the data.
+ */
+const MAX_TEMPLATES_PER_CATEGORY = 20;
+
+/**
+ * Stores one reference poster against a vertical.
+ *
+ * Nothing in the render pipeline reads these yet. They are a library for the
+ * layout work that follows, so this action deliberately does no interpretation —
+ * it stores the bytes, the dimensions and where they came from.
+ */
+export async function uploadVerticalTemplate(
+  categoryId: string,
+  formData: FormData,
+): Promise<ActionResult<{ id: string; label: string }>> {
+  try {
+    const id = z.string().uuid().parse(categoryId);
+
+    const file = formData.get('template');
+    if (!(file instanceof File) || file.size === 0) {
+      return failure('Choose an image to upload.');
+    }
+    if (!TEMPLATE_MIME_TYPES.has(file.type)) {
+      return failure(
+        `"${file.type || 'unknown'}" is not a supported format. Use PNG, JPEG or WebP.`,
+      );
+    }
+    if (file.size > MAX_TEMPLATE_BYTES) {
+      return failure(
+        `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${
+          MAX_TEMPLATE_BYTES / 1024 / 1024
+        } MB.`,
+      );
+    }
+
+    const category = await prisma.category.findUnique({
+      where: { id },
+      select: { name: true, _count: { select: { templates: true } } },
+    });
+    if (!category) return failure('That vertical no longer exists.');
+    if (category._count.templates >= MAX_TEMPLATES_PER_CATEGORY) {
+      return failure(
+        `${category.name} already has ${MAX_TEMPLATES_PER_CATEGORY} templates. Delete one before adding another.`,
+      );
+    }
+
+    const bytes = Buffer.from(await file.arrayBuffer());
+    // Best-effort: a header we cannot parse costs a size badge in the gallery,
+    // never the upload.
+    const dimensions = readImageDimensions(bytes);
+
+    const folderId = await ensureVerticalTemplateFolder(category.name);
+    const uploaded = await uploadClientAsset({
+      folderId,
+      fileName: file.name,
+      body: bytes,
+      mimeType: file.type,
+    });
+
+    const created = await prisma.categoryTemplate.create({
+      data: {
+        categoryId: id,
+        label: file.name.replace(/\.[^.]+$/, '').slice(0, 120) || 'Untitled',
+        gDriveFileId: uploaded.fileId,
+        gDriveViewUrl: uploaded.viewUrl,
+        mimeType: file.type,
+        width: dimensions?.width ?? null,
+        height: dimensions?.height ?? null,
+      },
+      select: { id: true, label: true },
+    });
+
+    revalidateAdmin();
+    return success(created);
+  } catch (error) {
+    return toFailure(error, 'Uploading template');
+  }
+}
+
+/**
+ * Removes one reference template.
+ *
+ * The row goes first and the Drive file second. Reversing it risks a row
+ * pointing at a binned file — a broken thumbnail an operator cannot clear —
+ * whereas this order's worst case is an untidy Drive folder. `trashDriveFile`
+ * never throws, so a Drive failure is logged and the delete still succeeds.
+ */
+export async function deleteVerticalTemplate(
+  templateId: string,
+): Promise<ActionResult> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+
+    const template = await prisma.categoryTemplate.findUnique({
+      where: { id },
+      select: { gDriveFileId: true },
+    });
+    if (!template) return failure('That template no longer exists.');
+
+    await prisma.categoryTemplate.delete({ where: { id } });
+    await trashDriveFile(template.gDriveFileId);
+
+    revalidateAdmin();
+    return success();
+  } catch (error) {
+    return toFailure(error, 'Deleting template');
+  }
+}
 
 const posterIdentitySchema = z.object({
   // Empty strings normalise to null so clearing a field in the form actually

@@ -57,9 +57,36 @@ function escapeQueryValue(value: string): string {
  * reused, so webhook retries cannot litter the vault with duplicates.
  */
 export async function ensureClientFolder(companyName: string): Promise<string> {
+  return ensureFolder(companyName, requireEnv('GOOGLE_DRIVE_PARENT_FOLDER_ID'));
+}
+
+/**
+ * Folder holding a vertical's reference templates.
+ *
+ * Nested one level under its own node rather than sitting beside the client
+ * folders: the vault's top level is a list of tenants, and dropping ten
+ * vertical folders into it makes that list harder to read every time somebody
+ * opens Drive looking for a client.
+ */
+export async function ensureVerticalTemplateFolder(
+  categoryName: string,
+): Promise<string> {
+  const root = await ensureFolder(
+    'Vertical Templates',
+    requireEnv('GOOGLE_DRIVE_PARENT_FOLDER_ID'),
+  );
+  return ensureFolder(categoryName, root);
+}
+
+/**
+ * Finds or creates one folder under `parentFolderId`.
+ *
+ * Idempotent: a folder of the same name already sitting under the parent is
+ * reused, so webhook retries cannot litter the vault with duplicates.
+ */
+async function ensureFolder(name: string, parentFolderId: string): Promise<string> {
   const drive = getDriveClient();
-  const parentFolderId = requireEnv('GOOGLE_DRIVE_PARENT_FOLDER_ID');
-  const folderName = companyName.trim();
+  const folderName = name.trim();
 
   const existing = await drive.files.list({
     q: [

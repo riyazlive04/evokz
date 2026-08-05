@@ -18,9 +18,34 @@ export const BRAND_COLOR_ROLES = [
 
 export type BrandColorRole = (typeof BRAND_COLOR_ROLES)[number];
 
+/**
+ * Where a colour came from, strongest evidence first.
+ *
+ * Provenance is what separates a measured colour from a guessed one. The poster
+ * theme engine only trusts a role label when the colour carries a non-`llm`
+ * source — see `resolvePosterTheme` in `@/lib/poster/theme`.
+ *
+ * `llm` is never written: it is the implicit source of every record predating
+ * provenance, and those parse with `source` absent. It exists so a caller can
+ * say "this came from the tokenizer" explicitly without inventing a new value.
+ */
+export const BRAND_COLOR_SOURCES = [
+  'theme-color',
+  'css-var',
+  'css-usage',
+  'llm',
+  'manual',
+] as const;
+
+export type BrandColorSource = (typeof BRAND_COLOR_SOURCES)[number];
+
 export const brandColorSchema = z.object({
   hex: z.string().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/),
   role: z.string().min(1),
+  // Optional so every legacy record still parses. Absent means "tokenizer
+  // guess", which the theme engine treats as untrusted.
+  source: z.enum(BRAND_COLOR_SOURCES).optional(),
+  confidence: z.number().min(0).max(1).optional(),
 });
 
 export const brandTypographySchema = z.object({

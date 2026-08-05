@@ -138,6 +138,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       planId: notes.planId as string,
       categoryId: notes.categoryId as string,
       cronTime: notes.cronTime ?? '09:00',
+      // Parsed above from the `image_size` note. Left unset the schema
+      // normalises it to null, which provisions on the fleet default — so an
+      // absent or unrecognised value degrades rather than rejecting the order.
+      imageSizePreset: notes.imageSizePreset ?? null,
     });
 
     console.info(

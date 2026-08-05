@@ -17,14 +17,14 @@ export function ConfigWarning({ missing }: { missing: string[] }) {
   if (missing.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-xs text-amber-700">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-warning/30 bg-warning/[0.07] p-4 text-xs text-warning-ink">
       <AlertTriangle className="h-4 w-4 shrink-0" />
       <span className="font-medium">
         {missing.length} integration variable{missing.length === 1 ? '' : 's'} unset — the
         related steps will fail at runtime:
       </span>
       {missing.map((key) => (
-        <code key={key} className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px]">
+        <code key={key} className="rounded bg-warning/10 px-1.5 py-0.5 font-mono text-[10px]">
           {key}
         </code>
       ))}
@@ -35,9 +35,9 @@ export function ConfigWarning({ missing }: { missing: string[] }) {
 export function DatabaseErrorState({ message }: { message: string }) {
   return (
     <div className="flex items-center justify-center py-10">
-      <Card className="max-w-lg border-red-500/30">
+      <Card className="max-w-lg border-danger/30">
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-red-600">
+          <CardTitle className="flex items-center gap-2 text-danger-ink">
             <Database className="h-4 w-4" />
             Database unreachable
           </CardTitle>

@@ -23,7 +23,7 @@ export default async function AdminVerticalsPage() {
         icon={Database}
         eyebrow="Configuration"
         title="Vertical target ingestion"
-        description="Niche industries used to steer creative direction. Each client is bound to exactly one vertical, which feeds the image prompt and copy stages."
+        description="Niche industries used to steer creative direction. Each client is bound to exactly one vertical, which feeds the image prompt and copy stages. Open one to manage its reference templates."
       />
 
       <Card className="max-w-3xl">
@@ -38,12 +38,17 @@ export default async function AdminVerticalsPage() {
 async function loadCategories(): Promise<CategoryRow[]> {
   const records = await prisma.category.findMany({
     orderBy: { name: 'asc' },
-    select: { id: true, name: true, _count: { select: { clients: true } } },
+    select: {
+      id: true,
+      name: true,
+      _count: { select: { clients: true, templates: true } },
+    },
   });
 
   return records.map((category) => ({
     id: category.id,
     name: category.name,
     clientCount: category._count.clients,
+    templateCount: category._count.templates,
   }));
 }

@@ -148,6 +148,112 @@ export function addZonedDays(date: Date, days: number, timeZone: string): Date {
   return startOfZonedDay(shifted, timeZone);
 }
 
+// ---------------------------------------------------------------------------
+// Weekday-restricted scheduling
+// ---------------------------------------------------------------------------
+
+/** Every weekday, in ISO order. `1` is Monday, `7` is Sunday. */
+export const ALL_WEEKDAYS = [1, 2, 3, 4, 5, 6, 7] as const;
+
+export const WEEKDAY_LABELS: Record<number, string> = {
+  1: 'Mon',
+  2: 'Tue',
+  3: 'Wed',
+  4: 'Thu',
+  5: 'Fri',
+  6: 'Sat',
+  7: 'Sun',
+};
+
+/**
+ * ISO-8601 weekday of an instant, resolved in `timeZone` — 1 = Monday … 7 =
+ * Sunday.
+ *
+ * Goes through `Intl` rather than `Date.getDay()` so it reports the weekday in
+ * the app's zone rather than the container's UTC clock. Near midnight those are
+ * different days, which is exactly when a delivery would be misfiled.
+ */
+export function zonedWeekday(date: Date, timeZone: string): number {
+  const { year, month, day } = getZonedParts(date, timeZone);
+  // getUTCDay on a UTC-constructed date reads back the same calendar day, so
+  // this is the weekday of the *local* date rather than of the instant.
+  const isoLike = new Date(Date.UTC(year, month - 1, day));
+  const sundayFirst = isoLike.getUTCDay(); // 0 = Sunday
+  return sundayFirst === 0 ? 7 : sundayFirst;
+}
+
+/** Normalises a stored `deliveryDays` array: valid, deduplicated, sorted. */
+export function normalizeDeliveryDays(days: readonly number[]): number[] {
+  return [...new Set(days.filter((day) => Number.isInteger(day) && day >= 1 && day <= 7))].sort(
+    (a, b) => a - b,
+  );
+}
+
+/** True when `days` imposes no restriction — empty, or all seven. */
+export function isEveryDay(days: readonly number[]): boolean {
+  return normalizeDeliveryDays(days).length === 0 || normalizeDeliveryDays(days).length === 7;
+}
+
+/**
+ * Local midnight of the `n`-th deliverable day of a campaign. `n` is 1-based,
+ * so `n = 1` is the first delivery.
+ *
+ * With no restriction this is exactly `addZonedDays(startDate, n - 1)`. With a
+ * restriction it walks forward from the start date counting only allowed
+ * weekdays, so a 30-day plan still yields 30 deliveries — the campaign simply
+ * spans more calendar days than its plan duration.
+ *
+ * The walk uses `addZonedDays`, never `addDays`: adding exact 24h multiples
+ * drifts by the UTC-offset change across a DST transition, which is enough to
+ * push a row into the neighbouring local day, and the dispatcher matches on
+ * local days.
+ */
+export function nthDeliveryDate(
+  startDate: Date,
+  n: number,
+  deliveryDays: readonly number[],
+  timeZone: string,
+): Date {
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`nthDeliveryDate needs a 1-based day number, received ${n}`);
+  }
+
+  const allowed = normalizeDeliveryDays(deliveryDays);
+
+  // Unrestricted (and all-seven, which is the same thing) keeps the original
+  // arithmetic — no walking, and byte-identical dates for existing clients.
+  if (allowed.length === 0 || allowed.length === 7) {
+    return addZonedDays(startDate, n - 1, timeZone);
+  }
+
+  // At least one day a week is allowed, so the n-th delivery is at most 7n days
+  // out. The cap turns a logic error into a loud failure rather than a hang.
+  const maxOffset = n * 7 + 7;
+  let found = 0;
+
+  for (let offset = 0; offset <= maxOffset; offset += 1) {
+    const candidate = addZonedDays(startDate, offset, timeZone);
+    if (!allowed.includes(zonedWeekday(candidate, timeZone))) continue;
+
+    found += 1;
+    if (found === n) return candidate;
+  }
+
+  throw new Error(
+    `Could not place delivery ${n} within ${maxOffset} days of the campaign start ` +
+      `for weekdays [${allowed.join(', ')}]`,
+  );
+}
+
+/** "Every day", "Mon–Fri", "Weekends", or an explicit list. */
+export function describeDeliveryDays(days: readonly number[]): string {
+  const allowed = normalizeDeliveryDays(days);
+  if (allowed.length === 0 || allowed.length === 7) return 'Every day';
+  if (allowed.join() === '1,2,3,4,5') return 'Mon–Fri';
+  if (allowed.join() === '6,7') return 'Weekends';
+  return allowed.map((day) => WEEKDAY_LABELS[day]).join(', ');
+}
+
 /** Formats an instant as "DD MMM YYYY" in `timeZone` for admin surfaces. */
 export function formatDisplayDate(date: Date, timeZone = getAppTimeZone()): string {
   return new Intl.DateTimeFormat('en-GB', {

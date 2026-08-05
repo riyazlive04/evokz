@@ -43,11 +43,20 @@ export function DemoCreativePanel({
   companyName,
   whatsappNumber,
   hasDriveFolder,
+  missingIdentity = [],
 }: {
   clientId: string;
   companyName: string;
   whatsappNumber: string;
   hasDriveFolder: boolean;
+  /**
+   * Poster-identity fields with no value. Surfaced as a warning, never a block:
+   * the renderer degrades on purpose — a missing logo becomes a wordmark
+   * lockup, a missing phone is derived from the WhatsApp number — so a creative
+   * without identity still renders correctly. Refusing to generate would
+   * contradict that and make a quick pipeline smoke test impossible.
+   */
+  missingIdentity?: string[];
 }) {
   const send = useAction(runDemoCreativeNow);
 
@@ -154,11 +163,24 @@ export function DemoCreativePanel({
       </div>
 
       {!hasDriveFolder && (
-        <p className="flex items-start gap-2 rounded-lg border border-red-500/25 bg-red-500/5 p-3 text-[11px] text-red-600">
+        <p className="flex items-start gap-2 rounded-lg border border-danger/25 bg-danger/5 p-3 text-[11px] text-danger-ink">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
             {companyName} has no Drive folder yet. Provision it above — the upload stage has
             nowhere to write.
+          </span>
+        </p>
+      )}
+
+      {missingIdentity.length > 0 && (
+        <p className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/5 p-3 text-[11px] text-warning-ink">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            Poster identity is incomplete for {companyName} —{' '}
+            <span className="font-medium">{missingIdentity.join(', ')}</span>{' '}
+            {missingIdentity.length === 1 ? 'is' : 'are'} unset. The creative will still
+            render, using fallbacks for those fields. Set them under Brand identity above
+            if this is going in front of a prospect.
           </span>
         </p>
       )}
@@ -195,13 +217,13 @@ export function DemoCreativePanel({
         )}
 
         {armed && !send.pending && (
-          <span className="text-[11px] text-amber-600">
+          <span className="text-[11px] text-warning-ink">
             This sends a real WhatsApp message immediately.
           </span>
         )}
 
         {sent && (
-          <span className="flex flex-wrap items-center gap-2 text-[11px] text-emerald-600">
+          <span className="flex flex-wrap items-center gap-2 text-[11px] text-success-ink">
             <Check className="h-3.5 w-3.5" />
             Day {sent.dayNumber} {sent.status.toLowerCase()} to +{whatsappNumber}.
             {sent.viewUrl && (
@@ -219,7 +241,7 @@ export function DemoCreativePanel({
         )}
 
         {send.error && (
-          <span role="alert" className="text-[11px] text-red-600">
+          <span role="alert" className="text-[11px] text-danger-ink">
             {send.error}
           </span>
         )}

@@ -35,11 +35,46 @@ model Plan {
 }
 
 model Category {
-  id        String   @id @default(uuid())
+  id        String             @id @default(uuid())
   name      String // e.g., "Real Estate", "Heavy Construction"
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  clients   Client[]
+  templates CategoryTemplate[]
+}
+
+/// One operator-uploaded reference poster for a vertical.
+///
+/// A library, not a renderer input: nothing in the poster pipeline reads these
+/// yet. They exist so an operator can collect the compositions a vertical should
+/// be producing, ahead of the layout engine that will interpret them.
+model CategoryTemplate {
+  id         String   @id @default(uuid())
+  categoryId String
+  // Cascade, unlike Client's Restrict: a template is derived content that only
+  // has meaning inside its vertical, so deleting the vertical should take it.
+  // The Drive files are trashed by the action before the rows go.
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  /// Operator-facing name. Defaults to the uploaded filename.
+  label String
+
+  // Mirrors ContentCalendar's pair. The id drives the cheap `lh3` thumbnail; the
+  // URL is what a server-side fetch would use. Both are kept because the API's
+  // own thumbnailLink is fixed-size and expires, so it is not worth persisting.
+  gDriveFileId  String
+  gDriveViewUrl String
+
+  mimeType String
+  // Null when the header could not be parsed. Display-only — never load-bearing.
+  width    Int?
+  height   Int?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  clients   Client[]
+
+  // Serves the gallery query: every template for one vertical, newest first.
+  @@index([categoryId, createdAt])
 }
 
 model Client {
@@ -48,7 +83,19 @@ model Client {
   whatsappNumber String // E.164 without "+", e.g., "919876543210"
   cronTime       String            @default("09:00") // Per-client delivery time (HH:MM)
   startDate      DateTime
+  // Last deliverable day, derived from the plan duration AND `deliveryDays` —
+  // a weekday-restricted 30-day campaign ends well past 30 calendar days. The
+  // dispatch sweep filters on it, so it must move whenever either input changes.
   endDate        DateTime
+  // ISO-8601 weekdays this client accepts delivery on (1 = Monday … 7 = Sunday).
+  //
+  // Empty means every day. That is deliberately the unrestricted value rather
+  // than a sentinel: it is what every row predating this column carries, and a
+  // client who has expressed no preference must not silently lose days.
+  //
+  // Only `scheduledDate` computation consults this — the dispatcher already
+  // selects by date, so a day with no row simply never sends.
+  deliveryDays   Int[]
   isActive       Boolean           @default(true)
   // Sales-demo tenant. Behaves like a client everywhere except the dispatch
   // sweep, which skips it — demo creatives are sent on demand, never on cron.

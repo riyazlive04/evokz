@@ -7,7 +7,7 @@ import {
   type ConflictMode,
 } from '@/lib/calendar-parse';
 import { prisma } from '@/lib/prisma';
-import { addZonedDays, getAppTimeZone } from '@/lib/time';
+import { getAppTimeZone, nthDeliveryDate } from '@/lib/time';
 
 /**
  * Bulk `ContentCalendar` writer — the operator-authored counterpart to
@@ -79,6 +79,7 @@ export async function applyCalendarImport(
       id: true,
       companyName: true,
       startDate: true,
+      deliveryDays: true,
       plan: { select: { name: true, durationDays: true } },
     },
   });
@@ -99,6 +100,7 @@ export async function applyCalendarImport(
     clientId,
     totalDays,
     startDate: client.startDate,
+    deliveryDays: client.deliveryDays,
     byDay,
   });
 
@@ -184,10 +186,12 @@ function planWrites(
     clientId: string;
     totalDays: number;
     startDate: Date;
+    /** ISO weekdays the client accepts; empty means every day. */
+    deliveryDays: number[];
     byDay: Map<number, { id: string; deliveryStatus: DeliveryStatus }>;
   },
 ): WritePlan {
-  const { totalDays, startDate, byDay } = context;
+  const { totalDays, startDate, deliveryDays, byDay } = context;
   const timeZone = getAppTimeZone();
 
   const plan: WritePlan = {
@@ -254,7 +258,7 @@ function planWrites(
       imagePrompt: row.imagePrompt,
       // Day 1 lands on the campaign start date. Calendar-day arithmetic, so a
       // DST transition mid-campaign cannot shift a row into the adjacent day.
-      scheduledDate: addZonedDays(startDate, dayNumber - 1, timeZone),
+      scheduledDate: nthDeliveryDate(startDate, dayNumber, deliveryDays, timeZone),
     };
 
     const current = byDay.get(dayNumber);

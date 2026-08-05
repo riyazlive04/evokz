@@ -46,6 +46,8 @@ export interface ClientRow {
   endDateLabel: string;
   isActive: boolean;
   hasDriveFolder: boolean;
+  /** Narrowed server-side from `Client.brandGuideline`; gates the seed confirm. */
+  hasBrandTokens: boolean;
   deliveredCount: number;
   /** ContentCalendar rows that exist for this client, any status. */
   calendarCount: number;
@@ -216,19 +218,19 @@ function ClientRowItem({ client }: { client: ClientRow }) {
           <div className="flex items-center gap-2">
             <Link
               href={`/admin/clients/${client.id}`}
-              className="font-medium text-foreground underline-offset-4 transition-colors duration-200 hover:text-primary hover:underline"
+              className="font-medium text-foreground underline-offset-4 decoration-primary/40 transition-colors duration-200 hover:underline hover:decoration-primary"
               title="Open client detail"
             >
               {client.companyName}
             </Link>
             {client.hasDriveFolder ? (
               <FolderCheck
-                className="h-3.5 w-3.5 shrink-0 text-emerald-600/70"
+                className="h-3.5 w-3.5 shrink-0 text-success-ink/70"
                 aria-label="Drive folder provisioned"
               />
             ) : (
               <CloudOff
-                className="h-3.5 w-3.5 shrink-0 text-red-600"
+                className="h-3.5 w-3.5 shrink-0 text-danger-ink"
                 aria-label="Drive folder missing"
               />
             )}
@@ -283,7 +285,7 @@ function ClientRowItem({ client }: { client: ClientRow }) {
                   {cronAction.pending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Check className="h-4 w-4 text-emerald-600" />
+                    <Check className="h-4 w-4 text-success-ink" />
                   )}
                 </Button>
                 <Button
@@ -298,7 +300,7 @@ function ClientRowItem({ client }: { client: ClientRow }) {
             )}
 
             {savedAt !== null && !dirty && (
-              <span className="text-[11px] text-emerald-600 transition-opacity duration-300">
+              <span className="text-[11px] text-success-ink transition-opacity duration-300">
                 Saved
               </span>
             )}
@@ -309,7 +311,7 @@ function ClientRowItem({ client }: { client: ClientRow }) {
           <div className="space-y-1">
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-full bg-gradient-brand transition-all duration-500"
+                className="h-full rounded-full bg-primary transition-all duration-500"
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
@@ -356,10 +358,11 @@ function ClientRowItem({ client }: { client: ClientRow }) {
                 companyName={client.companyName}
                 calendarCount={client.calendarCount}
                 totalDays={client.totalDays}
+                hasBrandTokens={client.hasBrandTokens}
               />
               {!client.hasDriveFolder && (
                 <>
-                  <span className="text-[11px] text-red-600">
+                  <span className="text-[11px] text-danger-ink">
                     No Drive folder — the pipeline cannot deliver for this client.
                   </span>
                   <Button
@@ -380,7 +383,7 @@ function ClientRowItem({ client }: { client: ClientRow }) {
               {[cronAction.error, activeAction.error, driveAction.error]
                 .filter((message): message is string => Boolean(message))
                 .map((message) => (
-                  <span key={message} role="alert" className="text-[11px] text-red-600">
+                  <span key={message} role="alert" className="text-[11px] text-danger-ink">
                     {message}
                   </span>
                 ))}

@@ -149,7 +149,7 @@ export function ClientControls({
                   {cronAction.pending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Check className="h-4 w-4 text-emerald-600" />
+                    <Check className="h-4 w-4 text-success-ink" />
                   )}
                 </Button>
                 <Button
@@ -164,7 +164,7 @@ export function ClientControls({
             )}
 
             {savedAt !== null && !dirty && (
-              <span className="text-[11px] text-emerald-600">Saved</span>
+              <span className="text-[11px] text-success-ink">Saved</span>
             )}
           </div>
         </div>
@@ -220,7 +220,7 @@ export function ClientControls({
                   {budgetAction.pending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Check className="h-4 w-4 text-emerald-600" />
+                    <Check className="h-4 w-4 text-success-ink" />
                   )}
                 </Button>
                 <Button
@@ -235,7 +235,7 @@ export function ClientControls({
             )}
 
             {budgetSavedAt !== null && !budgetDirty && (
-              <span className="text-[11px] text-emerald-600">Saved</span>
+              <span className="text-[11px] text-success-ink">Saved</span>
             )}
           </div>
         </div>
@@ -275,7 +275,7 @@ export function ClientControls({
                 {imageSizeAction.pending ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <Check className="h-3.5 w-3.5 text-emerald-600" />
+                  <Check className="h-3.5 w-3.5 text-success-ink" />
                 )}
               </Button>
               <Button
@@ -290,7 +290,7 @@ export function ClientControls({
             </>
           )}
           {imageSizeSavedAt !== null && !imageSizeDirty && (
-            <span className="text-[11px] text-emerald-600">Saved</span>
+            <span className="text-[11px] text-success-ink">Saved</span>
           )}
         </div>
 
@@ -308,7 +308,7 @@ export function ClientControls({
       </div>
 
       {!hasDriveFolder && (
-        <p className="text-[11px] text-red-600">
+        <p className="text-[11px] text-danger-ink">
           {companyName} has no Drive folder — the pipeline cannot deliver until one exists.
         </p>
       )}
@@ -322,7 +322,7 @@ export function ClientControls({
       ]
         .filter((message): message is string => Boolean(message))
         .map((message) => (
-          <p key={message} role="alert" className="text-[11px] text-red-600">
+          <p key={message} role="alert" className="text-[11px] text-danger-ink">
             {message}
           </p>
         ))}

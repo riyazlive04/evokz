@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import * as React from 'react';
 
 import { Check, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
@@ -18,6 +19,7 @@ export interface CategoryRow {
   id: string;
   name: string;
   clientCount: number;
+  templateCount: number;
 }
 
 export function CategoryManager({ categories }: { categories: CategoryRow[] }) {
@@ -55,7 +57,7 @@ export function CategoryManager({ categories }: { categories: CategoryRow[] }) {
       </form>
 
       {create.error && (
-        <p role="alert" className="text-[11px] text-red-600">
+        <p role="alert" className="text-[11px] text-danger-ink">
           {create.error}
         </p>
       )}
@@ -104,7 +106,18 @@ function CategoryRowItem({ category }: { category: CategoryRow }) {
           />
         ) : (
           <>
-            <span className="flex-1 truncate text-sm text-foreground">{category.name}</span>
+            <Link
+              href={`/admin/verticals/${category.id}`}
+              className="flex-1 truncate text-sm text-foreground underline-offset-4 transition-colors hover:text-brand-to hover:underline"
+            >
+              {category.name}
+            </Link>
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {category.templateCount} template{category.templateCount === 1 ? '' : 's'}
+            </span>
+            <span aria-hidden className="text-muted-foreground/40">
+              ·
+            </span>
             <span className="font-mono text-[11px] text-muted-foreground">
               {category.clientCount} client{category.clientCount === 1 ? '' : 's'}
             </span>
@@ -124,7 +137,7 @@ function CategoryRowItem({ category }: { category: CategoryRow }) {
                 {update.pending ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Check className="h-4 w-4 text-emerald-600" />
+                  <Check className="h-4 w-4 text-success-ink" />
                 )}
               </Button>
               <Button
@@ -160,7 +173,7 @@ function CategoryRowItem({ category }: { category: CategoryRow }) {
                 aria-label={
                   confirmDelete ? `Confirm delete ${category.name}` : `Delete ${category.name}`
                 }
-                className={confirmDelete ? 'text-red-600' : ''}
+                className={confirmDelete ? 'text-danger-ink' : ''}
               >
                 {remove.pending ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -174,7 +187,7 @@ function CategoryRowItem({ category }: { category: CategoryRow }) {
       </div>
 
       {confirmDelete && !remove.error && (
-        <p className="mt-1 flex items-center gap-3 text-[11px] text-amber-600">
+        <p className="mt-1 flex items-center gap-3 text-[11px] text-warning-ink">
           Click delete again to confirm.
           <button
             type="button"
@@ -186,7 +199,7 @@ function CategoryRowItem({ category }: { category: CategoryRow }) {
         </p>
       )}
       {(update.error || remove.error) && (
-        <p role="alert" className="mt-1 text-[11px] text-red-600">
+        <p role="alert" className="mt-1 text-[11px] text-danger-ink">
           {update.error ?? remove.error}
         </p>
       )}

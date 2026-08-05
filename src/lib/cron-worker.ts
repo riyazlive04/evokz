@@ -117,8 +117,11 @@ export async function executeIntervalDispatch(
 /**
  * Runs `worker` over `items` with at most `limit` in flight. A worker that
  * throws is captured as a FAILED outcome so one bad row cannot abort the sweep.
+ *
+ * Exported so the console's bulk retry can reuse the same bounded-concurrency
+ * behaviour as the dispatch sweep rather than growing a second copy that drifts.
  */
-async function mapWithConcurrency<T, R extends { outcome: PipelineOutcome }>(
+export async function mapWithConcurrency<T, R extends { outcome: PipelineOutcome }>(
   items: T[],
   limit: number,
   worker: (item: T) => Promise<R>,

@@ -114,7 +114,7 @@ export function PlanManager({ plans }: { plans: PlanRow[] }) {
             key={preset}
             type="button"
             onClick={() => setDurationDays(preset)}
-            className="rounded-full border border-border px-3 py-1 text-[11px] text-muted-foreground transition-colors duration-200 hover:border-primary/40 hover:text-primary"
+            className="rounded-full border border-border px-3 py-1 text-[11px] text-muted-foreground transition-colors duration-200 hover:border-primary/40 hover:text-foreground"
           >
             {preset}d
           </button>
@@ -227,7 +227,7 @@ function PlanRowItem({ plan }: { plan: PlanRow }) {
               aria-label="Campaign fee in rupees"
             />
           ) : plan.priceInr === null ? (
-            <span className="text-xs text-amber-600" title="Margin cannot be computed">
+            <span className="text-xs text-warning-ink" title="Margin cannot be computed">
               unpriced
             </span>
           ) : (
@@ -255,7 +255,7 @@ function PlanRowItem({ plan }: { plan: PlanRow }) {
                   {update.pending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Check className="h-4 w-4 text-emerald-600" />
+                    <Check className="h-4 w-4 text-success-ink" />
                   )}
                 </Button>
                 <Button size="icon" variant="ghost" onClick={handleCancel} aria-label="Cancel">
@@ -280,7 +280,7 @@ function PlanRowItem({ plan }: { plan: PlanRow }) {
                   }
                   disabled={remove.pending}
                   aria-label={confirmDelete ? `Confirm delete ${plan.name}` : `Delete ${plan.name}`}
-                  className={confirmDelete ? 'text-red-600' : ''}
+                  className={confirmDelete ? 'text-danger-ink' : ''}
                 >
                   {remove.pending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -298,7 +298,7 @@ function PlanRowItem({ plan }: { plan: PlanRow }) {
         <TableRow>
           <TableCell colSpan={5} className="pt-0">
             {confirmDelete && !remove.error && (
-              <div className="flex items-center gap-3 text-[11px] text-amber-600">
+              <div className="flex items-center gap-3 text-[11px] text-warning-ink">
                 Click delete again to confirm.
                 <button
                   type="button"
@@ -377,7 +377,7 @@ function DurationStepper({
 
 function ErrorLine({ message }: { message: string }) {
   return (
-    <p role="alert" className="text-[11px] text-red-600">
+    <p role="alert" className="text-[11px] text-danger-ink">
       {message}
     </p>
   );

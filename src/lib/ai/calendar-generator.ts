@@ -2,14 +2,14 @@ import { z } from 'zod';
 
 import { generateStructured } from '@/lib/ai/openai';
 import {
-  IMAGE_PROMPT_RULES,
+  buildImagePromptRules,
   POSTER_COPY_RULES,
   POSTER_SCHEMA,
 } from '@/lib/ai/poster-prompt';
 import { normalizeHashtags } from '@/lib/calendar-parse';
 import { intEnv } from '@/lib/env';
 import { prisma } from '@/lib/prisma';
-import { addZonedDays, getAppTimeZone } from '@/lib/time';
+import { getAppTimeZone, nthDeliveryDate } from '@/lib/time';
 import { parseBrandGuideline, type BrandGuideline } from '@/lib/types/brand';
 import { coercePosterCopy } from '@/lib/types/poster';
 
@@ -25,7 +25,13 @@ import { coercePosterCopy } from '@/lib/types/poster';
  * per-client brand prefix would be re-billed on every batch instead of once.
  */
 
-const SYSTEM_PROMPT_HEADER = `You are the Content Director for Evokz ACE, producing a daily social media calendar for one client.
+/**
+ * Built per vertical rather than held as a constant: the photo brief embedded in
+ * it names industry-specific subjects. Still stable for the whole run of one
+ * client, which is what the prompt cache needs.
+ */
+function buildSystemPromptHeader(categoryName: string): string {
+  return `You are the Content Director for Evokz ACE, producing a daily social media calendar for one client.
 
 Each day becomes a **designed poster**, not a bare photograph. The delivered creative is a background photograph with a typographic layer composited on top of it: a logo lockup, a stacked all-caps headline, a short body paragraph, a row of icon features, and a contact bar. You write both the photograph brief and the text that goes on it.
 
@@ -36,13 +42,14 @@ For each requested day produce:
 - imagePrompt: a single-paragraph text-to-image prompt (50-90 words) for the BACKGROUND PHOTOGRAPH only.
 - poster: the text that will be typeset onto that photograph.
 
-${IMAGE_PROMPT_RULES}
+${buildImagePromptRules(categoryName)}
 
 ${POSTER_COPY_RULES}
 
 Hard rules:
 - Return exactly one entry per requested day number, using the day numbers given.
 - Vary subject, composition and headline structure across consecutive days. Do not restate one idea with different wording.`;
+}
 
 const CALENDAR_SCHEMA = {
   type: 'object',
@@ -121,6 +128,7 @@ export async function generateContentCalendar(
       companyName: true,
       whatsappNumber: true,
       startDate: true,
+      deliveryDays: true,
       brandGuideline: true,
       plan: { select: { name: true, durationDays: true } },
       category: { select: { name: true } },
@@ -166,7 +174,7 @@ export async function generateContentCalendar(
   // Stable per-client prefix — cached, so batch 2..N read it instead of
   // re-billing. Nothing day-specific may appear here.
   const systemPrompt = [
-    SYSTEM_PROMPT_HEADER,
+    buildSystemPromptHeader(client.category.name),
     '',
     '--- CLIENT BRIEF ---',
     `Company: ${client.companyName}`,
@@ -238,7 +246,17 @@ export async function generateContentCalendar(
       dayNumber: day.dayNumber,
       // Day 1 lands on the campaign start date. Calendar-day arithmetic, so a
       // DST transition mid-campaign cannot shift a row into the adjacent day.
-      scheduledDate: addZonedDays(client.startDate, day.dayNumber - 1, timeZone),
+      // Day 1 lands on the campaign start date, and subsequent days on the
+      // client's accepted weekdays only — so a restricted 30-day plan still
+      // yields 30 rows, just spread over more calendar days. Calendar-day
+      // arithmetic throughout, so a DST transition mid-campaign cannot shift a
+      // row into the adjacent local day.
+      scheduledDate: nthDeliveryDate(
+        client.startDate,
+        day.dayNumber,
+        client.deliveryDays,
+        timeZone,
+      ),
       theme: day.theme,
       caption: day.caption,
       hashtags: normalizeHashtags(day.hashtags),

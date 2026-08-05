@@ -95,14 +95,14 @@ export function BrandTokenizerPanel({
         </Button>
 
         {flash && (
-          <span className="flex items-center gap-1.5 text-[11px] text-emerald-600">
+          <span className="flex items-center gap-1.5 text-[11px] text-success-ink">
             <Check className="h-3.5 w-3.5" />
             {flash}
           </span>
         )}
 
         {extract.error && (
-          <span role="alert" className="text-[11px] text-red-600">
+          <span role="alert" className="text-[11px] text-danger-ink">
             {extract.error}
           </span>
         )}

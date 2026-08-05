@@ -160,8 +160,15 @@ as a rare variant, max one word, accent colour, never for the primary line.
 
 ## 5. Layout archetypes
 
-Five recurring compositions. Each defines where the photo sits and therefore where the
-photo must contain negative space.
+Eight compositions. Each defines where the photo sits and therefore where the photo must
+contain negative space.
+
+A–E are the recurring compositions reverse-engineered from the reference set. F–H were
+added later and are *derived* rather than observed: the reference set clustered into
+five, but five layouts cycling by day number is visibly repetitive over a 30-day
+campaign, and each of the three fills a gap the originals left — an unused photo
+treatment, an unused contact-bar form, and an unused reading order. They obey the same
+slot skeleton (§2) and colour system (§3), so nothing else in the spec changes.
 
 ### A. Scrim overlay — refs 1, 6, 9, 10
 Photo full-bleed. Dark scrim gradient across the left/upper 55%. All copy on the scrim,
@@ -190,6 +197,29 @@ Light neutral field, photo fading into it (no hard edge — the photo's own brig
 or a white gradient dissolves the boundary). Copy left, feature strip low, dark contact
 bar. Feels the most premium; needs a genuinely bright, airy photo. **Photo requirement:**
 high-key, bright background, subject right.
+
+### F. Spotlight centre — derived
+Photo full-bleed under an *even* wash rather than a directional scrim — the global
+darkening treatment §3 records at 2/12 and which no observed archetype used. Copy and
+feature list are centred as one block down the frame, making this the only composition
+that does not anchor copy to the top. Vertical feature list, accent contact bar.
+**Photo requirement:** subject near centre, tolerant of heavy darkening.
+
+### G. Corner inset — derived
+Light field. Photo is a tall inset panel filling the right half from 8% to 76% of the
+height, bleeding off the right edge only, with an accent hairline at its base. Copy and
+a vertical feature list share the left column, centred against the panel. Contact bar is
+**stacked** — the form §2 records at 4/12 that no archetype had ever requested.
+**Photo requirement:** subject centred in a tall crop.
+
+### H. Inverted band — derived
+Photo band across the top 30%, an accent hairline on the seam, then all copy below it on
+the dark ground. The only composition where the photo is read before the copy rather
+than beneath or beside it. Feature strip, accent contact bar. The band is 30% rather than
+a true half because the full slot skeleton is not negotiable — `droppedSlots` reports
+omissions by canvas mode, not by archetype, so a layout that bought height by dropping
+the feature block would be truncation nobody could see. **Photo requirement:** wide
+establishing shot, horizon high.
 
 ---
 

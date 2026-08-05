@@ -114,7 +114,7 @@ export function QueueCardActions({
             disabled={busy}
             aria-label="Delete this calendar entry"
             title="Delete this calendar entry permanently"
-            className="text-red-600 hover:bg-red-500/10 hover:text-red-600"
+            className="text-danger-ink hover:bg-danger/10 hover:text-danger-ink"
           >
             <Trash2 className="h-4 w-4" />
           </Button>
@@ -122,8 +122,8 @@ export function QueueCardActions({
       </div>
 
       {deletable && confirmingDelete && (
-        <div className="flex items-center gap-2 rounded-md border border-red-500/25 bg-red-500/5 p-2">
-          <span className="flex-1 text-[10px] leading-relaxed text-red-600">
+        <div className="flex items-center gap-2 rounded-md border border-danger/25 bg-danger/5 p-2">
+          <span className="flex-1 text-[10px] leading-relaxed text-danger-ink">
             Delete this entry? The day is freed and can be re-seeded later.
           </span>
           <Button
@@ -153,14 +153,14 @@ export function QueueCardActions({
       )}
 
       {flash && (
-        <p className="flex items-center gap-1.5 text-[11px] text-emerald-600 transition-opacity duration-300">
+        <p className="flex items-center gap-1.5 text-[11px] text-success-ink transition-opacity duration-300">
           <Check className="h-3.5 w-3.5" />
           {flash}
         </p>
       )}
 
       {(resend.error ?? regenerate.error ?? remove.error) && (
-        <p role="alert" className="line-clamp-3 text-[11px] text-red-600">
+        <p role="alert" className="line-clamp-3 text-[11px] text-danger-ink">
           {resend.error ?? regenerate.error ?? remove.error}
         </p>
       )}

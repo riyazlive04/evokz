@@ -13,7 +13,13 @@ import {
 } from 'lucide-react';
 
 import { ClientControls } from '@/components/admin/ClientControls';
+import { ClientDangerZone } from '@/components/admin/ClientDangerZone';
 import { DemoCreativePanel } from '@/components/admin/DemoCreativePanel';
+import {
+  BrandIdentityCard,
+  DemoSetupProgress,
+  identityFields,
+} from '@/components/admin/DemoSetupPanel';
 import { CreateClientDialog } from '@/components/admin/CreateClientDialog';
 import { PageHeader } from '@/components/admin/PageHeader';
 import { QueueLedger } from '@/components/admin/QueueLedger';
@@ -85,7 +91,12 @@ export default async function AdminDemoPage({
         title="Demo workspace"
         description="A throwaway tenant with every client capability, wired for live demos: generate a creative and it lands on WhatsApp immediately. Excluded from the dispatch sweep, so nothing here ever sends on its own."
       >
-        <CreateClientDialog plans={planOptions} categories={categoryOptions} demo />
+        <CreateClientDialog
+          plans={planOptions}
+          categories={categoryOptions}
+          timeZone={timeZone}
+          demo
+        />
       </PageHeader>
 
       {tenants.length === 0 ? (
@@ -151,15 +162,30 @@ async function TenantWorkspace({
     ? `https://drive.google.com/drive/folders/${tenant.gDriveFolderId}`
     : null;
 
+  const identity = identityFields(tenant);
+  const missingIdentity = identity.filter((field) => !field.value).map((f) => f.label);
+
   return (
     <>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 text-xs text-amber-700">
+      <DemoSetupProgress
+        identityComplete={missingIdentity.length === 0}
+        hasBrandTokens={brand.colors.length > 0}
+        hasCalendar={totalEntries > 0}
+      />
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-warning/30 bg-warning/[0.07] p-4 text-xs text-warning-ink">
         <AlertTriangle className="h-4 w-4 shrink-0" />
         <span className="font-medium">
           Sends from this section are real: Flux.1 is billed, the asset is written to Drive,
           and WhatsApp delivers to +{tenant.whatsappNumber} immediately.
         </span>
       </div>
+
+      <BrandIdentityCard
+        tenantId={tenant.id}
+        companyName={tenant.companyName}
+        fields={identity}
+      />
 
       {/* ---- Tenant summary ---- */}
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -210,6 +236,7 @@ async function TenantWorkspace({
             companyName={tenant.companyName}
             whatsappNumber={tenant.whatsappNumber}
             hasDriveFolder={Boolean(tenant.gDriveFolderId)}
+            missingIdentity={missingIdentity}
           />
         </CardContent>
       </Card>
@@ -267,7 +294,7 @@ async function TenantWorkspace({
                     {tenant.gDriveFolderId}
                   </span>
                 ) : (
-                  <span className="text-red-600">Not provisioned</span>
+                  <span className="text-danger-ink">Not provisioned</span>
                 )}
               </Fact>
               <Fact label="Brand tokens">
@@ -286,7 +313,7 @@ async function TenantWorkspace({
                     </span>
                   </span>
                 ) : (
-                  <span className="text-amber-600">Not extracted</span>
+                  <span className="text-warning-ink">Not extracted</span>
                 )}
               </Fact>
             </dl>
@@ -310,6 +337,7 @@ async function TenantWorkspace({
               hasDriveFolder={Boolean(tenant.gDriveFolderId)}
               timeZone={timeZone}
               monthlyBudgetInr={tenant.monthlyBudgetInr}
+              imageSizePreset={tenant.imageSizePreset}
             />
 
             {seededDays < tenant.totalDays && (
@@ -319,6 +347,7 @@ async function TenantWorkspace({
                   companyName={tenant.companyName}
                   calendarCount={seededDays}
                   totalDays={tenant.totalDays}
+                  hasBrandTokens={brand.colors.length > 0}
                 />
               </div>
             )}
@@ -375,6 +404,23 @@ async function TenantWorkspace({
           />
         </CardContent>
       </Card>
+
+      {/* ---- Destructive actions, last and visually separated ----
+          Demo tenants are the ones most likely to be thrown away, so this
+          matters more here than on a paying client — and demo tenants are not
+          listed in the client matrix, so this page is their only route to it. */}
+      <ClientDangerZone
+        clientId={tenant.id}
+        companyName={tenant.companyName}
+        kind="demo tenant"
+        returnTo="/admin/demo"
+        clearableDays={
+          statusCounts[DeliveryStatus.PENDING] + statusCounts[DeliveryStatus.FAILED]
+        }
+        lockedDays={
+          statusCounts[DeliveryStatus.GENERATED] + statusCounts[DeliveryStatus.DELIVERED]
+        }
+      />
     </>
   );
 }
@@ -456,8 +502,15 @@ interface DemoTenant {
   endDate: Date;
   isActive: boolean;
   monthlyBudgetInr: number | null;
+  imageSizePreset: string | null;
   gDriveFolderId: string | null;
   brandGuideline: unknown;
+  // Poster identity. Real columns on Client, not part of brandGuideline — the
+  // tokenizer rewrites that JSON wholesale and an uploaded logo must survive it.
+  logoUrl: string | null;
+  websiteUrl: string | null;
+  displayPhone: string | null;
+  brandTagline: string | null;
   planName: string;
   totalDays: number;
   categoryName: string;
@@ -476,8 +529,13 @@ async function loadDemoTenants(): Promise<DemoTenant[]> {
       endDate: true,
       isActive: true,
       monthlyBudgetInr: true,
+      imageSizePreset: true,
       gDriveFolderId: true,
       brandGuideline: true,
+      logoUrl: true,
+      websiteUrl: true,
+      displayPhone: true,
+      brandTagline: true,
       plan: { select: { name: true, durationDays: true } },
       category: { select: { name: true } },
     },
@@ -492,8 +550,13 @@ async function loadDemoTenants(): Promise<DemoTenant[]> {
     endDate: record.endDate,
     isActive: record.isActive,
     monthlyBudgetInr: record.monthlyBudgetInr,
+    imageSizePreset: record.imageSizePreset,
     gDriveFolderId: record.gDriveFolderId,
     brandGuideline: record.brandGuideline,
+    logoUrl: record.logoUrl,
+    websiteUrl: record.websiteUrl,
+    displayPhone: record.displayPhone,
+    brandTagline: record.brandTagline,
     planName: record.plan.name,
     totalDays: record.plan.durationDays,
     categoryName: record.category.name,

@@ -219,16 +219,21 @@ export const IMAGE_SIZE_PRESETS: readonly ImageSizePreset[] = [
     ratio: '1.91:1',
     offBrand: true,
   },
-  {
-    id: 'linkedin-banner',
-    label: 'Company page banner',
-    group: 'linkedin',
-    width: 1128,
-    height: 191,
-    ratio: '5.9:1',
-    offBrand: true,
-    note: 'Extreme letterbox — the poster slot skeleton will not fit.',
-  },
+  // `linkedin-banner` (1128×191, 5.9:1) is deliberately RETIRED, not merely
+  // flagged off-brand.
+  //
+  // At that aspect the photo layer cover-fits its source into a strip roughly a
+  // sixth of the image's own height, and satori's nested overflow-mask chain
+  // over the result makes resvg's `IntRect::from_ltrb(..).unwrap()` return None
+  // — a Rust panic that ABORTS THE NODE PROCESS. It cannot be caught by the
+  // pipeline's try/catch, so a single client on this preset would kill an entire
+  // cron sweep and leave every row in it PENDING with no error to debug from.
+  //
+  // Retiring the id rather than repairing the layout is the honest fix: the
+  // style spec already records that the slot skeleton does not fit at 5.9:1, so
+  // even a rendering poster would be unusable. `resolveImageSizePreset` falls
+  // back when it meets an unknown id, so any client already stored on this
+  // preset silently heals onto the fleet default — no migration needed.
 
   // ---- Other social --------------------------------------------------------
   {

@@ -4,7 +4,12 @@ import { describeError } from '@/lib/ai-pipeline';
 import { ensureClientFolder } from '@/lib/google-drive';
 import { isImageSizePresetId } from '@/lib/image-sizes';
 import { prisma } from '@/lib/prisma';
-import { addDays, HH_MM_PATTERN } from '@/lib/time';
+import {
+  getAppTimeZone,
+  HH_MM_PATTERN,
+  normalizeDeliveryDays,
+  nthDeliveryDate,
+} from '@/lib/time';
 
 /**
  * Client provisioning, shared by the Razorpay webhook and the dashboard's
@@ -31,6 +36,15 @@ export const clientProvisionSchema = z.object({
     .default('09:00'),
   /** Sales-demo tenant: provisioned identically, but skipped by the cron sweep. */
   isDemo: z.boolean().default(false),
+  /**
+   * ISO weekdays (1 = Mon … 7 = Sun) this client accepts delivery on. Empty
+   * means every day, which is what the Razorpay webhook provisions on since a
+   * checkout has no field for it.
+   */
+  deliveryDays: z
+    .array(z.number().int().min(1).max(7))
+    .default([])
+    .transform(normalizeDeliveryDays),
   /**
    * Output-size preset id (src/lib/image-sizes.ts). Optional so the Razorpay
    * webhook — which has no size field to send — provisions on the fleet default
@@ -130,7 +144,16 @@ export async function provisionClient(
   }
 
   const startDate = now;
-  const endDate = addDays(now, plan.durationDays);
+  // The date of the LAST deliverable day, not simply start + duration. With
+  // weekdays restricted, a 30-day plan runs well past 30 calendar days, and the
+  // dispatch sweep filters on `endDate >= today` — so a naive end date would
+  // silently stop delivery partway through the campaign.
+  const endDate = nthDeliveryDate(
+    startDate,
+    plan.durationDays,
+    data.deliveryDays,
+    getAppTimeZone(),
+  );
 
   // Drive is a third-party dependency on the payment-success path. A failure
   // here must not lose a paying customer, so the row is still written and the
@@ -158,6 +181,7 @@ export async function provisionClient(
       isDemo: data.isDemo,
       gDriveFolderId,
       imageSizePreset: data.imageSizePreset,
+      deliveryDays: data.deliveryDays,
       planId: plan.id,
       categoryId: category.id,
     },

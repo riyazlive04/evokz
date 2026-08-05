@@ -66,7 +66,7 @@ arrives from data instead.
 | --- | --- |
 | Layout rules, reverse-engineered from the reference set | [docs/creative-style-spec.md](docs/creative-style-spec.md) |
 | Slot components (logo, headline, accent rule, features, contact bar) | [src/lib/poster/slots.tsx](src/lib/poster/slots.tsx) |
-| Five layout archetypes + wide/letterbox adaptations | [src/lib/poster/archetypes.tsx](src/lib/poster/archetypes.tsx) |
+| Eight layout archetypes + wide/letterbox adaptations | [src/lib/poster/archetypes.tsx](src/lib/poster/archetypes.tsx) |
 | Brand tokens → colours, fonts, contrast correction | [src/lib/poster/theme.ts](src/lib/poster/theme.ts) |
 | Spec pixel values scaled to any canvas | [src/lib/poster/metrics.ts](src/lib/poster/metrics.ts) |
 | Render entry point | [src/lib/poster/render.tsx](src/lib/poster/render.tsx) |
@@ -74,17 +74,25 @@ arrives from data instead.
 
 ### Archetypes
 
-Five compositions (§5 of the spec): `scrim`, `diagonal`, `bands`, `curve`, `editorial`. A
-calendar row may pin one in `posterArchetype`; otherwise it is derived from `dayNumber` by
-`archetypeForDay`, stepping by 2 through the set of 5 so all five appear before any repeats.
+Eight compositions (§5 of the spec): `scrim`, `diagonal`, `bands`, `curve`, `editorial`,
+`spotlight`, `corner`, `inverted`. A calendar row may pin one in `posterArchetype`; otherwise it
+is derived from `dayNumber` by `archetypeForDay`, stepping through the set by the smallest stride
+above 1 that is coprime with its size — 3 at eight archetypes — so all eight appear before any
+repeats. The stride is computed rather than written down: a literal that stops being coprime
+silently walks a subset forever, with nothing to catch it.
+
+The last three are derived rather than reverse-engineered from the reference set: `spotlight`
+puts a full-bleed photo under an even wash with the copy centred down the frame, `corner` insets
+the photo as a tall panel filling the right half of a light field, and `inverted` runs a photo
+band across the top 30% with all copy below it.
 
 Derivation is deterministic on purpose. Re-rendering day 47 after a failure must reproduce the
 layout the first attempt would have produced, or an operator comparing a retry against the
 original sees a difference that isn't there.
 
-**The archetype picks the photo's aspect ratio, not the output preset.** `bands` and `curve`
-place the photo in a landscape band; asking fal for a 9:16 portrait and cover-fitting it into a
-short wide box discards most of the frame and usually decapitates the subject. See
+**The archetype picks the photo's aspect ratio, not the output preset.** `bands`, `curve` and
+`inverted` place the photo in a landscape band; asking fal for a 9:16 portrait and cover-fitting
+it into a short wide box discards most of the frame and usually decapitates the subject. See
 [src/lib/poster/photo-request.ts](src/lib/poster/photo-request.ts).
 
 ### Poster identity
@@ -125,7 +133,7 @@ imported directly instead.
 
 ### Previewing
 
-`/admin/poster-preview` renders all five archetypes at any output preset, optionally with a
+`/admin/poster-preview` renders all eight archetypes at any output preset, optionally with a
 real client's brand and a real calendar day's copy. It costs nothing to refresh: the background
 photo is generated procedurally by
 [src/lib/poster/placeholder-photo.ts](src/lib/poster/placeholder-photo.ts) rather than diffused.
@@ -265,7 +273,7 @@ at all.
 | `feature N icon/label/body` | Three per feature, 2–4 features. Icon must be one of the names in `POSTER_ICONS`. |
 | `call label` / `website label` | Contact-bar imperatives. Blank → `CALL US TODAY` / `VISIT OUR WEBSITE`. |
 | `headline period` | yes/no. |
-| `archetype` | Pins the layout to one of the five. Blank rotates by day number. |
+| `archetype` | Pins the layout to one of the eight. Blank rotates by day number. |
 
 Poster columns are **all-or-nothing per row**: touch any one and that row must supply a complete
 block. A half-filled poster cannot be rendered, and silently falling back to generation would

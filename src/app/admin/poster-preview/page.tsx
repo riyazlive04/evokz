@@ -27,7 +27,7 @@ import { POSTER_ARCHETYPES } from '@/lib/types/poster';
 /**
  * Visual regression surface for the poster renderer.
  *
- * Renders all five archetypes side by side at a chosen output preset, optionally
+ * Renders every archetype side by side at a chosen output preset, optionally
  * with a real client's brand applied. Costs nothing to refresh — the background
  * photo is generated, not diffused — so it is the right place to judge a layout
  * change before it reaches a client's WhatsApp.
@@ -41,6 +41,9 @@ const ARCHETYPE_NOTES: Record<string, string> = {
   bands: 'C · Three stacked bands with hard horizontal edges. Refs 3, 5, 7.',
   curve: 'D · Light field with a dark curved sweep. Ref 4.',
   editorial: 'E · High-key light field, photo dissolving in. Refs 8, 11, 12.',
+  spotlight: 'F · Full-bleed photo under an even wash, copy centred.',
+  corner: 'G · Light field, photo inset upper-right, stacked contact bar.',
+  inverted: 'H · Photo band on top, copy below on the dark ground.',
 };
 
 export default async function PosterPreviewPage({
@@ -91,7 +94,7 @@ export default async function PosterPreviewPage({
       <PageHeader
         eyebrow="Creative engine"
         title="Poster preview"
-        description="All five layout archetypes at the selected output size. The background photo is generated locally, so refreshing costs nothing."
+        description="Every layout archetype at the selected output size. The background photo is generated locally, so refreshing costs nothing."
       />
 
       {/* ---- Controls ---- */}
@@ -198,8 +201,8 @@ export default async function PosterPreviewPage({
           </div>
 
           {warnings.length > 0 && (
-            <div className="space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
-              <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-600">
+            <div className="space-y-1 rounded-lg border border-warning/40 bg-warning/5 p-3">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-warning-ink">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 Contrast below target after correction
               </p>
@@ -216,8 +219,8 @@ export default async function PosterPreviewPage({
           )}
 
           {dropped.length > 0 && (
-            <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-3">
-              <p className="flex items-center gap-1.5 text-xs font-semibold text-red-600">
+            <div className="rounded-lg border border-danger/40 bg-danger/5 p-3">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-danger-ink">
                 <AlertTriangle className="h-3.5 w-3.5" />
                 This canvas drops: {dropped.join(', ')}
               </p>
@@ -230,8 +233,8 @@ export default async function PosterPreviewPage({
         </CardContent>
       </Card>
 
-      {/* ---- The five archetypes ---- */}
-      <section className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+      {/* ---- Every archetype ---- */}
+      <section className="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
         {POSTER_ARCHETYPES.map((archetype) => (
           <Card key={archetype} className="overflow-hidden">
             <CardHeader className="pb-3">
@@ -262,7 +265,7 @@ export default async function PosterPreviewPage({
       <p className="text-[11px] text-muted-foreground">
         Layout rules live in{' '}
         <span className="font-mono">docs/creative-style-spec.md</span>. A campaign day
-        with no stored archetype cycles through these five deterministically, so day 47
+        with no stored archetype cycles through these deterministically, so day 47
         always renders the same way it did the first time.
       </p>
     </>
@@ -300,8 +303,8 @@ function PillLink({
       href={`/admin/poster-preview${href}`}
       className={
         active
-          ? 'rounded-full bg-gradient-brand px-3 py-1 text-[11px] font-medium text-white'
-          : 'rounded-full border border-border px-3 py-1 text-[11px] text-muted-foreground transition-colors hover:border-brand-to/50 hover:text-foreground'
+          ? 'rounded-full bg-primary px-3 py-1 text-[11px] font-medium text-primary-foreground'
+          : 'rounded-full border border-border px-3 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground'
       }
     >
       {children}

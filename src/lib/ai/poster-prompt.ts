@@ -1,3 +1,4 @@
+import { describeVerticalImagery } from '@/lib/ai/vertical-vocabulary';
 import { POSTER_ICONS } from '@/lib/types/poster';
 
 /**
@@ -76,11 +77,19 @@ Write no phone number, no URL and no company name into any poster field; those a
 /**
  * How the background photograph must be briefed. The photo is a background with a
  * mandated empty region, never the finished creative.
+ *
+ * Parameterised by vertical because the subject and lighting lines are the only
+ * industry-specific part of the brief; everything else is layout physics that
+ * holds for any client. It was a constant, which meant every vertical inherited a
+ * construction shot list.
  */
-export const IMAGE_PROMPT_RULES = `### imagePrompt rules
+export function buildImagePromptRules(
+  categoryName: string | null | undefined,
+): string {
+  return `### imagePrompt rules
 
 - Describe one specific photographic scene: subject, composition, lighting, colour treatment, mood.
 - Push the subject to one side and explicitly reserve a low-detail area — open sky, deep shadow, plain wall — for the text to sit on. Say so in the prompt, e.g. "subject to the right, clear open sky filling the upper left".
-- Subject vocabulary for this vertical: mid-rise or high-rise under construction, tower crane against sky, workers in hi-vis and hard hats silhouetted at golden hour, modern flat-roof villa with warm interior glow at dusk, glass commercial block, blueprints with hard hat and drafting tools, architectural wireframe render.
-- Lighting: golden hour or blue-hour dusk for warm palettes, bright midday for cool and high-key ones. Warm interior window glow is a recurring motif in residential shots.
+${describeVerticalImagery(categoryName)}
 - NEVER request embedded text, words, letters, numbers, signage, logos or watermarks. Image models render these badly, and every readable element is composited afterwards as real type.`;
+}

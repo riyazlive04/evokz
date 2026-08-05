@@ -9,6 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { describeError } from '@/lib/ai-pipeline';
 import { prisma } from '@/lib/prisma';
 import { formatDisplayDate, getAppTimeZone } from '@/lib/time';
+import { parseBrandGuideline } from '@/lib/types/brand';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,7 +31,11 @@ export default async function AdminClientsPage() {
         title="Client matrix"
         description="Every tenant, its campaign window, and its per-client dispatch minute. Delivery times are editable inline; select a company to open its detail view."
       >
-        <CreateClientDialog plans={data.planOptions} categories={data.categoryOptions} />
+        <CreateClientDialog
+          plans={data.planOptions}
+          categories={data.categoryOptions}
+          timeZone={timeZone}
+        />
       </PageHeader>
 
       <Card>
@@ -65,6 +70,7 @@ async function loadClients(timeZone: string): Promise<ClientsData> {
           endDate: true,
           isActive: true,
           gDriveFolderId: true,
+          brandGuideline: true,
           plan: { select: { name: true, durationDays: true } },
           category: { select: { name: true } },
         },
@@ -110,6 +116,9 @@ async function loadClients(timeZone: string): Promise<ClientsData> {
         endDateLabel: formatDisplayDate(client.endDate, timeZone),
         isActive: client.isActive,
         hasDriveFolder: Boolean(client.gDriveFolderId),
+        // Narrowed here rather than shipping the raw Json column: ClientMatrix
+        // is a client component, and parseBrandGuideline should stay server-side.
+        hasBrandTokens: parseBrandGuideline(client.brandGuideline).colors.length > 0,
         deliveredCount: deliveredByClient.get(client.id) ?? 0,
         calendarCount: calendarByClient.get(client.id) ?? 0,
         totalDays: client.plan.durationDays,

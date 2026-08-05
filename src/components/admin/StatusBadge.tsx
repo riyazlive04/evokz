@@ -10,13 +10,14 @@ const STATUS_VARIANT: Record<DeliveryStatus, NonNullable<BadgeProps['variant']>>
   [DeliveryStatus.FAILED]: 'destructive',
 };
 
-// One step darker than the badge tint they sit on, so the dot stays legible
-// against the light body.
+// The solid status fill, which reads a step stronger than the /10 tint of the
+// badge it sits inside. Both sides are per-theme tokens, so the pairing holds
+// in light and dark without a `dark:` variant.
 const STATUS_DOT: Record<DeliveryStatus, string> = {
   [DeliveryStatus.PENDING]: 'bg-muted-foreground',
-  [DeliveryStatus.GENERATED]: 'bg-amber-500',
-  [DeliveryStatus.DELIVERED]: 'bg-emerald-500',
-  [DeliveryStatus.FAILED]: 'bg-red-500',
+  [DeliveryStatus.GENERATED]: 'bg-warning',
+  [DeliveryStatus.DELIVERED]: 'bg-success',
+  [DeliveryStatus.FAILED]: 'bg-danger',
 };
 
 export function StatusBadge({ status }: { status: DeliveryStatus }) {

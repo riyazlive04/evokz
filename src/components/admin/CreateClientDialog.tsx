@@ -5,6 +5,7 @@ import * as React from 'react';
 import { AlertTriangle, Loader2, UserPlus } from 'lucide-react';
 
 import { createClientManually } from '@/app/admin/dashboard/actions';
+import { DeliveryDaysPicker } from '@/components/admin/DeliveryDaysPicker';
 import { ImageSizeSelect } from '@/components/admin/ImageSizeSelect';
 import { Button } from '@/components/ui/button';
 import {
@@ -27,6 +28,7 @@ import {
 } from '@/components/ui/select';
 import { useAction } from '@/hooks/use-action';
 import { DEFAULT_IMAGE_SIZE_ID } from '@/lib/image-sizes';
+import { formatDisplayDate, nthDeliveryDate } from '@/lib/time';
 
 export interface OptionRow {
   id: string;
@@ -41,10 +43,13 @@ export interface OptionRow {
 export function CreateClientDialog({
   plans,
   categories,
+  timeZone,
   demo = false,
 }: {
   plans: OptionRow[];
   categories: OptionRow[];
+  /** Passed from the server — `APP_TIMEZONE` is not exposed to the browser. */
+  timeZone: string;
   /**
    * Provisions a demo tenant instead of a client. Same provisioning path — the
    * row is flagged `isDemo`, which keeps it out of the client matrix and out of
@@ -61,11 +66,21 @@ export function CreateClientDialog({
   // Pre-selected rather than blank: the spec-correct shape should be what an
   // operator has to deliberately move away from, not what they have to find.
   const [imageSizePreset, setImageSizePreset] = React.useState(DEFAULT_IMAGE_SIZE_ID);
+  // Empty means every day, matching the column's own unrestricted value.
+  const [deliveryDays, setDeliveryDays] = React.useState<number[]>([]);
   const [warning, setWarning] = React.useState<string | null>(null);
 
   const create = useAction(createClientManually);
   const canSubmit = Boolean(companyName && whatsappNumber && planId && categoryId);
   const selectedPlan = plans.find((plan) => plan.id === planId);
+
+  // Mirrors the server's own placement so the operator sees the real end date
+  // before committing, rather than discovering it on the detail page.
+  const campaignWindowLabel = React.useMemo(() => {
+    if (!selectedPlan?.durationDays) return '';
+    const end = nthDeliveryDate(new Date(), selectedPlan.durationDays, deliveryDays, timeZone);
+    return `today → ${formatDisplayDate(end, timeZone)}`;
+  }, [selectedPlan?.durationDays, deliveryDays, timeZone]);
 
   function resetForm() {
     setCompanyName('');
@@ -74,6 +89,7 @@ export function CreateClientDialog({
     setCategoryId('');
     setCronTime('09:00');
     setImageSizePreset(DEFAULT_IMAGE_SIZE_ID);
+    setDeliveryDays([]);
     setWarning(null);
     create.reset();
   }
@@ -90,6 +106,7 @@ export function CreateClientDialog({
       cronTime,
       isDemo: demo,
       imageSizePreset: imageSizePreset || null,
+      deliveryDays,
     });
 
     if (!result.ok) return;
@@ -210,10 +227,24 @@ export function CreateClientDialog({
 
             <div className="space-y-1.5">
               <Label>Campaign window</Label>
+              {/* Shows the real end date, not `+N days`. With weekdays
+                  restricted a "30-Day Pilot" finishes six weeks out, and that
+                  is surprising unless it is stated at the point of choosing. */}
               <p className="flex h-9 items-center font-mono text-xs text-muted-foreground">
+                {selectedPlan?.durationDays ? campaignWindowLabel : '— select a plan —'}
+              </p>
+            </div>
+
+            <div className="space-y-1.5 sm:col-span-2">
+              <DeliveryDaysPicker
+                id="new-delivery-days"
+                value={deliveryDays}
+                onChange={setDeliveryDays}
+              />
+              <p className="text-[10px] text-muted-foreground">
                 {selectedPlan?.durationDays
-                  ? `today → +${selectedPlan.durationDays} days`
-                  : '— select a plan —'}
+                  ? `All ${selectedPlan.durationDays} creatives are still delivered — the campaign just spans more calendar days.`
+                  : 'All plan days are delivered; restricted weekdays simply spread the campaign wider.'}
               </p>
             </div>
 
@@ -228,7 +259,7 @@ export function CreateClientDialog({
           </div>
 
           {create.error && (
-            <p role="alert" className="text-xs text-red-600">
+            <p role="alert" className="text-xs text-danger-ink">
               {create.error}
             </p>
           )}
@@ -236,7 +267,7 @@ export function CreateClientDialog({
           {warning && (
             <p
               role="alert"
-              className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700"
+              className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-warning-ink"
             >
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>

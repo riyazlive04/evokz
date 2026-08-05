@@ -17,7 +17,11 @@ import { coercePosterCopy, parsePosterCopy, type PosterCopy } from '@/lib/types/
  * starts getting text-bearing creatives without anyone re-seeding their calendar.
  */
 
-const SYSTEM_PROMPT = `You are the Content Director for Evokz ACE, writing the text layer for one construction or real-estate poster.
+// Deliberately says nothing about the client's industry: naming construction and
+// real estate here pulled headlines for every other vertical toward property
+// language. The actual vertical reaches the model through the user prompt's
+// `Industry:` line, which keeps this prefix constant and therefore cacheable.
+const SYSTEM_PROMPT = `You are the Content Director for Evokz ACE, writing the text layer for one client poster.
 
 The poster is a background photograph with a typographic layer composited on top: a logo lockup, a stacked all-caps headline, a short body paragraph, a row of icon features, and a contact bar. You are writing only that text layer. You are not writing a caption and not describing the photograph.
 

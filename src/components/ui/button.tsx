@@ -10,18 +10,15 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        // The primary action carries the evokz.in wordmark gradient. Hover
-        // brightens rather than shifting background-color, since an image fill
-        // ignores the `/90` colour-opacity modifier.
         default:
-          'bg-gradient-brand text-white shadow-brand-glow hover:brightness-110 hover:shadow-brand-glow-lg',
+          'bg-primary text-primary-foreground shadow-brand-glow hover:brightness-105 hover:shadow-brand-glow-lg',
         destructive:
           'bg-destructive text-destructive-foreground hover:bg-destructive/90',
         outline:
           'border border-input bg-transparent hover:bg-accent hover:text-accent-foreground',
         secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground',
-        link: 'text-primary underline-offset-4 hover:underline',
+        link: 'text-foreground underline-offset-4 hover:underline hover:decoration-primary decoration-primary/40',
       },
       size: {
         default: 'h-9 px-4 py-2',

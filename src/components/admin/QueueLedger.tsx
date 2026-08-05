@@ -80,7 +80,7 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
 
         {/* Overlays the creative itself, so it stays light-on-dark whatever
             the page theme is doing. */}
-        <div className="absolute right-2.5 top-2.5 rounded-full bg-slate-950/80 px-2 py-0.5 font-mono text-[10px] text-slate-200 backdrop-blur-sm">
+        <div className="absolute right-2.5 top-2.5 rounded-full bg-scrim/80 px-2 py-0.5 font-mono text-[10px] text-navy-100 backdrop-blur-sm">
           Day {String(entry.dayNumber).padStart(3, '0')}
         </div>
       </div>
@@ -90,7 +90,7 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
           <h4 className="truncate text-sm font-semibold text-foreground">
             {entry.companyName}
           </h4>
-          <p className="line-clamp-1 text-xs font-medium text-primary">{entry.theme}</p>
+          <p className="line-clamp-1 text-xs font-medium text-foreground">{entry.theme}</p>
           <p className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
             <Clock className="h-3 w-3" />
             {entry.scheduledLabel} · {entry.cronTime} · +{entry.whatsappNumber}
@@ -106,7 +106,7 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
         )}
 
         {entry.errorMessage && (
-          <p className="flex items-start gap-1.5 rounded-md border border-red-500/20 bg-red-500/5 p-2 text-[10px] leading-relaxed text-red-600">
+          <p className="flex items-start gap-1.5 rounded-md border border-danger/20 bg-danger/5 p-2 text-[10px] leading-relaxed text-danger-ink">
             <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
             <span className="line-clamp-3">{entry.errorMessage}</span>
           </p>
@@ -125,7 +125,7 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
             href={entry.viewUrl}
             target="_blank"
             rel="noreferrer noopener"
-            className="inline-flex items-center gap-1 text-[10px] text-muted-foreground transition-colors duration-200 hover:text-primary"
+            className="inline-flex items-center gap-1 text-[10px] text-muted-foreground transition-colors duration-200 hover:text-foreground"
           >
             <ExternalLink className="h-3 w-3" />
             Open in Drive

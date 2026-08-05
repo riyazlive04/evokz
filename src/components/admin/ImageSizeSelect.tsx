@@ -87,7 +87,7 @@ export function ImageSizeSelect({
           )}
 
           {selected.offBrand && (
-            <p className="flex items-start gap-1.5 text-[10px] text-amber-600">
+            <p className="flex items-start gap-1.5 text-[10px] text-warning-ink">
               <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
               <span>
                 Off-brand shape — every reference poster in the style spec is portrait.
@@ -98,7 +98,7 @@ export function ImageSizeSelect({
           )}
 
           {softPhoto && selected && (
-            <p className="flex items-start gap-1.5 text-[10px] text-amber-600">
+            <p className="flex items-start gap-1.5 text-[10px] text-warning-ink">
               <ImageOff className="mt-px h-3 w-3 shrink-0" />
               <span>
                 Delivered at full {selected.width}×{selected.height} with sharp type, but
