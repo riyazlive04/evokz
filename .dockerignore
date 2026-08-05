@@ -1,0 +1,27 @@
+# Build context hygiene. Anything listed here is invisible to `docker build`.
+
+node_modules
+.next
+.git
+.gitignore
+
+# Secrets never enter an image layer — they arrive at runtime via compose's
+# env_file, which reads from the host filesystem.
+.env
+.env.*
+!.env.example
+
+# Local build artefacts and docs
+tsconfig.tsbuildinfo
+*.md
+!README.md
+docs
+backups
+*.png
+!fonts/**
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db

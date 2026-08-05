@@ -7,6 +7,14 @@ dist/
 .env
 .env.local
 .env.*.local
+# Edge config and the gateway credential for the self-hosted stack. The `.env`
+# line above is an exact match and does not cover either of these, so they need
+# their own entries — without them the gateway password would be committed.
+.env.caddy
+caddy-gateway-auth.conf
+
+# Database dumps written by scripts/backup-db.sh
+backups/
 
 *.pem
 *.log

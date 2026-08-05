@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { Activity } from 'lucide-react';
 
 import { AdminNav } from '@/components/admin/AdminNav';
+import { SignOutButton } from '@/components/admin/SignOutButton';
 import { ThemeToggle } from '@/components/admin/ThemeToggle';
 import { getAppTimeZone } from '@/lib/time';
 
@@ -59,6 +60,7 @@ export default function AdminLayout({
                 <span className="font-mono text-foreground/70">{timeZone}</span>
               </p>
               <ThemeToggle />
+              <SignOutButton />
             </div>
           </div>
 

@@ -1,0 +1,68 @@
+# Public edge for Evokz ACE.
+#
+# `{$VAR}` placeholders are substituted from the container environment at parse
+# time — see the caddy service's env_file in docker-compose.yml.
+{
+	email {$ACME_EMAIL}
+
+	# Caddy's admin API binds localhost:2019 inside the container. Nothing
+	# publishes it, but disabling it removes the surface outright.
+	admin off
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	# --- Machine callers -------------------------------------------------
+	# These two authenticate themselves and cannot present Basic Auth
+	# credentials: Razorpay signs the raw body with HMAC-SHA256, and the cron
+	# sweep sends `Authorization: Bearer $CRON_SECRET`. Putting a Basic Auth
+	# challenge in front of either would break delivery, and the Authorization
+	# header can only carry one scheme. They are the ONLY paths that bypass the
+	# gateway lock — both verify their own callers and fail closed.
+	@machine path /api/webhooks/razorpay /api/cron
+	handle @machine {
+		reverse_proxy app:3000
+	}
+
+	# --- Everything else -------------------------------------------------
+	# The gateway lock. This is what stops an anonymous visitor from invoking
+	# the Server Actions that spend OpenAI/fal.ai credit and message real
+	# clients on WhatsApp. It sits in front of the app's own login, so both
+	# have to be cleared.
+	#
+	# The credential is imported from a mounted file rather than read from an
+	# environment variable, and that is not a style choice. Docker Compose
+	# interpolates `$` sequences in `env_file` values, so a bcrypt hash passed
+	# that way arrives truncated at its second `$` — `$2a$14$abc...` becomes
+	# `$2a$14`. Caddy then either fails to parse it or accepts nothing, and the
+	# only symptom is a login that never works. A mounted file never passes
+	# through Compose's interpolation at all.
+	handle {
+		import /etc/caddy/gateway-auth.conf
+		reverse_proxy app:3000
+	}
+
+	# Headroom over the 8 MB Server Action body limit set in next.config.mjs, so
+	# an oversized logo upload is rejected by the app's own message rather than
+	# by a bare 413 from the edge. Caddy applies no response timeout by default,
+	# which is what a 300s dispatch sweep needs.
+	request_body {
+		max_size 10MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

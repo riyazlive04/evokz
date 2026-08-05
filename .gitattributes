@@ -1,0 +1,21 @@
+# The repository is edited on Windows and deployed to Linux containers.
+#
+# A CRLF line ending in an executable script is not cosmetic: the kernel reads
+# the shebang literally, so `#!/bin/sh\r` becomes a request for an interpreter
+# named "sh\r" and the container dies with a bare "no such file or directory".
+# Same for the Caddyfile, whose parser treats a stray \r as part of a token.
+
+* text=auto eol=lf
+
+*.sh        text eol=lf
+Caddyfile   text eol=lf
+Dockerfile  text eol=lf
+*.mjs       text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary

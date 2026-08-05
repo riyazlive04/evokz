@@ -1,0 +1,85 @@
+# Production stack for a single Hostinger VPS.
+#
+#   caddy  — public edge. Terminates TLS (auto-issued), holds the gateway lock.
+#   app    — Next.js. No published host port; reachable only over the compose network.
+#   db     — PostgreSQL. No published host port either; nothing outside this file
+#            should ever be able to reach 5432.
+#
+# Both `app` and `caddy` read secrets from `.env` via env_file. Compose does not
+# interpolate env_file contents, which matters: the bcrypt hash in
+# GATEWAY_AUTH_HASH contains `$` characters that `${...}` substitution would eat.
+
+name: evokz
+
+services:
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Without this, initdb picks the C locale and text ordering differs from
+      # what the app was developed against.
+      POSTGRES_INITDB_ARGS: "--locale=C.UTF-8 --encoding=UTF8"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      # `-h 127.0.0.1` forces a real TCP check; the socket-only default reports
+      # ready during the init phase when the server is still bootstrapping.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [internal]
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    depends_on:
+      db:
+        # The entrypoint runs `prisma migrate deploy` immediately, so starting
+        # before Postgres accepts connections is a crash loop, not a retry.
+        condition: service_healthy
+    networks: [internal]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    # Only APP_DOMAIN and ACME_EMAIL — neither contains a `$`. The gateway
+    # credential deliberately does NOT travel this way: Compose interpolates
+    # env_file values, which truncates a bcrypt hash at its second `$`. It is
+    # bind-mounted below instead.
+    env_file: .env.caddy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-gateway-auth.conf:/etc/caddy/gateway-auth.conf:ro
+      - caddy_data:/data     # issued certificates — losing this re-triggers ACME
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    depends_on:
+      - app
+    networks: [internal]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+
+networks:
+  internal:
+    driver: bridge

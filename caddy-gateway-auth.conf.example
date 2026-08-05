@@ -1,0 +1,16 @@
+# The gateway lock credential, imported by the Caddyfile.
+#
+#   cp caddy-gateway-auth.conf.example caddy-gateway-auth.conf
+#   docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'your-password'
+#   # paste the output below, replacing the placeholder hash
+#   chmod 600 caddy-gateway-auth.conf
+#
+# This lives in its own file, not in `.env.caddy`, because Docker Compose
+# interpolates `$` in env_file values and would truncate a bcrypt hash at its
+# second `$`. A bind-mounted file bypasses that entirely.
+#
+# Add more `<user> <hash>` lines to issue additional gateway credentials.
+
+basic_auth {
+	evokz $2a$14$REPLACE.THIS.WITH.THE.OUTPUT.OF.caddy.hash-password.aBcDeFgHiJkLmNoP
+}
