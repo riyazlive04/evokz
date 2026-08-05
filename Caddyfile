@@ -73,5 +73,5 @@
 # than nothing avoids a domain that looks broken. Once the A record points
 # elsewhere this block simply stops receiving traffic.
 {$REDIRECT_DOMAIN} {
-	redir https://app.evokz.in{uri} permanent
+	redir https://app.brivokz.com{uri} permanent
 }
