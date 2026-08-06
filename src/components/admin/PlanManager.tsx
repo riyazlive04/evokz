@@ -114,7 +114,7 @@ export function PlanManager({ plans }: { plans: PlanRow[] }) {
             key={preset}
             type="button"
             onClick={() => setDurationDays(preset)}
-            className="rounded-full border border-border px-3 py-1 text-[11px] text-muted-foreground transition-colors duration-200 hover:border-primary/40 hover:text-foreground"
+            className="inline-flex min-h-[28px] items-center rounded-full border border-border px-3 py-1 text-[11px] text-muted-foreground transition-colors duration-200 hover:border-primary/40 hover:text-foreground sm:min-h-0"
           >
             {preset}d
           </button>

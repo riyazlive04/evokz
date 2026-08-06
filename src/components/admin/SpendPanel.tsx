@@ -247,7 +247,10 @@ function Pill({
       scroll={false}
       aria-current={active ? 'true' : undefined}
       className={cn(
-        'rounded-full border px-2.5 py-0.5 text-[11px] transition-colors duration-200',
+        // min-h-[28px] on touch: at py-0.5 these measured 23px, under the 24px floor
+        // in WCAG 2.5.8. Height only — the pills stay visually identical on a
+        // pointer device, where the row is already comfortable to hit.
+        'inline-flex min-h-[28px] items-center rounded-full border px-2.5 py-0.5 text-[11px] transition-colors duration-200 sm:min-h-0',
         active
           ? 'border-brand-to/50 bg-brand-to/10 font-medium text-foreground'
           : 'border-border text-muted-foreground hover:border-brand-to/40 hover:text-foreground',
