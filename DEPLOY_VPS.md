@@ -228,6 +228,31 @@ It is in `.gitignore`. Confirm before your first commit on the server:
 git check-ignore -v .env .env.caddy
 ```
 
+### Changing the edge config later
+
+`docker compose up -d caddy` is **not** enough for a `Caddyfile` edit. The file is
+a bind mount, so Compose sees no change to the service and leaves the container
+running with the old config — it reports success and nothing happens. `caddy
+reload` is not available either: `admin off` in the global block removes the
+admin API it would talk to. Use `restart`, and validate first, because
+`restart: unless-stopped` turns a parse error into a crash loop with the site
+down:
+
+```bash
+# Validate against the env the container will actually get. Use -e, not
+# --env-file: `docker run --env-file` keeps the surrounding quotes that Compose
+# strips, and APP_DOMAIN then fails with a bogus "site addresses cannot contain
+# a comma".
+docker run --rm -v /opt/evokz/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -e APP_DOMAIN="app.evokz.in" -e ACME_EMAIL="you@example.com" \
+  caddy:2.10-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+docker compose restart caddy
+```
+
+An `.env.caddy` edit is the opposite case: it *is* an `env_file`, so
+`docker compose up -d caddy` recreates the container and does take effect.
+
 ### One password, and what guards the rest
 
 There is a single credential: **the app login** at `/login`. It issues a session
