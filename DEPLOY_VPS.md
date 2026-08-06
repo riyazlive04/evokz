@@ -388,8 +388,19 @@ crontab -e
 ```
 
 ```cron
-*/5 * * * * /opt/evokz/scripts/dispatch-cron.sh >> /opt/evokz/backups/cron.log 2>&1
+* * * * * /opt/evokz/scripts/dispatch-cron.sh >> /opt/evokz/backups/cron.log 2>&1
 ```
+
+**This interval and `CRON_WINDOW_MINUTES` in `.env` are one setting in two
+places — change them together or not at all.** A client's `cronTime` is not a
+trigger; it is a value each sweep looks *back* for across its trailing window.
+Every minute paired with a window of 1 means a client set to `17:07` is swept at
+`17:07`. Running `*/5` instead (the original setting) is not broken, but `17:07`
+is then first seen by the `17:10` sweep, because no sweep is awake at `17:07`.
+See `.env.example` for what each mismatch costs — one direction drops sends
+silently, the other can send the same poster twice.
+
+The send itself is inline, so the message lands 15–20s after the minute.
 
 `scripts/dispatch-cron.sh` issues the request from *inside* the app container
 over loopback rather than curling the public URL. `CRON_SECRET` therefore never

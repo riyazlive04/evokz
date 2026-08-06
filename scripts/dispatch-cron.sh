@@ -2,7 +2,7 @@
 #
 # Triggers the dispatch sweep. Install on the host crontab:
 #
-#   */5 * * * * /opt/evokz/scripts/dispatch-cron.sh >> /opt/evokz/backups/cron.log 2>&1
+#   * * * * * /opt/evokz/scripts/dispatch-cron.sh >> /opt/evokz/backups/cron.log 2>&1
 #
 # The request is issued from *inside* the app container over loopback rather
 # than against the public URL. Three reasons that matters:
@@ -13,9 +13,11 @@
 #   - It never touches the edge at all, so no change to Caddy or to the app's
 #     own auth can break scheduled runs.
 #
-# Keep the crontab interval and CRON_WINDOW_MINUTES in .env in agreement: the
-# sweep only matches clients whose delivery time falls inside the window, so a
-# window shorter than the interval silently drops deliveries in the gap.
+# Keep the crontab interval and CRON_WINDOW_MINUTES in .env *equal*: the sweep
+# only matches clients whose delivery minute falls inside its trailing window, so
+# a window shorter than the interval silently drops deliveries in the gap — and a
+# window longer than the interval lets two overlapping sweeps both see a row that
+# is still PENDING mid-send, which sends the same poster twice.
 
 set -euo pipefail
 
