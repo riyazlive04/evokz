@@ -59,11 +59,16 @@
 	}
 }
 
-# --- Apex redirect ---------------------------------------------------------
-# evokz.in is being handed to a separate marketing site. Until its DNS moves
-# away from this VPS, requests still arrive here — serving a redirect rather
-# than nothing avoids a domain that looks broken. Once the A record points
-# elsewhere this block simply stops receiving traffic.
-{$REDIRECT_DOMAIN} {
-	redir https://app.brivokz.com{uri} permanent
-}
+# --- No other names are served here ----------------------------------------
+# `app.evokz.in` is the only host this VPS answers on. There used to be a second
+# block that 301'd `evokz.in` / `www.evokz.in` to the console, and `APP_DOMAIN`
+# also carried `app.brivokz.com` as a stand-in while `evokz.in` was filtered on
+# Indian networks. Both were removed on 2026-08-06: the apex and the brivokz.com
+# subdomain are being freed for unrelated sites, and a redirect would have kept
+# claiming them.
+#
+# With no matching site block, a request that still arrives for one of those
+# names gets a bare 404 over HTTP and a failed handshake over HTTPS — Caddy holds
+# no certificate for a name it does not serve. That is the intended end state,
+# but it only stops being visible once their DNS points away from this VPS.
+# Removing the block here does not release the domain; the A record does.

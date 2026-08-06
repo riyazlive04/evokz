@@ -1,7 +1,7 @@
 # Deploying Evokz ACE to a Hostinger VPS
 
-Target: `evokz.in` served from a single VPS running Docker Compose — Caddy at the
-edge (TLS + reverse proxy), Next.js, and PostgreSQL.
+Target: `app.evokz.in` — and only that name — served from a single VPS running
+Docker Compose: Caddy at the edge (TLS + reverse proxy), Next.js, and PostgreSQL.
 
 Every command below runs **on the VPS as a non-root user in the `docker` group**,
 from the project directory, unless a step says otherwise.
@@ -55,27 +55,35 @@ free -h
 
 ## 2. DNS
 
-`evokz.in` currently points at `atlas.dns-parking.com` / `hyperion.dns-parking.com`
-— Hostinger's parking nameservers. Those are fine to keep; records are editable in
-hPanel under **Domains → evokz.in → DNS / Nameservers**.
+`evokz.in` uses `atlas.dns-parking.com` / `hyperion.dns-parking.com` —
+Hostinger's parking nameservers. Records are editable in hPanel under
+**Domains → evokz.in → DNS / Nameservers**.
 
-Delete any existing parking `A` record for `@`, then add:
+**This VPS serves exactly one name: `app.evokz.in`.** One record, and nothing
+else pointing here:
 
 | Type | Name | Points to | TTL |
 |---|---|---|---|
-| A | `@` | *your VPS IPv4* | 300 |
-| A | `www` | *your VPS IPv4* | 300 |
+| A | `app` | *your VPS IPv4* | 300 |
 
-The `www` record is optional. Add it **before** listing `www.evokz.in` in
-`APP_DOMAIN` — Caddy requests a certificate for every name in that list at
-startup, and one name that does not resolve fails the whole batch.
+Do **not** point the apex, `www`, or any other domain at this box. `evokz.in`,
+`www.evokz.in` and `app.brivokz.com` were all detached on 2026-08-06 and are
+reserved for unrelated sites; the Caddyfile has no block for them, so a request
+that still arrives gets a 404 or a failed TLS handshake. Every name listed in
+`APP_DOMAIN` is a name Caddy requests a certificate for and therefore claims —
+adding one back is how you accidentally take a domain over again.
 
 Confirm propagation before going further. Caddy's ACME challenge will not
 succeed until this returns the VPS address:
 
 ```bash
-dig +short evokz.in @1.1.1.1
+dig +short app.evokz.in @1.1.1.1
 ```
+
+If a record you deleted keeps resolving with a TTL that never counts down, the
+domain is attached as a **website** in hPanel (**Websites** list), which injects
+its own A record and overrides the zone editor. Removing the website entry is
+what releases it — editing DNS alone does nothing.
 
 ---
 
@@ -204,7 +212,7 @@ Lock the file down: `chmod 600 .env`
 ```bash
 # Domain + ACME contact. No secrets, no `$` characters.
 cp .env.caddy.example .env.caddy
-nano .env.caddy                 # set APP_DOMAIN, REDIRECT_DOMAIN and ACME_EMAIL
+nano .env.caddy                 # set APP_DOMAIN (one name) and ACME_EMAIL
 chmod 600 .env.caddy
 ```
 
@@ -286,7 +294,8 @@ Against a fresh empty volume, which is the normal case here, no such step is nee
 
 ## 6. Verify
 
-Use the console host (`APP_DOMAIN`), not the apex — `evokz.in` is a 301 redirect.
+`app.evokz.in` is the only host that answers. The apex is not a redirect any
+more — it is not served at all.
 
 ```bash
 # TLS issued, and an anonymous visitor is redirected to the login.
@@ -397,8 +406,10 @@ gunzip -c backups/evokz_ace_YYYY-MM-DD_HHMMSS.sql.gz \
 ## 9. External integrations
 
 1. **Razorpay** — dashboard → Settings → Webhooks → add
-   `https://evokz.in/api/webhooks/razorpay`, subscribe to **`order.paid`**, and set
-   the signing secret to match `RAZORPAY_WEBHOOK_SECRET`.
+   `https://app.evokz.in/api/webhooks/razorpay`, subscribe to **`order.paid`**, and
+   set the signing secret to match `RAZORPAY_WEBHOOK_SECRET`. It must be the
+   console host: the apex no longer redirects here, so a webhook still pointed at
+   `https://evokz.in/...` fails and the customer is never provisioned.
    The checkout must send these `notes`: `company_name`, `whatsapp_phone`,
    `plan_id`, `category_id`, and optionally `preferred_cron_time`, `image_size`.
    Missing any of the first four returns 422 and the customer is never provisioned.
