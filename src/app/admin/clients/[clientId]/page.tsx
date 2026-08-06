@@ -18,6 +18,7 @@ import {
 import { CalendarImportPanel } from '@/components/admin/CalendarImportPanel';
 import { ClientControls } from '@/components/admin/ClientControls';
 import { ClientDangerZone } from '@/components/admin/ClientDangerZone';
+import { EditClientDialog } from '@/components/admin/EditClientDialog';
 import { PageHeader } from '@/components/admin/PageHeader';
 import { ClientAssignment } from '@/components/admin/ClientAssignment';
 import { QueueLedger, type QueueEntry } from '@/components/admin/QueueLedger';
@@ -215,6 +216,11 @@ export default async function ClientDetailPage({
         }
         description={`Onboarded ${formatDisplayDateTime(client.createdAt, timeZone)} · dispatching at ${client.cronTime} ${timeZone}`}
       >
+        <EditClientDialog
+          clientId={client.id}
+          companyName={client.companyName}
+          whatsappNumber={client.whatsappNumber}
+        />
         <Button asChild variant="outline" size="sm">
           <Link href={`/admin/clients/${client.id}/brand`}>
             <Palette className="h-4 w-4" />

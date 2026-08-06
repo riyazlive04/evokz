@@ -110,7 +110,7 @@ export function BrandCanvasView({ clientData, className }: BrandCanvasViewProps)
         // `dark` scopes the token set to the canvas: the blueprint grid, the
         // brand blooms and the glass toolbar all need a dark ground to read,
         // so this stays a dark island on the otherwise light page.
-        'dark relative isolate min-h-[860px] w-full overflow-hidden rounded-2xl border border-border bg-background text-foreground',
+        'dark relative isolate min-h-[620px] w-full overflow-hidden rounded-2xl border border-border bg-background text-foreground sm:min-h-[860px]',
         activeTool === 'pan' && 'cursor-grab active:cursor-grabbing',
         activeTool === 'text' && 'cursor-text',
         inspecting && 'cursor-crosshair',
@@ -141,7 +141,7 @@ export function BrandCanvasView({ clientData, className }: BrandCanvasViewProps)
       />
 
       {/* perspective-1000 establishes the shared projection for every 3D child. */}
-      <div className="perspective-1000 relative z-10 space-y-12 px-6 pb-16 pt-32 sm:px-10">
+      <div className="perspective-1000 relative z-10 space-y-8 px-4 pb-10 pt-24 sm:space-y-12 sm:px-10 sm:pb-16 sm:pt-32">
         <CanvasHeader
           companyName={clientData.companyName}
           categoryName={clientData.categoryName}
@@ -257,14 +257,14 @@ function CanvasHeader({
   colorCount: number;
 }) {
   return (
-    <header className="flex flex-wrap items-end justify-between gap-6">
+    <header className="flex flex-wrap items-end justify-between gap-4 sm:gap-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.28em] text-primary/90">
           <Sparkles className="h-3.5 w-3.5" />
           Design token workspace
         </div>
         <h2
-          className="text-gradient-brand text-4xl font-bold tracking-tight transition-all duration-300"
+          className="text-gradient-brand text-2xl font-bold tracking-tight transition-all duration-300 sm:text-4xl"
           style={{ fontFamily: quoteFontFamily(headingFont) }}
         >
           {companyName}

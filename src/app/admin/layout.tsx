@@ -37,10 +37,10 @@ export default function AdminLayout({
         />
 
         <div className="relative mx-auto max-w-[1600px] px-4 sm:px-8">
-          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 pt-3 sm:pt-4">
             <Link
               href="/admin/dashboard"
-              className="flex flex-wrap items-baseline gap-x-3 gap-y-1"
+              className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5"
             >
               {/* `text-brand-to`, not `text-primary`: primary is true sand, which
                   measures ~2.3:1 on the light-blue bar. brand-to resolves to
@@ -49,13 +49,16 @@ export default function AdminLayout({
                 <Activity className="h-3.5 w-3.5" />
                 Evokz ACE
               </span>
-              <span className="text-gradient-brand text-lg font-bold tracking-tight">
+              <span className="text-gradient-brand text-base font-bold tracking-tight sm:text-lg">
                 Creative Engine Console
               </span>
             </Link>
 
-            <div className="flex items-center gap-3">
-              <p className="text-[11px] text-muted-foreground">
+            <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+              {/* Reference information, not a control. On a phone it competed with
+                  the two buttons for a row that has no space for either, so it
+                  drops out below `sm` rather than pushing them onto a third line. */}
+              <p className="hidden text-[11px] text-muted-foreground sm:block">
                 Dispatch window evaluated in{' '}
                 <span className="font-mono text-foreground/70">{timeZone}</span>
               </p>
@@ -68,7 +71,7 @@ export default function AdminLayout({
         </div>
       </header>
 
-      <main className="relative mx-auto max-w-[1600px] space-y-6 px-4 py-8 sm:px-8">
+      <main className="relative mx-auto max-w-[1600px] space-y-5 px-4 py-6 sm:space-y-6 sm:px-8 sm:py-8">
         {children}
       </main>
     </div>

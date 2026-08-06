@@ -39,7 +39,20 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 border border-border bg-popover p-6 text-popover-foreground shadow-2xl duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-xl',
+        'fixed left-1/2 top-1/2 z-50 grid -translate-x-1/2 -translate-y-1/2 border border-border bg-popover text-popover-foreground shadow-2xl duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+        // Mobile sizing. The panel is centred by a -50% translate, so without a
+        // height bound a form taller than the viewport overflows off BOTH edges
+        // and the footer buttons cannot be reached or scrolled to — which is
+        // what the onboarding dialog did on a phone. `dvh` rather than `vh` so
+        // the mobile browser's collapsing address bar does not hide the footer.
+        'max-h-[calc(100dvh-1.5rem)] w-[calc(100%-1.5rem)] gap-3.5 overflow-y-auto rounded-xl p-4',
+        // Desktop, unchanged from before: full width up to the max, roomier
+        // padding and gap.
+        'sm:max-h-[calc(100dvh-4rem)] sm:w-full sm:gap-4 sm:p-6',
+        // Unprefixed so a caller's own `max-w-*` still wins through
+        // tailwind-merge — CreateClientDialog asks for `max-w-xl`, and an
+        // `sm:`-prefixed default here would silently outrank it above 640px.
+        'max-w-lg',
         className,
       )}
       {...props}

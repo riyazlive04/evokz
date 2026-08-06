@@ -69,9 +69,29 @@ export function AdminNav() {
   }
 
   return (
-    <nav aria-label="Console sections" className="-mb-px flex gap-1 overflow-x-auto">
+    <nav
+      aria-label="Console sections"
+      className={cn(
+        '-mb-px flex gap-1 overflow-x-auto',
+        // Bleeds to the viewport edges on mobile so the row scrolls past the
+        // layout's own padding instead of clipping the last tab against it. The
+        // negative margin is cancelled at `sm`, where all six fit unscrolled.
+        '-mx-4 px-4 sm:mx-0 sm:px-0',
+        // The horizontal bar sits directly under the header's own border, and a
+        // permanent scrollbar gutter on desktop-class browsers would read as a
+        // second rule.
+        'scrollbar-none',
+      )}
+    >
       {NAV_ITEMS.map(renderItem)}
-      <span className="ml-auto flex gap-1 pl-6">{TRAILING_NAV_ITEMS.map(renderItem)}</span>
+      {/*
+        `ml-auto` only from `sm`. Inside a scrolling flex row it resolves against
+        the *content* width, not the visible width, so on mobile it added a gap
+        the operator had to scroll through to reach Posters and Demo.
+      */}
+      <span className="flex gap-1 pl-2 sm:ml-auto sm:pl-6">
+        {TRAILING_NAV_ITEMS.map(renderItem)}
+      </span>
     </nav>
   );
 }

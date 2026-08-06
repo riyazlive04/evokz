@@ -117,7 +117,7 @@ export function ClientControls({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-x-6 gap-y-4">
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-4 sm:gap-x-6">
         <div className="space-y-1.5">
           <Label htmlFor="client-cron-time">Delivery time ({timeZone})</Label>
           <div className="flex items-center gap-1.5">

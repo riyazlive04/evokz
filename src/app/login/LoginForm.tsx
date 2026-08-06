@@ -3,7 +3,7 @@
 import * as React from 'react';
 
 import { useRouter } from 'next/navigation';
-import { KeyRound, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, Loader2 } from 'lucide-react';
 
 import { login } from '@/app/login/actions';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,7 @@ export function LoginForm({ next }: { next: string }) {
   const signIn = useAction(login);
   const router = useRouter();
   const [submitted, setSubmitted] = React.useState(false);
+  const [revealed, setRevealed] = React.useState(false);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -45,17 +46,45 @@ export function LoginForm({ next }: { next: string }) {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="space-y-2">
         <Label htmlFor="password">Console password</Label>
-        <Input
-          id="password"
-          name="password"
-          type="password"
-          autoComplete="current-password"
-          autoFocus
-          required
-          disabled={busy}
-          aria-invalid={signIn.error ? true : undefined}
-          aria-describedby={signIn.error ? 'login-error' : undefined}
-        />
+        <div className="relative">
+          <Input
+            id="password"
+            name="password"
+            type={revealed ? 'text' : 'password'}
+            autoComplete="current-password"
+            autoFocus
+            required
+            disabled={busy}
+            aria-invalid={signIn.error ? true : undefined}
+            aria-describedby={signIn.error ? 'login-error' : undefined}
+            // Room for the toggle, so a long passphrase scrolls under the label
+            // rather than beneath the button.
+            className="pr-10"
+          />
+          {/*
+            `type="button"` is load-bearing: a bare <button> inside a form
+            defaults to submit, so revealing the password would post the form —
+            which on a half-typed password reads as a failed login.
+
+            Not disabled while busy. The field is, so the value cannot change,
+            and an operator who mistypes wants to see what they sent while the
+            request is still in flight.
+          */}
+          <button
+            type="button"
+            onClick={() => setRevealed((current) => !current)}
+            aria-label={revealed ? 'Hide password' : 'Show password'}
+            aria-pressed={revealed}
+            aria-controls="password"
+            className="absolute inset-y-0 right-0 flex w-10 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {revealed ? (
+              <EyeOff className="h-4 w-4" aria-hidden />
+            ) : (
+              <Eye className="h-4 w-4" aria-hidden />
+            )}
+          </button>
+        </div>
       </div>
 
       {signIn.error && (

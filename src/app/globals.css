@@ -161,6 +161,21 @@
     background-size: 4rem 4rem;
   }
 
+  /* Scrollable rows that must not show a gutter.
+
+     For strips the operator swipes rather than drags — the section tabs, chip
+     rows — where a permanent scrollbar reads as a stray rule under the content.
+     The row still scrolls; only its indicator is hidden, so this belongs on
+     short horizontal strips and never on a tall region where the bar is the
+     only clue there is more to see. */
+  .scrollbar-none {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* legacy Edge */
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none; /* WebKit, which ignores scrollbar-width */
+  }
+
   /* Brand gradient applied to text (navy -> Sand). */
   .text-gradient-brand {
     background-image: linear-gradient(

@@ -33,8 +33,13 @@ export function PageHeader({
         )}
       </div>
 
+      {/* Full width on mobile so the actions sit on their own line at a usable
+          tap size, rather than being squeezed onto the title's row. `sm:w-auto`
+          restores the right-aligned cluster. */}
       {children && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2">{children}</div>
+        <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto">
+          {children}
+        </div>
       )}
     </div>
   );

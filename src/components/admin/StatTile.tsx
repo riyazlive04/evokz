@@ -42,12 +42,14 @@ export function StatTile({
         active && 'border-brand-to/60 shadow-brand-glow-sm',
       )}
     >
-      <CardContent className="flex items-start justify-between gap-3 p-5">
+      <CardContent className="flex items-start justify-between gap-3 p-4 sm:p-5">
         <div className="space-y-1">
           <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
             {label}
           </p>
-          <p className="font-mono text-3xl font-semibold text-foreground">{value}</p>
+          <p className="font-mono text-2xl font-semibold text-foreground sm:text-3xl">
+            {value}
+          </p>
           <p className="text-[11px] text-muted-foreground">{hint}</p>
         </div>
         <Icon className={`h-5 w-5 shrink-0 ${TONE_CLASSES[tone]}`} />

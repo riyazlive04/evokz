@@ -26,6 +26,7 @@ import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key
 import { isImageSizePresetId } from '@/lib/image-sizes';
 import {
   clientProvisionSchema,
+  normalizeWhatsappNumber,
   provisionClient,
   repairClientDriveFolder,
 } from '@/lib/onboarding';
@@ -249,6 +250,100 @@ const cronTimeSchema = z
   .string()
   .trim()
   .regex(HH_MM_PATTERN, 'Delivery time must use 24-hour HH:MM format');
+
+/**
+ * Company name and WhatsApp number — the two provisioning facts nothing else
+ * could change.
+ *
+ * Everything else on the tenant record already has an owner: cron time, spend
+ * cap and output size in `ClientControls`, plan/vertical/delivery days in
+ * `ClientAssignment`, and the poster contact bar in `PosterIdentityPanel`. This
+ * exists because those two were written once at onboarding — by a Razorpay
+ * checkout, in the usual case — and a typo in either was permanent.
+ *
+ * Validated against the same rules `clientProvisionSchema` applies, and through
+ * the same `normalizeWhatsappNumber`, so an edited number is byte-identical to
+ * one that arrived through provisioning. Without that, "9876543210" typed here
+ * and the same number from a checkout would be two different rows to the
+ * duplicate check in `provisionClient`.
+ */
+const clientProfileSchema = z.object({
+  companyName: z.string().trim().min(2, 'Company name is required').max(160),
+  whatsappNumber: z
+    .string()
+    .trim()
+    .min(8, 'WhatsApp number is required')
+    .transform(normalizeWhatsappNumber)
+    .refine((value) => /^\d{10,15}$/.test(value), {
+      message: 'WhatsApp number must be 10–15 digits in international format',
+    }),
+});
+
+export type ClientProfileInput = z.input<typeof clientProfileSchema>;
+
+export interface ClientProfileOutcome {
+  companyName: string;
+  whatsappNumber: string;
+  /** Non-blocking note about a number collision; see below. */
+  warning: string | null;
+}
+
+export async function updateClientProfile(
+  clientId: string,
+  input: ClientProfileInput,
+): Promise<ActionResult<ClientProfileOutcome>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+    const data = clientProfileSchema.parse(input);
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: { whatsappNumber: true, isDemo: true, planId: true },
+    });
+    if (!client) return failure('That client no longer exists.');
+
+    // Warn, do not block. There is no unique index on the column and two
+    // tenants legitimately share a number when an agency runs campaigns for
+    // its own clients — but `provisionClient` dedupes on
+    // (whatsappNumber, planId, live window, isDemo), so a collision on all four
+    // would make the next checkout resolve to the wrong row.
+    let warning: string | null = null;
+    if (data.whatsappNumber !== client.whatsappNumber) {
+      const collision = await prisma.client.findFirst({
+        where: {
+          id: { not: id },
+          whatsappNumber: data.whatsappNumber,
+          planId: client.planId,
+          isDemo: client.isDemo,
+          endDate: { gte: new Date() },
+        },
+        select: { companyName: true },
+      });
+      if (collision) {
+        warning =
+          `${collision.companyName} already runs this plan on the same number. ` +
+          'A future payment for that plan may resolve to whichever row is found first.';
+      }
+    }
+
+    await prisma.client.update({
+      where: { id },
+      data: { companyName: data.companyName, whatsappNumber: data.whatsappNumber },
+    });
+
+    revalidateAdmin();
+    // The warning rides on a success rather than becoming a failure: the edit did
+    // happen, and refusing it would strand an operator who genuinely needs two
+    // tenants on one number.
+    return success({
+      warning,
+      companyName: data.companyName,
+      whatsappNumber: data.whatsappNumber,
+    });
+  } catch (error) {
+    return toFailure(error, 'Updating client details');
+  }
+}
 
 export async function updateClientCronTime(
   clientId: string,
