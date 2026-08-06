@@ -1,13 +1,13 @@
 # Production stack for a single Hostinger VPS.
 #
-#   caddy  — public edge. Terminates TLS (auto-issued), holds the gateway lock.
+#   caddy  — public edge. Terminates TLS (auto-issued) and proxies to the app.
 #   app    — Next.js. No published host port; reachable only over the compose network.
+#            Holds the only lock on the console — its own `/login` session.
 #   db     — PostgreSQL. No published host port either; nothing outside this file
 #            should ever be able to reach 5432.
 #
-# Both `app` and `caddy` read secrets from `.env` via env_file. Compose does not
-# interpolate env_file contents, which matters: the bcrypt hash in
-# GATEWAY_AUTH_HASH contains `$` characters that `${...}` substitution would eat.
+# Caddy no longer carries a Basic Auth gateway. It was a second credential in
+# front of the app's own sign-in, which meant two passwords to open one page.
 
 name: evokz
 
@@ -59,14 +59,13 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"   # HTTP/3
-    # Only APP_DOMAIN and ACME_EMAIL — neither contains a `$`. The gateway
-    # credential deliberately does NOT travel this way: Compose interpolates
-    # env_file values, which truncates a bcrypt hash at its second `$`. It is
-    # bind-mounted below instead.
+    # Domain and ACME contact only. Keep `$` out of every value here: Compose
+    # interpolates env_file contents, so `$anything` is silently replaced with an
+    # environment lookup — the trap that used to force the gateway password into
+    # a bind-mounted file of its own.
     env_file: .env.caddy
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./caddy-gateway-auth.conf:/etc/caddy/gateway-auth.conf:ro
       - caddy_data:/data     # issued certificates — losing this re-triggers ACME
       - caddy_config:/config
       - caddy_logs:/var/log/caddy

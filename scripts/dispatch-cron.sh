@@ -10,8 +10,8 @@
 #   - CRON_SECRET never crosses the internet.
 #   - The sweep keeps running when DNS is mid-change or the TLS certificate is
 #     being renewed — neither has anything to do with dispatching content.
-#   - It cannot be blocked by the Caddy gateway lock, so the `/api/cron`
-#     exclusion in the Caddyfile is not load-bearing for scheduled runs.
+#   - It never touches the edge at all, so no change to Caddy or to the app's
+#     own auth can break scheduled runs.
 #
 # Keep the crontab interval and CRON_WINDOW_MINUTES in .env in agreement: the
 # sweep only matches clients whose delivery time falls inside the window, so a

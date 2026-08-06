@@ -1,7 +1,7 @@
 # Deploying Evokz ACE to a Hostinger VPS
 
 Target: `evokz.in` served from a single VPS running Docker Compose — Caddy at the
-edge (TLS + gateway lock), Next.js, and PostgreSQL.
+edge (TLS + reverse proxy), Next.js, and PostgreSQL.
 
 Every command below runs **on the VPS as a non-root user in the `docker` group**,
 from the project directory, unless a step says otherwise.
@@ -15,7 +15,7 @@ The repo was written for Vercel. Two things Vercel provided have to be rebuilt h
 | Vercel provided | Replacement on the VPS |
 |---|---|
 | `vercel.json` crons (`*/5 * * * *` → `/api/cron`) | system crontab, §7 |
-| Password Protection in front of the console | Caddy Basic Auth + the app's own login, §4 |
+| Password Protection in front of the console | The app's own login, §4 |
 | Managed Postgres, managed backups | `db` service + `scripts/backup-db.sh`, §8 |
 | Automatic TLS | Caddy's ACME client, automatic once DNS resolves |
 
@@ -162,7 +162,8 @@ DATABASE_URL="postgresql://evokz:PASTE_DB_PASSWORD@db:5432/evokz_ace?schema=publ
 
 # 2. Still the placeholder shipped in the repo. Anyone who guesses it can
 #    trigger the dispatch sweep — which generates images and sends WhatsApp
-#    messages — because /api/cron is excluded from the gateway lock by design.
+#    messages — because /api/cron carries no session and authenticates on this
+#    value alone.
 CRON_SECRET="PASTE_FROM_openssl_rand_-hex_32"
 
 # 3. Consumed by the `db` service in docker-compose.yml.
@@ -190,54 +191,59 @@ docker run --rm -it -v "$PWD:/app" -w /app node:20-bookworm-slim \
   node scripts/hash-password.mjs
 ```
 
-> **The local `.env` currently carries the dev password `evokz-local-dev-2026`.**
-> Replace `ADMIN_PASSWORD_HASH` and `SESSION_SECRET` on the server with freshly
-> generated values — a credential that has lived in a local file is not a
-> production credential.
+> **The console password is now the only lock** — the Caddy Basic Auth gateway
+> that used to sit in front of it is gone (see "One password" below). Generate
+> `ADMIN_PASSWORD_HASH` and `SESSION_SECRET` fresh on the server and keep the
+> plaintext out of this repo, which is public. A password that has lived in a
+> local file, a chat log, or a commit is not a production credential.
 
 Lock the file down: `chmod 600 .env`
 
-### 4b. Edge config and the gateway credential — two files
+### 4b. Edge config — one file
 
 ```bash
 # Domain + ACME contact. No secrets, no `$` characters.
 cp .env.caddy.example .env.caddy
-nano .env.caddy                 # set APP_DOMAIN and ACME_EMAIL
-
-# The gateway password, in its own file.
-cp caddy-gateway-auth.conf.example caddy-gateway-auth.conf
-docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'your-gateway-password'
-nano caddy-gateway-auth.conf    # paste the hash in place of the placeholder
-chmod 600 .env.caddy caddy-gateway-auth.conf
+nano .env.caddy                 # set APP_DOMAIN, REDIRECT_DOMAIN and ACME_EMAIL
+chmod 600 .env.caddy
 ```
 
-> **Why the hash gets its own file.** Docker Compose interpolates `$` sequences
-> in `env_file` values, so a bcrypt hash passed that way arrives truncated at its
-> second `$` — `$2a$14$abc...` becomes `$2a$14`. Verified against Compose v5.3.0.
-> The failure is silent: the stack starts, and the gateway simply never accepts
-> the password. A bind-mounted file skips interpolation entirely.
+> **Keep `$` out of every value in this file.** Docker Compose interpolates
+> `env_file` contents, so `$anything` is replaced by an environment lookup —
+> silently, leaving a value that is wrong rather than one that errors. Verified
+> against Compose v5.3.0. This is why the old Caddy gateway password had to live
+> in a bind-mounted file of its own, and it still applies to anything added here.
 
-Both files are in `.gitignore`. Confirm before your first commit on the server:
+It is in `.gitignore`. Confirm before your first commit on the server:
 
 ```bash
-git check-ignore -v .env .env.caddy caddy-gateway-auth.conf
+git check-ignore -v .env .env.caddy
 ```
 
-### Why there are two passwords
+### One password, and what guards the rest
 
-They are different locks doing different jobs, and you will be asked for both:
+There is a single credential: **the app login** at `/login`. It issues a session
+with a 12-hour sliding expiry, a sign-out button, and a per-IP brute-force
+throttle, and it is enforced by `src/middleware.ts` on every path below.
 
-- **The Caddy gateway lock** (browser popup) sits in front of the whole origin.
-  It is what stops an anonymous visitor from ever reaching the Next.js bundle —
-  and therefore from ever seeing the Server Action IDs embedded in it.
-- **The app login** (`/login`) is the real session, with a 12-hour sliding
-  expiry, a sign-out button, and a brute-force throttle. It is also the only lock
-  that exists when you run the app locally.
+Caddy used to add a Basic Auth gateway in front of the whole origin, so reaching
+the console meant answering a browser popup *and then* signing in. It was removed
+because two credentials for one page is a daily tax on the operator. The trade is
+worth understanding:
 
-`/api/webhooks/razorpay` and `/api/cron` bypass the gateway lock, because Razorpay
-and cron are machines that cannot answer a Basic Auth challenge. Both verify their
-own callers — HMAC-SHA256 over the raw body, and a Bearer token that fails closed
-when unset — so nothing is unguarded.
+- **Unchanged:** the middleware fails closed, so an anonymous visitor still
+  cannot reach `/admin/*` or invoke a Server Action. Nothing became reachable
+  that was not reachable before.
+- **Changed:** the login endpoint is now exposed to the open internet, so online
+  password guessing is answered by the in-memory throttle in
+  `src/app/login/actions.ts` (8 attempts per IP per 15 minutes, reset by a
+  container restart) rather than by Caddy. Keep the console password long, and
+  put the gateway back if the origin starts getting probed.
+
+`/api/webhooks/razorpay` and `/api/cron` are excluded from the middleware because
+Razorpay and the system cron are machines with no session cookie. Both verify
+their own callers — HMAC-SHA256 over the raw body, and a Bearer token that fails
+closed when unset — so neither is unguarded.
 
 ---
 
@@ -281,30 +287,37 @@ Against a fresh empty volume, which is the normal case here, no such step is nee
 ## 6. Verify
 
 ```bash
-# TLS issued and the gateway lock is live (401 without credentials)
+# TLS issued, and an anonymous visitor is redirected to the login (307 -> /login)
 curl -I https://evokz.in
 
-# Gateway credentials accepted, then the app's own login redirect (307 -> /login)
-curl -I -u "evokz:YOUR_GATEWAY_PASSWORD" https://evokz.in
+# There must be NO 401 with a `WWW-Authenticate: Basic` header anywhere here —
+# that would mean a gateway lock is still live and the removal did not take.
+curl -sI https://evokz.in | grep -i 'www-authenticate'                        # no output
 
-# The cron endpoint bypasses the gateway but rejects a bad token
+# A server action with no session is rejected outright rather than redirected
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'next-action: probe' \
+  https://evokz.in/admin/dashboard                                            # 401
+
+# The cron endpoint takes no session but rejects a bad token
 curl -s -o /dev/null -w '%{http_code}\n' https://evokz.in/api/cron            # 401
 curl -s -H "Authorization: Bearer $CRON_SECRET" https://evokz.in/api/cron     # JSON summary
 
-# Razorpay endpoint bypasses the gateway but rejects an unsigned body
+# Razorpay endpoint takes no session but rejects an unsigned body
 curl -s -X POST -H 'content-type: application/json' -d '{}' \
   https://evokz.in/api/webhooks/razorpay                                      # {"error":"Invalid signature"}
 ```
 
-Then in a browser: `https://evokz.in` → gateway popup → `/login` → console
-password → dashboard. Check the dashboard's config banner reports **no** unset
-integration keys.
+Then in a browser: `https://evokz.in` → `/login` → console password → dashboard,
+with no browser popup at any point. Check the dashboard's config banner reports
+**no** unset integration keys.
 
 Poster rendering is the one path with a native dependency (`@resvg/resvg-js`) and
 a platform-specific binary, so exercise it explicitly:
 
 ```bash
-curl -u "evokz:YOUR_GATEWAY_PASSWORD" -b cookies.txt \
+# `cookies.txt` must hold a live session — the preview route is behind the
+# middleware, so without one this saves a redirect to /login, not a PNG.
+curl -b cookies.txt \
   "https://evokz.in/api/poster/preview?archetype=scrim" -o test.png
 file test.png    # expect: PNG image data
 ```
@@ -425,7 +438,7 @@ no session table to delete rows from.
 | Every request returns **503**, log says `SESSION_SECRET and/or ADMIN_PASSWORD_HASH are unset` | Auth env vars missing. `middleware.ts` fails closed on purpose — it will not degrade to an open console. |
 | Login always says "That password is not correct" despite a fresh hash | `ADMIN_PASSWORD_HASH` was mangled. It must use `:` separators, never `$` — Next expands `$NAME` in `.env` values. Re-run the generator. |
 | Caddy loops on ACME, no certificate | DNS not resolving to this VPS yet, port 80 blocked (check the Hostinger panel firewall as well as `ufw`), or `APP_DOMAIN` lists a name with no A record. |
-| Gateway popup rejects the correct password | The bcrypt hash was moved into `.env.caddy` or a compose `environment:` entry, where Compose truncates it at the second `$`. It belongs in `caddy-gateway-auth.conf` — §4b. |
+| A browser popup asks for a username and password before the console | A Basic Auth gateway is still live at the edge. The stack is running an older `Caddyfile` — redeploy it and `docker compose up -d caddy`; check for a stray `basic_auth` or `import` directive. |
 | Build stops with no error | OOM killer during `next build`. Add swap (§1). |
 | App restarts in a loop, log shows a Prisma connection error | `DATABASE_URL` still points at `localhost`. Inside compose the host is `db`. |
 | `prisma migrate deploy` errors on a non-empty schema | Baseline it — §5, "If the database is not empty". |
@@ -447,5 +460,7 @@ Being explicit about what this deploy does *not* fix:
   both. §8's off-site copy is what limits the damage.
 - **`UsageEvent.backfilled`** is read but never written, so spend reports treat
   every event as live.
-- **In-memory login throttle.** Per-process, and reset by any restart. The Caddy
-  gateway lock is the real defence against online guessing.
+- **In-memory login throttle.** Per-process, and reset by any restart. With the
+  Caddy gateway removed this is the outermost defence against online guessing,
+  and it does not stop a distributed attempt. It is the weakest point of the
+  single-password setup — the mitigation is a long console password.

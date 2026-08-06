@@ -18,10 +18,11 @@ import {
  * WhatsApp messages to real client numbers. Server actions POST to the route
  * they were rendered from, so covering `/admin/*` here covers them too.
  *
- * Note this is the *second* lock in production. Caddy holds a Basic Auth
- * gateway in front of the whole origin (see `Caddyfile`); this one is what makes
- * the console a real login rather than a shared browser popup, and it is the
- * only lock that exists when running locally.
+ * This is the *only* lock, in production as well as locally. Caddy used to hold
+ * a Basic Auth gateway in front of the whole origin, so an operator answered a
+ * browser popup and then this login; that outer lock was removed to leave one
+ * credential. Nothing here may therefore be softened into a warning or a
+ * redirect-on-failure — there is no longer anything behind it to catch a mistake.
  */
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {

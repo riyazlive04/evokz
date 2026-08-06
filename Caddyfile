@@ -13,35 +13,27 @@
 {$APP_DOMAIN} {
 	encode zstd gzip
 
-	# --- Machine callers -------------------------------------------------
-	# These two authenticate themselves and cannot present Basic Auth
-	# credentials: Razorpay signs the raw body with HMAC-SHA256, and the cron
-	# sweep sends `Authorization: Bearer $CRON_SECRET`. Putting a Basic Auth
-	# challenge in front of either would break delivery, and the Authorization
-	# header can only carry one scheme. They are the ONLY paths that bypass the
-	# gateway lock — both verify their own callers and fail closed.
-	@machine path /api/webhooks/razorpay /api/cron
-	handle @machine {
-		reverse_proxy app:3000
-	}
-
-	# --- Everything else -------------------------------------------------
-	# The gateway lock. This is what stops an anonymous visitor from invoking
-	# the Server Actions that spend OpenAI/fal.ai credit and message real
-	# clients on WhatsApp. It sits in front of the app's own login, so both
-	# have to be cleared.
+	# --- Origin ----------------------------------------------------------
+	# No Basic Auth here. There used to be a second, outer gateway lock at this
+	# layer, which meant an operator answered a browser popup (user + password)
+	# and *then* the console's own sign-in form — two credentials to reach one
+	# page. It was removed deliberately: the app's login in `src/middleware.ts`
+	# now stands alone.
 	#
-	# The credential is imported from a mounted file rather than read from an
-	# environment variable, and that is not a style choice. Docker Compose
-	# interpolates `$` sequences in `env_file` values, so a bcrypt hash passed
-	# that way arrives truncated at its second `$` — `$2a$14$abc...` becomes
-	# `$2a$14`. Caddy then either fails to parse it or accepts nothing, and the
-	# only symptom is a login that never works. A mounted file never passes
-	# through Compose's interpolation at all.
-	handle {
-		import /etc/caddy/gateway-auth.conf
-		reverse_proxy app:3000
-	}
+	# What that costs is worth stating plainly. The middleware fails closed and
+	# covers every path except the two self-authenticating machine endpoints
+	# below, so nothing is exposed that was not exposed before — but online
+	# password guessing now reaches the app itself, where the only brake is the
+	# per-IP throttle in `src/app/login/actions.ts` (8 attempts / 15 min, and
+	# in-memory, so a container restart clears it). Keep the console password
+	# long, and put the gateway back if this origin ever starts getting probed.
+	#
+	# `/api/webhooks/razorpay` and `/api/cron` were the two paths carved out of
+	# the old lock, because Razorpay signs its body with HMAC-SHA256 and the cron
+	# sweep sends `Authorization: Bearer $CRON_SECRET` — neither can answer a
+	# Basic Auth challenge. They still authenticate their own callers and still
+	# fail closed; they simply no longer need a special case here.
+	reverse_proxy app:3000
 
 	# Headroom over the 8 MB Server Action body limit set in next.config.mjs, so
 	# an oversized logo upload is rejected by the app's own message rather than

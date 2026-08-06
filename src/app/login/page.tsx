@@ -14,8 +14,9 @@ import { SESSION_COOKIE, verifySessionToken } from '@/lib/auth';
 
 export const metadata: Metadata = {
   title: 'Sign in — Evokz ACE',
-  // The console is not a public product surface; keep it out of search results
-  // even though the gateway lock means a crawler could never reach past here.
+  // The console is not a public product surface, and since the Caddy gateway
+  // was removed this page is reachable by anyone — so keeping it out of search
+  // results is now doing real work rather than belt-and-braces.
   robots: { index: false, follow: false },
 };
 

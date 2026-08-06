@@ -33,9 +33,15 @@ const credentialsSchema = z.object({
  *
  * Deliberately in-memory: there is one app container, and a restart clearing the
  * counters is an acceptable trade for not putting a write on the hot path of
- * every failed login. It is a speed bump against online guessing, **not** a
- * defence against a distributed attempt — the Caddy gateway lock is what stands
- * between the internet and this endpoint in production.
+ * every failed login.
+ *
+ * **This is now the outermost defence.** It used to sit behind a Caddy Basic
+ * Auth gateway, which is what actually stood between the internet and this
+ * endpoint; that gateway was removed so the console takes one password instead
+ * of two. What remains is a per-IP speed bump that a distributed attempt walks
+ * straight past, and that a container restart resets. If this endpoint ever
+ * starts drawing real guessing traffic, the fix is a shared store for these
+ * counters or putting the gateway back — not a longer window here.
  */
 const FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_FAILURES = 8;
