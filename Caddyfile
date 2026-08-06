@@ -8,6 +8,22 @@
 	# Caddy's admin API binds localhost:2019 inside the container. Nothing
 	# publishes it, but disabling it removes the surface outright.
 	admin off
+
+	# The automatic HTTP->HTTPS redirect is a catch-all, not a per-site route:
+	# with it on, port 80 answered `308 Location: https://<whatever>` for *any*
+	# Host header, including the names freed below. Measured, not assumed. That
+	# is a response on behalf of a domain this server does not serve, so it is
+	# disabled here and restated explicitly for our one name.
+	#
+	# ACME is unaffected — the HTTP-01 challenge handler is registered by the
+	# issuer, not by the redirect, and TLS-ALPN-01 remains as a fallback.
+	auto_https disable_redirects
+}
+
+# `{host}` rather than `{$APP_DOMAIN}` so this stays correct if the variable
+# ever holds more than one name again.
+http://{$APP_DOMAIN} {
+	redir https://{host}{uri} permanent
 }
 
 {$APP_DOMAIN} {
