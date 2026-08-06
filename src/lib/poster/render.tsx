@@ -12,6 +12,7 @@ import {
   readSvgDimensions,
   type ImageDimensions,
 } from '@/lib/poster/image-info';
+import { measureInkLuminance } from '@/lib/poster/logo-key';
 import { droppedSlots, resolveMetrics } from '@/lib/poster/metrics';
 import { requiredFaces, resolvePosterTheme } from '@/lib/poster/theme';
 import type { BrandGuideline } from '@/lib/types/brand';
@@ -127,7 +128,12 @@ export async function renderPoster(
 
   // Stage 1 — lay out the tree and emit SVG.
   const svg = await satori(
-    renderArchetype({ spec, metrics, logoDimensions: logo?.dimensions ?? null }),
+    renderArchetype({
+      spec,
+      metrics,
+      logoDimensions: logo?.dimensions ?? null,
+      logoInkLuminance: logo?.inkLuminance ?? null,
+    }),
     {
       width: input.width,
       height: input.height,
@@ -278,6 +284,13 @@ function resolveArchetype(stored: string | null, dayNumber: number): PosterArche
 interface LoadedLogo {
   dataUri: string;
   dimensions: ImageDimensions;
+  /**
+   * Mean luminance of the logo's opaque pixels, 0–1, or null when it could not be
+   * measured. Drives the backing plate in `LogoLock`: a logo whose background has
+   * been keyed out has nothing behind it, so dark ink on a dark archetype would
+   * otherwise be invisible.
+   */
+  inkLuminance: number | null;
 }
 
 /**
@@ -370,6 +383,12 @@ async function fetchLogo(url: string): Promise<LoadedLogo | null> {
   return {
     dataUri: toDataUri(bytes, dimensions.mimeType),
     dimensions,
+    // Measured here rather than read from a column because this is the one place
+    // that holds the bytes for *every* logo — uploaded, externally linked, keyed
+    // or not — and the answer is then cached with the data URI for the process
+    // lifetime. SVG returns null: rasterising vector artwork to average it would
+    // cost more than the plate it might justify.
+    inkLuminance: isSvg ? null : await measureInkLuminance(bytes, dimensions.mimeType),
   };
 }
 

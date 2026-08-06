@@ -2,9 +2,20 @@
 
 import * as React from 'react';
 
-import { Check, ImageOff, Link2, Loader2, Trash2, Upload } from 'lucide-react';
+import {
+  Check,
+  ImageOff,
+  Link2,
+  Loader2,
+  Scissors,
+  Trash2,
+  Undo2,
+  Upload,
+} from 'lucide-react';
 
 import {
+  removeClientLogoBackground,
+  revertClientLogoBackground,
   setClientLogoUrl,
   updateClientPosterIdentity,
   uploadClientLogo,
@@ -20,6 +31,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAction } from '@/hooks/use-action';
+import type { LogoKeySkipReason } from '@/lib/poster/logo-key';
 
 /**
  * Editor for the identity the poster renderer composites onto every creative:
@@ -30,12 +42,34 @@ import { useAction } from '@/hooks/use-action';
  * ledger has always read "Logo uploads and scrape targets appear here."
  */
 
+/**
+ * Why an upload's background was left as it arrived.
+ *
+ * Shorter than the copy `removeClientLogoBackground` returns, because that one
+ * answers a button press and this one explains an outcome nobody asked about —
+ * the file uploaded successfully either way. Keyed by `LogoKeySkipReason`; the
+ * `Record` makes a new reason a type error rather than a blank line in the UI.
+ */
+const SKIP_NOTES: Record<LogoKeySkipReason, string> = {
+  'already-transparent': 'Already had a transparent background — left as it is.',
+  'background-not-flat':
+    "Background is a gradient or photo, so it was left alone rather than damaged. Supply a PNG with a transparent background if you need it removed.",
+  'nothing-to-remove': 'No background found around the edges — left as it is.',
+  'would-erase-logo':
+    'The mark is the same colour as its border, so removing the background would have erased it. Left as it is.',
+  vector: 'SVG artwork has no background to remove.',
+  undecodable: 'The image could not be read for background removal, so it was stored as-is.',
+};
+
 export interface PosterIdentityPanelProps {
   clientId: string;
   companyName: string;
   logoUrl: string | null;
   /** Set when we host the file, which is what makes "Remove" able to tidy up. */
   logoDriveFileId: string | null;
+  /** The pre-removal file. Non-null exactly when `logoBackgroundRemoved` is true. */
+  logoOriginalUrl: string | null;
+  logoBackgroundRemoved: boolean;
   brandTagline: string | null;
   websiteUrl: string | null;
   displayPhone: string | null;
@@ -49,6 +83,8 @@ export function PosterIdentityPanel({
   companyName,
   logoUrl,
   logoDriveFileId,
+  logoOriginalUrl,
+  logoBackgroundRemoved,
   brandTagline,
   websiteUrl,
   displayPhone,
@@ -58,11 +94,19 @@ export function PosterIdentityPanel({
   const upload = useAction(uploadClientLogo);
   const link = useAction(setClientLogoUrl);
   const identity = useAction(updateClientPosterIdentity);
+  const cutout = useAction(removeClientLogoBackground);
+  const restore = useAction(revertClientLogoBackground);
 
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = React.useState<string | null>(null);
   const [urlDraft, setUrlDraft] = React.useState('');
   const [saved, setSaved] = React.useState(false);
+  /**
+   * Why an upload's background was left alone. Held in state rather than derived
+   * from props because it describes what just happened to *this* file — the row
+   * afterwards looks identical to one that was never processed.
+   */
+  const [uploadNote, setUploadNote] = React.useState<string | null>(null);
 
   const [form, setForm] = React.useState({
     brandTagline: brandTagline ?? '',
@@ -97,6 +141,9 @@ export function PosterIdentityPanel({
     if (result.ok) {
       setFileName(null);
       if (fileRef.current) fileRef.current.value = '';
+      // A declined removal is not an upload failure — the file stored fine. It
+      // gets a note beside the preview rather than the error line.
+      setUploadNote(result.data.skipped ? SKIP_NOTES[result.data.skipped] : null);
       flashSaved();
     }
   }
@@ -106,13 +153,33 @@ export function PosterIdentityPanel({
     const result = await link.run(clientId, urlDraft);
     if (result.ok) {
       setUrlDraft('');
+      setUploadNote(null);
       flashSaved();
     }
   }
 
   async function handleRemove() {
     const result = await link.run(clientId, null);
-    if (result.ok) flashSaved();
+    if (result.ok) {
+      setUploadNote(null);
+      flashSaved();
+    }
+  }
+
+  async function handleCutout() {
+    const result = await cutout.run(clientId);
+    if (result.ok) {
+      setUploadNote(null);
+      flashSaved();
+    }
+  }
+
+  async function handleRestore() {
+    const result = await restore.run(clientId);
+    if (result.ok) {
+      setUploadNote(null);
+      flashSaved();
+    }
   }
 
   async function handleSaveIdentity(event: React.FormEvent) {
@@ -125,8 +192,10 @@ export function PosterIdentityPanel({
     if (result.ok) flashSaved();
   }
 
-  const busy = upload.pending || link.pending || identity.pending;
-  const error = upload.error ?? link.error ?? identity.error;
+  const busy =
+    upload.pending || link.pending || identity.pending || cutout.pending || restore.pending;
+  const error =
+    upload.error ?? link.error ?? identity.error ?? cutout.error ?? restore.error;
 
   return (
     <Card>
@@ -151,21 +220,102 @@ export function PosterIdentityPanel({
       <CardContent className="space-y-6">
         {/* ---- Logo ---- */}
         <div className="grid gap-5 sm:grid-cols-[200px_1fr]">
-          <div className="flex h-[132px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/40 p-3">
-            {logoUrl ? (
-              /* Arbitrary remote host (Drive or a client CDN) — a plain img avoids
-                 allowlisting every possible remote pattern in next.config. */
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={logoUrl}
-                alt={`${companyName} logo`}
-                className="max-h-full max-w-full object-contain"
-              />
-            ) : (
-              <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
-                <ImageOff className="h-6 w-6" />
-                <span className="text-[11px]">No logo on file</span>
+          <div className="space-y-2">
+            <div
+              className="flex h-[132px] items-center justify-center rounded-xl border border-dashed border-border p-3"
+              /* A checkerboard, not a flat surface. Transparency is the whole
+                 point of this panel now, and against a solid background a logo
+                 that still carries a white box is indistinguishable from one
+                 that has been keyed — which is exactly the thing the operator
+                 came here to check. */
+              style={
+                logoUrl
+                  ? {
+                      backgroundImage:
+                        'linear-gradient(45deg, hsl(var(--muted)) 25%, transparent 25%), linear-gradient(-45deg, hsl(var(--muted)) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, hsl(var(--muted)) 75%), linear-gradient(-45deg, transparent 75%, hsl(var(--muted)) 75%)',
+                      backgroundSize: '16px 16px',
+                      backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0px',
+                    }
+                  : undefined
+              }
+            >
+              {logoUrl ? (
+                /* Arbitrary remote host (Drive or a client CDN) — a plain img avoids
+                   allowlisting every possible remote pattern in next.config. */
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={logoUrl}
+                  alt={`${companyName} logo`}
+                  className="max-h-full max-w-full object-contain"
+                />
+              ) : (
+                <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
+                  <ImageOff className="h-6 w-6" />
+                  <span className="text-[11px]">No logo on file</span>
+                </div>
+              )}
+            </div>
+
+            {logoUrl && (
+              <div className="space-y-1.5">
+                {logoBackgroundRemoved ? (
+                  <>
+                    <div className="flex items-center gap-2">
+                      {logoOriginalUrl && (
+                        /* The before, at thumbnail size. Small on purpose — it is
+                           there to answer "did that work?" at a glance, and the
+                           result above is the thing being judged. */
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={logoOriginalUrl}
+                          alt="Logo before background removal"
+                          title="Before"
+                          className="h-8 w-8 shrink-0 rounded border border-border bg-muted object-contain p-0.5"
+                        />
+                      )}
+                      <p className="flex items-center gap-1 text-[11px] text-success-ink">
+                        <Check className="h-3 w-3 shrink-0" />
+                        Background removed
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-full text-[11px]"
+                      disabled={busy}
+                      onClick={handleRestore}
+                    >
+                      {restore.pending ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Undo2 className="h-3.5 w-3.5" />
+                      )}
+                      Use original
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 w-full text-[11px]"
+                    disabled={busy || !hasDriveFolder}
+                    onClick={handleCutout}
+                  >
+                    {cutout.pending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Scissors className="h-3.5 w-3.5" />
+                    )}
+                    Remove background
+                  </Button>
+                )}
               </div>
+            )}
+
+            {uploadNote && (
+              <p className="text-[11px] leading-snug text-muted-foreground">{uploadNote}</p>
             )}
           </div>
 
@@ -208,10 +358,11 @@ export function PosterIdentityPanel({
                 )}
               </div>
               <p className="text-[11px] text-muted-foreground">
-                PNG, JPEG, WebP or SVG, up to 4 MB. PNG with a transparent background
-                reads best on both the dark and light layouts. Stored in the client&apos;s
-                Drive folder and published link-readable, because the renderer fetches
-                it server-side.
+                PNG, JPEG, WebP or SVG, up to 4 MB. A flat background is detected and
+                removed automatically, and the file you uploaded is kept so
+                &ldquo;Use original&rdquo; is always available. Stored in the
+                client&apos;s Drive folder and published link-readable, because the
+                renderer fetches it server-side.
                 {!hasDriveFolder && (
                   <span className="mt-1 block text-danger-ink">
                     This client has no Drive folder yet — repair it first, or point at

@@ -126,6 +126,31 @@ model Client {
   logoUrl         String?
   // Set only when we own the file, so a re-upload can trash the previous one.
   logoDriveFileId String?
+
+  // ---- Background removal --------------------------------------------------
+  // An uploaded logo usually arrives as a JPEG or flattened PNG, so it carries a
+  // baked-in white rectangle that lands on the poster's ground colour. The
+  // uploader keys that background out (src/lib/poster/logo-key.ts) and points
+  // logoUrl at the result.
+  //
+  // The pre-removal file is kept rather than replaced: keying is a judgement
+  // call that can be wrong on a logo designed with a deliberate colour block, so
+  // "Use original" has to be one click and lossless.
+  //
+  // `logoUrl` stays the single thing the renderer reads, so these are pointers
+  // around it rather than a second source of truth. Exactly two states are legal:
+  //
+  //   logoBackgroundRemoved = true   logoUrl is a keyed PNG we generated, and
+  //                                  logoOriginal* hold the file it came from.
+  //   logoBackgroundRemoved = false  logoUrl is the file as supplied, and
+  //                                  logoOriginal* are both null.
+  //
+  // Reverting therefore moves logoOriginal* back into logoUrl and clears them;
+  // the keyed file is binned rather than parked, because re-keying the same
+  // bytes is deterministic and reproduces it exactly.
+  logoOriginalUrl         String?
+  logoOriginalDriveFileId String?
+  logoBackgroundRemoved   Boolean @default(false)
   // Letterspaced caps line under the logo, e.g. "BUILDING TRUST SINCE 1998".
   brandTagline    String?
   // Contact bar, right cell. Stored as typed, e.g. "www.example.com".

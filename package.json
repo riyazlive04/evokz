@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "lint:colors": "node scripts/lint-colors.mjs",
+    "check:logo-key": "tsx scripts/check-logo-key.ts",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
@@ -31,6 +32,7 @@
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "satori": "^0.10.14",
+    "sharp": "^0.35.3",
     "tailwind-merge": "^2.4.0",
     "tailwindcss-animate": "^1.0.7",
     "zod": "^3.25.0"
@@ -45,6 +47,7 @@
     "postcss": "^8.4.39",
     "prisma": "5.17.0",
     "tailwindcss": "^3.4.6",
+    "tsx": "^4.23.9",
     "typescript": "^5.5.4"
   }
 }

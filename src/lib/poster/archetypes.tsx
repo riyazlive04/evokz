@@ -43,6 +43,12 @@ export interface ArchetypeProps {
   spec: PosterSpec;
   metrics: PosterMetrics;
   logoDimensions: ImageDimensions | null;
+  /**
+   * Mean luminance of the logo's ink, 0–1, or null when unmeasured. Only
+   * `LogoLock` reads it, but it rides here with `logoDimensions` because every
+   * layout already forwards these props wholesale.
+   */
+  logoInkLuminance: number | null;
 }
 
 /**
@@ -188,6 +194,7 @@ function CopyStack({
   metrics,
   ground,
   logoDimensions,
+  logoInkLuminance,
   columnWidth,
 }: ArchetypeProps & { ground: Ground; columnWidth: number }) {
   const { copy, theme, identity } = spec;
@@ -200,6 +207,7 @@ function CopyStack({
         ground={ground}
         identity={identity}
         logoDimensions={logoDimensions}
+        logoInkLuminance={logoInkLuminance}
         availableWidth={columnWidth}
       />
 
@@ -279,7 +287,7 @@ function Canvas({
  * point of this archetype is that the photo stays fully visible on the side with
  * no copy on it.
  */
-function ScrimOverlay({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function ScrimOverlay({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, true);
   const columnWidth = Math.min(metrics.copyWidth, metrics.width * 0.68);
@@ -352,6 +360,7 @@ function ScrimOverlay({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={columnWidth}
           />
@@ -396,7 +405,7 @@ function ScrimOverlay({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * The feature block sits in an accent-filled rounded shape overlapping the
  * boundary, as in ref 2.
  */
-function DiagonalSplit({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function DiagonalSplit({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, true);
   const panelGround = groundForFill(theme, theme.accent);
@@ -448,6 +457,7 @@ function DiagonalSplit({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={columnWidth}
           />
@@ -499,7 +509,7 @@ function DiagonalSplit({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * band, contact bar below. Three hard horizontal edges and no overlap — the only
  * archetype that needs no absolute positioning for its structure.
  */
-function StackedBands({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function StackedBands({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, false);
   const darkGround = groundFor(theme, true);
@@ -523,6 +533,7 @@ function StackedBands({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={columnWidth}
           />
@@ -595,7 +606,7 @@ function StackedBands({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * The sweep is a single quadratic path. The contact bar renders transparent on top
  * of it — its own rectangular fill would square off the curve.
  */
-function CurvedSplit({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function CurvedSplit({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, false);
 
@@ -690,6 +701,7 @@ function CurvedSplit({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={columnWidth}
           />
@@ -728,7 +740,7 @@ function CurvedSplit({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * actually being bright: the dissolve is gradients of `lightNeutral` over the
  * photo's edges, which only reads as a fade if the photo is light there.
  */
-function LightEditorial({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function LightEditorial({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, false);
 
@@ -814,6 +826,7 @@ function LightEditorial({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={columnWidth}
           />
@@ -868,7 +881,7 @@ function LightEditorial({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * stay legible over a bright sky or a pale foreground, but the mid-frame stays at
  * a flat 0.62 rather than ramping, which is what keeps it reading as one tone.
  */
-function SpotlightCentre({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function SpotlightCentre({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, true);
   const columnWidth = Math.min(metrics.copyWidth, metrics.width * 0.78);
@@ -929,6 +942,7 @@ function SpotlightCentre({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={columnWidth}
           />
@@ -972,7 +986,7 @@ function SpotlightCentre({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * silhouette differs from the rest at a glance, which is what "another template"
  * has to mean to be worth adding.
  */
-function CornerInset({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function CornerInset({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, false);
   const focus = PHOTO_FOCUS.corner;
@@ -1049,6 +1063,7 @@ function CornerInset({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={columnWidth}
           />
@@ -1094,7 +1109,7 @@ function CornerInset({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * height would be truncation nobody could see. 30% is what leaves room for a
  * worst-case four-line headline plus the strip and the bar.
  */
-function InvertedBand({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function InvertedBand({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, true);
   const focus = PHOTO_FOCUS.inverted;
@@ -1160,6 +1175,7 @@ function InvertedBand({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={metrics.copyWidth}
           />
@@ -1208,7 +1224,7 @@ function InvertedBand({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * "curved sweep" on a 16:9 canvas gives a band a few pixels tall, which is worse
  * than an honest single adaptation.
  */
-function WideLayout({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function WideLayout({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const isDark = archetypeGroundIsDark(spec.archetype);
   const ground = groundFor(theme, isDark);
@@ -1267,6 +1283,7 @@ function WideLayout({ spec, metrics, logoDimensions }: ArchetypeProps) {
             spec={spec}
             metrics={metrics}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             ground={ground}
             columnWidth={columnWidth}
           />
@@ -1305,7 +1322,7 @@ function WideLayout({ spec, metrics, logoDimensions }: ArchetypeProps) {
  * so the renderer can log the loss — a banner that silently omits half the
  * skeleton looks deliberate, and nobody learns the preset was a poor fit.
  */
-function LetterboxLayout({ spec, metrics, logoDimensions }: ArchetypeProps) {
+function LetterboxLayout({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, true);
 
@@ -1375,6 +1392,7 @@ function LetterboxLayout({ spec, metrics, logoDimensions }: ArchetypeProps) {
             ground={ground}
             identity={identity}
             logoDimensions={logoDimensions}
+            logoInkLuminance={logoInkLuminance}
             availableWidth={logoCell}
           />
         </div>

@@ -22,6 +22,7 @@ import {
   uploadClientAsset,
 } from '@/lib/google-drive';
 import { readImageDimensions } from '@/lib/poster/image-info';
+import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key';
 import { isImageSizePresetId } from '@/lib/image-sizes';
 import {
   clientProvisionSchema,
@@ -1181,6 +1182,20 @@ const LOGO_MIME_TYPES = new Set([
 
 const MAX_LOGO_BYTES = 4 * 1024 * 1024;
 
+/**
+ * What happened to a logo, for the panel to report.
+ *
+ * `skipped` is present only on an upload the keyer declined, and is *not* an
+ * error: the file stored fine, its background simply could not be removed
+ * safely. The panel prints `describeSkip(reason)` beside the preview so the
+ * operator knows whether to supply a different file or leave it.
+ */
+export interface LogoOutcome {
+  logoUrl: string;
+  backgroundRemoved: boolean;
+  skipped?: LogoKeySkipReason;
+}
+
 // ---------------------------------------------------------------------------
 // Vertical reference templates
 // ---------------------------------------------------------------------------
@@ -1382,7 +1397,7 @@ export async function updateClientPosterIdentity(
 export async function uploadClientLogo(
   clientId: string,
   formData: FormData,
-): Promise<ActionResult<{ logoUrl: string }>> {
+): Promise<ActionResult<LogoOutcome>> {
   try {
     const id = z.string().uuid().parse(clientId);
 
@@ -1403,7 +1418,11 @@ export async function uploadClientLogo(
 
     const client = await prisma.client.findUnique({
       where: { id },
-      select: { gDriveFolderId: true, logoDriveFileId: true },
+      select: {
+        gDriveFolderId: true,
+        logoDriveFileId: true,
+        logoOriginalDriveFileId: true,
+      },
     });
     if (!client) return failure('That client no longer exists.');
     if (!client.gDriveFolderId) {
@@ -1412,28 +1431,195 @@ export async function uploadClientLogo(
       );
     }
 
-    const uploaded = await uploadClientAsset({
+    const bytes = Buffer.from(await file.arrayBuffer());
+
+    // The file as supplied goes up first and unconditionally. Keying is a
+    // judgement call, and one that has to be reversible without asking the
+    // operator to find the file again.
+    const original = await uploadClientAsset({
       folderId: client.gDriveFolderId,
-      fileName: `Brand_Logo${logoExtension(file.type)}`,
-      body: Buffer.from(await file.arrayBuffer()),
+      fileName: `Brand_Logo_Original${logoExtension(file.type)}`,
+      body: bytes,
       mimeType: file.type,
     });
 
+    const keyed = await keyLogoBackground(bytes, file.type);
+    const stored = keyed.keyed
+      ? await uploadClientAsset({
+          folderId: client.gDriveFolderId,
+          // Always PNG. The input is frequently JPEG, which has no alpha channel
+          // at all — which is precisely why its background was baked in.
+          fileName: 'Brand_Logo.png',
+          body: keyed.png,
+          mimeType: 'image/png',
+        })
+      : null;
+
     await prisma.client.update({
       where: { id },
-      data: { logoUrl: uploaded.viewUrl, logoDriveFileId: uploaded.fileId },
+      data: stored
+        ? {
+            logoUrl: stored.viewUrl,
+            logoDriveFileId: stored.fileId,
+            logoOriginalUrl: original.viewUrl,
+            logoOriginalDriveFileId: original.fileId,
+            logoBackgroundRemoved: true,
+          }
+        : {
+            // Nothing was keyed, so there is no second file and no "original" to
+            // revert to — the invariant in schema.prisma requires these null.
+            logoUrl: original.viewUrl,
+            logoDriveFileId: original.fileId,
+            logoOriginalUrl: null,
+            logoOriginalDriveFileId: null,
+            logoBackgroundRemoved: false,
+          },
     });
 
     // After the row is updated, so a failure here cannot leave the client
     // pointing at a file that has just been binned.
-    if (client.logoDriveFileId && client.logoDriveFileId !== uploaded.fileId) {
-      await trashDriveFile(client.logoDriveFileId);
-    }
+    await trashSupersededLogos(
+      [client.logoDriveFileId, client.logoOriginalDriveFileId],
+      [original.fileId, stored?.fileId],
+    );
 
     revalidateAdmin();
-    return success({ logoUrl: uploaded.viewUrl });
+    return success(
+      stored
+        ? { logoUrl: stored.viewUrl, backgroundRemoved: true }
+        : {
+            logoUrl: original.viewUrl,
+            backgroundRemoved: false,
+            skipped: keyed.keyed ? undefined : keyed.reason,
+          },
+    );
   } catch (error) {
     return toFailure(error, 'Uploading logo');
+  }
+}
+
+/**
+ * Keys the background out of the logo already on file.
+ *
+ * This is what reaches the logos uploaded before the feature existed, and the
+ * only route that reaches an externally-linked one — `setClientLogoUrl` never
+ * sees bytes, so a pasted URL is otherwise never processed at all.
+ *
+ * A logo it declines to key is reported as a failure rather than a quiet no-op:
+ * the operator pressed a button expecting a visible change, and "your logo's
+ * background is a gradient" is the answer, not silence.
+ */
+export async function removeClientLogoBackground(
+  clientId: string,
+): Promise<ActionResult<LogoOutcome>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: {
+        gDriveFolderId: true,
+        logoUrl: true,
+        logoDriveFileId: true,
+        logoBackgroundRemoved: true,
+      },
+    });
+    if (!client) return failure('That client no longer exists.');
+    if (!client.logoUrl) return failure('There is no logo to process yet.');
+    if (client.logoBackgroundRemoved) {
+      return failure('This logo has already had its background removed.');
+    }
+    if (!client.gDriveFolderId) {
+      return failure(
+        'This client has no Drive folder yet. Repair the Drive folder first, then try again.',
+      );
+    }
+
+    const fetched = await fetchLogoBytes(client.logoUrl);
+    if (!fetched) {
+      return failure(
+        'That logo could not be downloaded. Check the link still resolves to an image.',
+      );
+    }
+
+    const keyed = await keyLogoBackground(fetched.bytes, fetched.mimeType);
+    if (!keyed.keyed) return failure(describeSkip(keyed.reason));
+
+    const stored = await uploadClientAsset({
+      folderId: client.gDriveFolderId,
+      fileName: 'Brand_Logo.png',
+      body: keyed.png,
+      mimeType: 'image/png',
+    });
+
+    await prisma.client.update({
+      where: { id },
+      data: {
+        logoUrl: stored.viewUrl,
+        logoDriveFileId: stored.fileId,
+        // Whatever was live becomes the original. For an external URL that is a
+        // link we do not own, which is why the file id can be null here while
+        // the URL is not — revert points back at the client's own host.
+        logoOriginalUrl: client.logoUrl,
+        logoOriginalDriveFileId: client.logoDriveFileId,
+        logoBackgroundRemoved: true,
+      },
+    });
+
+    revalidateAdmin();
+    return success({ logoUrl: stored.viewUrl, backgroundRemoved: true });
+  } catch (error) {
+    return toFailure(error, 'Removing the logo background');
+  }
+}
+
+/**
+ * Puts the pre-removal logo back.
+ *
+ * The keyed file is binned rather than parked for a later toggle: keying the same
+ * bytes is deterministic, so `removeClientLogoBackground` reproduces it exactly,
+ * and keeping it would mean carrying a third state the schema comment would have
+ * to describe.
+ */
+export async function revertClientLogoBackground(
+  clientId: string,
+): Promise<ActionResult<LogoOutcome>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: {
+        logoDriveFileId: true,
+        logoOriginalUrl: true,
+        logoOriginalDriveFileId: true,
+        logoBackgroundRemoved: true,
+      },
+    });
+    if (!client) return failure('That client no longer exists.');
+    if (!client.logoBackgroundRemoved || !client.logoOriginalUrl) {
+      return failure('There is no earlier version of this logo to restore.');
+    }
+
+    const keyedFileId = client.logoDriveFileId;
+
+    await prisma.client.update({
+      where: { id },
+      data: {
+        logoUrl: client.logoOriginalUrl,
+        logoDriveFileId: client.logoOriginalDriveFileId,
+        logoOriginalUrl: null,
+        logoOriginalDriveFileId: null,
+        logoBackgroundRemoved: false,
+      },
+    });
+
+    await trashSupersededLogos([keyedFileId], [client.logoOriginalDriveFileId]);
+
+    revalidateAdmin();
+    return success({ logoUrl: client.logoOriginalUrl, backgroundRemoved: false });
+  } catch (error) {
+    return toFailure(error, 'Restoring the original logo');
   }
 }
 
@@ -1465,25 +1651,116 @@ export async function setClientLogoUrl(
 
     const client = await prisma.client.findUnique({
       where: { id },
-      select: { logoDriveFileId: true },
+      select: { logoDriveFileId: true, logoOriginalDriveFileId: true },
     });
     if (!client) return failure('That client no longer exists.');
 
     await prisma.client.update({
       where: { id },
-      // The Drive file id is dropped too: it no longer describes where the logo
-      // lives, and keeping it would make a later re-upload trash an unrelated file.
-      data: { logoUrl: parsed, logoDriveFileId: null },
+      // The Drive file ids are dropped too: they no longer describe where the logo
+      // lives, and keeping them would make a later re-upload trash an unrelated
+      // file. The removal state goes with them — this URL is the file as supplied,
+      // which is the `false` branch of the invariant in schema.prisma.
+      data: {
+        logoUrl: parsed,
+        logoDriveFileId: null,
+        logoOriginalUrl: null,
+        logoOriginalDriveFileId: null,
+        logoBackgroundRemoved: false,
+      },
     });
 
-    if (client.logoDriveFileId) {
-      await trashDriveFile(client.logoDriveFileId);
-    }
+    await trashSupersededLogos(
+      [client.logoDriveFileId, client.logoOriginalDriveFileId],
+      [],
+    );
 
     revalidateAdmin();
     return success();
   } catch (error) {
     return toFailure(error, 'Updating logo');
+  }
+}
+
+/**
+ * Bins logo files the client no longer points at.
+ *
+ * Takes the survivors explicitly rather than assuming: the upload path writes two
+ * files whose ids can coincide with nothing, while revert keeps the very file it
+ * is switching to. Trashing by "everything that was there before" would bin the
+ * new logo the moment an id was reused. Nulls are tolerated so callers can pass
+ * columns straight in — an externally-linked logo has no file id at all.
+ */
+async function trashSupersededLogos(
+  previous: Array<string | null | undefined>,
+  keep: Array<string | null | undefined>,
+): Promise<void> {
+  const survivors = new Set(keep.filter(Boolean) as string[]);
+  const doomed = new Set(
+    (previous.filter(Boolean) as string[]).filter((id) => !survivors.has(id)),
+  );
+
+  // Sequential, and never throwing: `trashDriveFile` swallows its own errors, so
+  // an untidy Drive folder is the worst case here rather than a failed action.
+  for (const fileId of doomed) {
+    await trashDriveFile(fileId);
+  }
+}
+
+/** Operator-facing explanation for each reason the keyer declined. */
+function describeSkip(reason: LogoKeySkipReason): string {
+  switch (reason) {
+    case 'already-transparent':
+      return 'This logo already has a transparent background — nothing to remove.';
+    case 'background-not-flat':
+      return "This logo's background is not a flat colour (it looks like a gradient or a photo), so removing it automatically would damage the mark. Supply a PNG with a transparent background instead.";
+    case 'nothing-to-remove':
+      return 'No background was found around the edges of this logo.';
+    case 'would-erase-logo':
+      return 'The logo is the same colour as its border, so removing the background would erase the mark itself.';
+    case 'vector':
+      return 'SVG logos are vector artwork and have no background to remove.';
+    case 'undecodable':
+      return 'That file could not be read as an image.';
+  }
+}
+
+/**
+ * Downloads a logo we already published, for reprocessing.
+ *
+ * Deliberately narrow — this is not a general fetcher. It mirrors the renderer's
+ * own `fetchLogo` checks (timeout, `image/*` content type, size cap) because the
+ * same failure modes apply: a Drive link that has lost its sharing grant answers
+ * with an HTML interstitial and a 200.
+ */
+async function fetchLogoBytes(
+  url: string,
+): Promise<{ bytes: Buffer; mimeType: string } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    intEnv('POSTER_LOGO_TIMEOUT_MS', 15_000),
+  );
+
+  try {
+    const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+    if (!response.ok) return null;
+
+    const mimeType = (response.headers.get('content-type') ?? '')
+      .split(';')[0]
+      ?.trim()
+      .toLowerCase();
+    if (!mimeType) return null;
+    if (!mimeType.startsWith('image/')) return null;
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length === 0 || bytes.length > MAX_LOGO_BYTES) return null;
+
+    return { bytes, mimeType };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

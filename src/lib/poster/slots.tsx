@@ -99,6 +99,12 @@ export interface LogoLockProps extends SlotBase {
   /** Intrinsic size of `identity.logoDataUri`, required to lay the img out. */
   logoDimensions: ImageDimensions | null;
   /**
+   * Mean luminance of the logo's ink, 0–1, or null when it could not be
+   * measured. Null keeps the plate off — an unknown logo is left exactly as it
+   * rendered before this existed.
+   */
+  logoInkLuminance: number | null;
+  /**
    * Width the lockup must fit inside — the archetype's copy column, which in the
    * `diagonal` layout is under half the canvas. Required rather than optional
    * because the wordmark is sized against it, and defaulting to the full canvas
@@ -107,6 +113,30 @@ export interface LogoLockProps extends SlotBase {
   availableWidth: number;
 }
 
+
+/**
+ * Whether a logo of this mean ink luminance is legible on `background`.
+ *
+ * WCAG 1.4.11 puts non-text content — which a logo is — at 3:1, rather than the
+ * 4.5:1 the body copy is held to. Measured against the theme's own dark neutral
+ * instead of a hardcoded threshold, so a brand whose dark surface is charcoal
+ * rather than near-black gets the plate only when it actually needs one.
+ *
+ * Unmeasured luminance returns true: the logo is left alone, which is how every
+ * logo rendered before the plate existed.
+ */
+function logoReadsOn(inkLuminance: number | null, background: string): boolean {
+  if (inkLuminance === null) return true;
+
+  const rgb = hexToRgb(background);
+  if (!rgb) return true;
+
+  const groundLuminance = relativeLuminance(rgb);
+  const lighter = Math.max(inkLuminance, groundLuminance);
+  const darker = Math.min(inkLuminance, groundLuminance);
+
+  return (lighter + 0.05) / (darker + 0.05) >= 3;
+}
 
 /**
  * The client's logo, or a generated wordmark lockup when none is on file.
@@ -122,6 +152,7 @@ export function LogoLock({
   ground,
   identity,
   logoDimensions,
+  logoInkLuminance,
   availableWidth,
 }: LogoLockProps) {
   const tagline = identity.brandTagline?.trim();
@@ -143,21 +174,56 @@ export function LogoLock({
   ) : null;
 
   if (identity.logoDataUri && logoDimensions) {
+    /*
+     * A logo whose background has been keyed out has nothing behind it, so on a
+     * dark archetype dark ink lands on near-black and disappears. That is the
+     * mirror image of the bug background removal fixes — before, a white slab sat
+     * on the dark ground; without a plate, the mark would simply not be there.
+     *
+     * So the plate is conditional on both halves of the problem being present:
+     * a dark ground, and ink too dark to read on it. A light or mid-tone logo
+     * needs nothing, and a null luminance (SVG, or bytes we could not measure)
+     * renders exactly as it did before this existed.
+     */
+    const needsPlate = ground.isDark && !logoReadsOn(logoInkLuminance, theme.darkNeutral);
+
+    const padding = needsPlate ? metrics.s(14) : 0;
+
+    // The bounds shrink by the padding so the lockup occupies the same footprint
+    // either way — a plate must not push the eyebrow and headline down the page.
     const box = containFit(logoDimensions, {
-      width: metrics.logo.boxWidth,
-      height: metrics.logo.boxHeight * 0.62,
+      width: metrics.logo.boxWidth - padding * 2,
+      height: metrics.logo.boxHeight * 0.62 - padding * 2,
     });
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={identity.logoDataUri}
-          alt=""
-          width={box.width}
-          height={box.height}
-          style={{ width: box.width, height: box.height, objectFit: 'contain' }}
-        />
+        <div
+          style={{
+            display: 'flex',
+            // Without this the plate stretches to the full copy column: this sits
+            // inside a `flex-direction: column` parent, whose default
+            // `align-items: stretch` would size it to the headline's width rather
+            // than the logo's.
+            alignSelf: 'flex-start',
+            padding,
+            borderRadius: needsPlate ? metrics.s(10) : 0,
+            // Not pure white: the theme's light neutral is the same surface the
+            // light archetypes use, so a brand that has tuned it stays consistent
+            // across the set. Slightly translucent so it reads as a plate laid on
+            // the poster rather than a hole punched through it.
+            backgroundColor: needsPlate ? withAlpha(theme.lightNeutral, 0.94) : 'transparent',
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={identity.logoDataUri}
+            alt=""
+            width={box.width}
+            height={box.height}
+            style={{ width: box.width, height: box.height, objectFit: 'contain' }}
+          />
+        </div>
         {taglineNode}
       </div>
     );

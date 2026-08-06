@@ -6,9 +6,16 @@
  * That makes the intrinsic size a hard requirement for any image whose shape we
  * do not already control — an operator-uploaded logo above all.
  *
- * Parsing headers rather than adding `sharp` keeps the dependency footprint flat
- * and works unchanged on Vercel's serverless runtime, where `sharp`'s native
- * binary is a recurring source of deploy breakage. Only the handful of formats a
+ * These read container headers rather than decoding pixels, which is all the
+ * layout needs and costs nothing on a 4 MB file. That used to be the whole story:
+ * the module was written to avoid `sharp` entirely, because its native binary was
+ * a recurring source of deploy breakage on Vercel's serverless runtime.
+ *
+ * **`sharp` is now a dependency** — background-keying a logo requires real pixel
+ * access, and the Vercel objection died with the move to a Docker/glibc VPS (see
+ * `logo-key.ts`). These functions stay anyway: they are called on every render
+ * and in the edge-adjacent paths, and spinning up libvips to read four bytes of
+ * an IHDR chunk would be worse in every dimension. Only the handful of formats a
  * logo or photo realistically arrives in are supported.
  */
 

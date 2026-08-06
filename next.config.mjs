@@ -12,12 +12,16 @@ const nextConfig = {
       // templates are full-size posters and hit the same wall harder.
       bodySizeLimit: '8mb',
     },
-    // `@resvg/resvg-js` ships a platform-specific `.node` addon, which webpack
-    // cannot bundle — it has to be required at runtime from node_modules.
+    // `@resvg/resvg-js` and `sharp` both ship platform-specific `.node` addons,
+    // which webpack cannot bundle — they have to be required at runtime from
+    // node_modules. For sharp the addon is resolved per-platform out of
+    // `@img/sharp-<platform>`, so the lockfile has to carry the linux entries
+    // even though it is generated on Windows; see the note in logo-key.ts.
     serverComponentsExternalPackages: [
       'googleapis',
       'google-auth-library',
       '@resvg/resvg-js',
+      'sharp',
     ],
   },
 };
