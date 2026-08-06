@@ -83,8 +83,23 @@ http://{$APP_DOMAIN} {
 # subdomain are being freed for unrelated sites, and a redirect would have kept
 # claiming them.
 #
-# With no matching site block, a request that still arrives for one of those
-# names gets a bare 404 over HTTP and a failed handshake over HTTPS — Caddy holds
-# no certificate for a name it does not serve. That is the intended end state,
-# but it only stops being visible once their DNS points away from this VPS.
-# Removing the block here does not release the domain; the A record does.
+# Over HTTPS an unknown name already fails the handshake — Caddy holds no
+# certificate for a name it does not serve. Over HTTP it does not fail: Caddy's
+# default for a request matching no route is an empty `200 OK`, which reads as a
+# live site to anything that only checks a status code. This catch-all turns that
+# into a closed connection, so the box answers for one name and no other.
+#
+# `:80` is less specific than `http://{$APP_DOMAIN}` above, and Caddy orders
+# host-matched routes ahead of catch-alls, so the console keeps its redirect.
+#
+# The ACME carve-out is belt and braces. `auto_https` injects the HTTP-01
+# challenge handler ahead of user routes, so this should never see a challenge —
+# but a wrong assumption there would not surface until a renewal failed ~60 days
+# out, silently, and that is not a thing to leave to memory.
+#
+# None of this releases a domain. The A record does; this only stops the server
+# from responding while one still points here.
+:80 {
+	@not-acme not path /.well-known/acme-challenge/*
+	abort @not-acme
+}
