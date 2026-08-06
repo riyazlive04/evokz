@@ -286,30 +286,50 @@ Against a fresh empty volume, which is the normal case here, no such step is nee
 
 ## 6. Verify
 
-```bash
-# TLS issued, and an anonymous visitor is redirected to the login (307 -> /login)
-curl -I https://evokz.in
+Use the console host (`APP_DOMAIN`), not the apex — `evokz.in` is a 301 redirect.
 
-# There must be NO 401 with a `WWW-Authenticate: Basic` header anywhere here —
-# that would mean a gateway lock is still live and the removal did not take.
-curl -sI https://evokz.in | grep -i 'www-authenticate'                        # no output
+```bash
+# TLS issued, and an anonymous visitor is redirected to the login.
+# Use a GET, not `curl -I`: HEAD is not GET, so the middleware answers it on the
+# expired-session path with a bare 401 and no Location. That 401 is correct and
+# is NOT evidence of a gateway — the next check is what tells them apart.
+curl -s -o /dev/null -w '%{http_code} -> %{redirect_url}\n' \
+  https://app.evokz.in/                                     # 307 -> .../login
+
+# There must be NO `WWW-Authenticate` header anywhere here. One would mean a
+# Basic Auth gateway is still live and the removal did not reach this box.
+curl -sI https://app.evokz.in/ | grep -i 'www-authenticate'                   # no output
 
 # A server action with no session is rejected outright rather than redirected
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'next-action: probe' \
-  https://evokz.in/admin/dashboard                                            # 401
+  https://app.evokz.in/admin/dashboard                                        # 401
 
 # The cron endpoint takes no session but rejects a bad token
-curl -s -o /dev/null -w '%{http_code}\n' https://evokz.in/api/cron            # 401
-curl -s -H "Authorization: Bearer $CRON_SECRET" https://evokz.in/api/cron     # JSON summary
+curl -s -o /dev/null -w '%{http_code}\n' https://app.evokz.in/api/cron        # 401
+curl -s -H "Authorization: Bearer $CRON_SECRET" https://app.evokz.in/api/cron # JSON summary
 
 # Razorpay endpoint takes no session but rejects an unsigned body
 curl -s -X POST -H 'content-type: application/json' -d '{}' \
-  https://evokz.in/api/webhooks/razorpay                                      # {"error":"Invalid signature"}
+  https://app.evokz.in/api/webhooks/razorpay                                  # {"error":"Invalid signature"}
 ```
 
-Then in a browser: `https://evokz.in` → `/login` → console password → dashboard,
-with no browser popup at any point. Check the dashboard's config banner reports
-**no** unset integration keys.
+Confirm the deployed password without opening a browser — this reads the hash out
+of the **running** container, so it catches a `.env` edit that never took effect:
+
+```bash
+# Leading space keeps the password out of shell history (bash HISTCONTROL).
+ docker compose exec -T -e PW='your-console-password' app node <<'JS'
+const c = require('node:crypto');
+const [s, cost, salt, want] = (process.env.ADMIN_PASSWORD_HASH || '').split(':');
+console.log(s === 'pbkdf2-sha256' &&
+  c.pbkdf2Sync(process.env.PW, Buffer.from(salt, 'hex'), +cost, 32, 'sha256').toString('hex') === want
+  ? 'ACCEPTED' : 'rejected');
+JS
+```
+
+Then in a browser: `https://app.evokz.in` → `/login` → console password →
+dashboard, **with no browser popup at any point**. Check the dashboard's config
+banner reports **no** unset integration keys.
 
 Poster rendering is the one path with a native dependency (`@resvg/resvg-js`) and
 a platform-specific binary, so exercise it explicitly:
