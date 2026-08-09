@@ -55,6 +55,18 @@ PENDING ──(Flux.1 photo → poster composite → Drive upload)──▶ GENE
 `GENERATED` is a real checkpoint: a WhatsApp failure after a successful upload is retried
 without re-billing fal.ai, because the stored `gDriveFileId` is reused.
 
+It is also a **deliberate pause**. On the dispatch sweep the run stops there and stamps
+`sendAfter` a random 2–8 minutes out ([src/lib/send-jitter.ts](src/lib/send-jitter.ts)); a
+later sweep broadcasts whatever has come due. A fleet that all messages WhatsApp on the same
+minute, to the second, every day is the most machine-like traffic shape there is, and Meta
+reads the pattern rather than the content — so the fleet stops being punctual. The gap is
+drawn per poster, so two clients sharing a `cronTime` still separate.
+
+The wait is a timestamp, never a sleep: the sweep is an HTTP request capped at 300s, and a
+sleeping worker would hold one of its concurrency slots against every other client due that
+minute. Operator-driven sends — retry, force re-send, regenerate, demo — skip the delay
+entirely, because a human waiting on a button should not be made to wait.
+
 ## The poster layer
 
 **The delivered creative is a composite, not a diffusion render.** fal.ai produces only the

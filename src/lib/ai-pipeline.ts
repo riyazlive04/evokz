@@ -8,6 +8,7 @@ import { resolveImageSizePreset } from '@/lib/image-sizes';
 import { resolvePhotoRequest, type PhotoRequest } from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
 import { prisma } from '@/lib/prisma';
+import { describeDelay, nextSendDelay } from '@/lib/send-jitter';
 import { parseBrandGuideline } from '@/lib/types/brand';
 import {
   archetypeForDay,
@@ -39,6 +40,13 @@ export interface PipelineOptions {
   reuseExistingAsset?: boolean;
   /** Deliver even when the row is already DELIVERED (manual re-send). */
   allowRedelivery?: boolean;
+  /**
+   * Stop after the Drive upload, stamp `sendAfter`, and leave the broadcast to a
+   * later sweep. Set only by the dispatch sweep's generation phase — every
+   * operator-driven path sends immediately, because a human waiting on a button
+   * does not want a randomised delay. See `src/lib/send-jitter.ts`.
+   */
+  deferBroadcast?: boolean;
 }
 
 export type PipelineStage =
@@ -59,7 +67,13 @@ export type PipelineOutcome =
       ok: true;
       calendarId: string;
       status: DeliveryStatus;
-      skipped?: 'already-delivered';
+      skipped?: 'already-delivered' | 'claimed-by-another-sweep';
+      /**
+       * Set when the run stopped at GENERATED on purpose: the poster exists and
+       * is scheduled, and a later sweep will broadcast it. Distinct from
+       * `skipped`, which means no work was needed at all.
+       */
+      scheduledSendAt?: Date;
       gDriveFileId: string | null;
       gDriveViewUrl: string | null;
       reusedAsset: boolean;
@@ -250,14 +264,40 @@ export async function runCreativePipeline(
 
       // Checkpoint: the asset now exists in Drive. If the WhatsApp broadcast
       // fails, a retry can skip generation entirely.
+      //
+      // On the dispatch sweep this is also where the run *ends*: the broadcast is
+      // held back a few random minutes so the fleet stops messaging WhatsApp in a
+      // synchronised burst. The wait is persisted rather than slept — the sweep is
+      // an HTTP request with a 300s ceiling, and a sleeping worker would also hold
+      // one of its concurrency slots against every other client due this minute.
+      const scheduled = options.deferBroadcast ? nextSendDelay() : null;
+
       await prisma.contentCalendar.update({
         where: { id: calendarId },
         data: {
           gDriveFileId,
           gDriveViewUrl,
           deliveryStatus: DeliveryStatus.GENERATED,
+          sendAfter: scheduled?.sendAfter ?? null,
         },
       });
+
+      if (scheduled) {
+        console.info(
+          `[ace:pipeline] day ${entry.dayNumber} generated for ${client.companyName} — ` +
+            `sending in ${describeDelay(scheduled.delaySeconds)}`,
+        );
+
+        return {
+          ok: true,
+          calendarId,
+          status: DeliveryStatus.GENERATED,
+          scheduledSendAt: scheduled.sendAfter,
+          gDriveFileId,
+          gDriveViewUrl,
+          reusedAsset: false,
+        };
+      }
     }
 
     if (!gDriveViewUrl) {
@@ -288,6 +328,10 @@ export async function runCreativePipeline(
         errorMessage: null,
         gDriveFileId,
         gDriveViewUrl,
+        // The schedule has been honoured; clearing it keeps `sendAfter` meaning
+        // exactly one thing — "a broadcast is still owed" — which is what the
+        // send phase's index is built to answer.
+        sendAfter: null,
       },
     });
 

@@ -207,6 +207,18 @@ model ContentCalendar {
   gDriveFileId   String? // Storage reference inside Google Drive
   gDriveViewUrl  String? // Public link used by Evolution API + the dashboard
   deliveryStatus DeliveryStatus @default(PENDING)
+  /// Earliest instant the WhatsApp broadcast may go out, set when the poster
+  /// reaches GENERATED. Generation runs at the client's exact `cronTime`; the
+  /// send is held back by a random few minutes so a fleet of clients does not
+  /// message WhatsApp in a synchronised burst on the same minute every day.
+  ///
+  /// Null means "send as soon as this row is processed" — every operator-driven
+  /// path (retry, force re-send, regenerate, demo) leaves it null, because a
+  /// human waiting on a button does not want a randomised delay. It is also null
+  /// on rows written before this column existed, which is why the dispatch
+  /// sweep's send phase requires a non-null value rather than treating null as
+  /// due: those rows are historical failures and must not suddenly deliver.
+  sendAfter      DateTime?
   errorMessage   String?        @db.Text
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
@@ -214,6 +226,10 @@ model ContentCalendar {
   @@unique([clientId, dayNumber])
   // Ultra-fast time-window scanning for the dispatch engine.
   @@index([scheduledDate, deliveryStatus])
+  // Drives the send phase: "which generated posters are due to go out now",
+  // asked once a minute and answered without touching scheduledDate — a send
+  // held past midnight still belongs to the day it was generated for.
+  @@index([deliveryStatus, sendAfter])
 }
 
 /// One billable provider call. Append-only: rows are never updated, so the

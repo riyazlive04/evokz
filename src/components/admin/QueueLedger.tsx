@@ -1,5 +1,5 @@
 import { DeliveryStatus } from '@prisma/client';
-import { AlertTriangle, Clock, ExternalLink, ImageOff } from 'lucide-react';
+import { AlertTriangle, Clock, ExternalLink, ImageOff, Send } from 'lucide-react';
 
 import { QueueCardActions } from '@/components/admin/QueueCardActions';
 import { StatusBadge } from '@/components/admin/StatusBadge';
@@ -15,6 +15,8 @@ export interface QueueEntry {
   hashtags: string;
   scheduledLabel: string;
   status: DeliveryStatus;
+  /** When a generated-but-unsent poster is due to go out, if it is waiting. */
+  sendAfterLabel: string | null;
   /** Lightweight Drive thumbnail; falls back to the raw view URL. */
   thumbnailUrl: string | null;
   viewUrl: string | null;
@@ -95,6 +97,14 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
             <Clock className="h-3 w-3" />
             {entry.scheduledLabel} · {entry.cronTime} · +{entry.whatsappNumber}
           </p>
+          {/* Explains the otherwise-puzzling state of a poster that exists but
+              has not been sent: it is waiting out its randomised send delay. */}
+          {entry.sendAfterLabel && (
+            <p className="flex items-center gap-1.5 font-mono text-[10px] text-brand-to">
+              <Send className="h-3 w-3" />
+              Sending {entry.sendAfterLabel}
+            </p>
+          )}
         </header>
 
         <p className="line-clamp-3 flex-1 text-[11px] leading-relaxed text-muted-foreground">

@@ -407,7 +407,24 @@ is then first seen by the `17:10` sweep, because no sweep is awake at `17:07`.
 See `.env.example` for what each mismatch costs — one direction drops sends
 silently, the other can send the same poster twice.
 
-The send itself is inline, so the message lands 15–20s after the minute.
+**The poster is made on the minute; the message is not sent on the minute.**
+Generation runs inline and finishes ~20s in, at which point the row is left
+`GENERATED` with a `sendAfter` a random 2–8 minutes out
+(`WHATSAPP_SEND_DELAY_MIN_MINUTES` / `_MAX_MINUTES`). A later sweep — every one
+does this first, before it generates anything — picks up whatever has come due
+and broadcasts it. So a `17:07` client is generated at `17:07:20` and messaged
+somewhere around `17:10`–`17:15`, differently each day.
+
+That is deliberate. A fleet that all messages WhatsApp on the same minute, to the
+second, every day is the most machine-like traffic shape there is, and Meta reads
+the pattern rather than the content. The delay is a timestamp rather than a sleep
+because the sweep is an HTTP request capped at 300s, and a sleeping worker would
+hold one of the `CRON_MAX_CONCURRENCY` slots against every other client due on
+that minute. Set both bounds to `0` to restore immediate sending.
+
+An operator watching the console will see posters sit in `GENERATED` with a
+"Sending 17:11" line on the card for a few minutes. That is the feature working,
+not a stall.
 
 `scripts/dispatch-cron.sh` issues the request from *inside* the app container
 over loopback rather than curling the public URL. `CRON_SECRET` therefore never

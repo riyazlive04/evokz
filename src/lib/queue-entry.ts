@@ -2,7 +2,7 @@ import type { DeliveryStatus } from '@prisma/client';
 
 import type { QueueEntry } from '@/components/admin/QueueLedger';
 import { buildThumbnailUrl } from '@/lib/google-drive';
-import { formatDisplayDate } from '@/lib/time';
+import { formatDisplayDate, formatDisplayDateTime } from '@/lib/time';
 
 /**
  * Shared `ContentCalendar` projection for every surface that renders a
@@ -18,6 +18,7 @@ export const queueSelect = {
   caption: true,
   hashtags: true,
   deliveryStatus: true,
+  sendAfter: true,
   gDriveFileId: true,
   gDriveViewUrl: true,
   errorMessage: true,
@@ -32,6 +33,7 @@ export interface QueueRecord {
   caption: string;
   hashtags: string;
   deliveryStatus: DeliveryStatus;
+  sendAfter: Date | null;
   gDriveFileId: string | null;
   gDriveViewUrl: string | null;
   errorMessage: string | null;
@@ -50,6 +52,13 @@ export function toQueueEntry(entry: QueueRecord, timeZone: string): QueueEntry {
     hashtags: entry.hashtags,
     scheduledLabel: formatDisplayDate(entry.scheduledDate, timeZone),
     status: entry.deliveryStatus,
+    // Only meaningful while the poster is waiting out its send delay. A row that
+    // already went out has this cleared, and one that failed is described by its
+    // errorMessage instead — so the label is never stale.
+    sendAfterLabel:
+      entry.sendAfter && entry.deliveryStatus === 'GENERATED'
+        ? formatDisplayDateTime(entry.sendAfter, timeZone)
+        : null,
     // Prefer the cheap Drive thumbnail endpoint over the full-size download.
     thumbnailUrl: entry.gDriveFileId
       ? buildThumbnailUrl(entry.gDriveFileId)
