@@ -4,6 +4,7 @@
  *   node scripts/hash-password.mjs                 # prompts, input hidden
  *   echo 'my password' | node scripts/hash-password.mjs
  *   node scripts/hash-password.mjs 'my password'   # leaves it in shell history
+ *   node scripts/hash-password.mjs --settings-key  # SETTINGS_ENCRYPTION_KEY only
  *
  * Emits ADMIN_PASSWORD_HASH and a fresh SESSION_SECRET as .env lines. Uses
  * node:crypto rather than importing src/lib/auth.ts (which is TypeScript and
@@ -28,6 +29,24 @@ function hash(password) {
   const salt = crypto.randomBytes(16);
   const derived = crypto.pbkdf2Sync(password, salt, ITERATIONS, KEY_LENGTH, 'sha256');
   return `pbkdf2-sha256:${ITERATIONS}:${salt.toString('hex')}:${derived.toString('hex')}`;
+}
+
+// Intercepted before readPassword(), which would otherwise read the flag as the
+// password. Deliberately a standalone mode rather than part of the default output:
+// the default run is the auth-secret *rotation* path, and printing a fresh
+// settings key there would tempt an operator to paste it, silently orphaning the
+// fal.ai key already stored in the database.
+//
+// `openssl rand -hex 32` produces the same thing if node is not to hand.
+if (process.argv.includes('--settings-key')) {
+  console.log('\n# --- paste into .env, then run: docker compose up -d app ---');
+  console.log(`SETTINGS_ENCRYPTION_KEY="${crypto.randomBytes(32).toString('hex')}"`);
+  console.log(
+    '\n# Changing this later does NOT re-encrypt what is already stored: the saved\n' +
+      '# fal.ai key becomes unreadable and every render fails saying so. Remove and\n' +
+      '# re-enter it from the dashboard after any rotation.',
+  );
+  process.exit(0);
 }
 
 /** Reads a password from argv, a pipe, or an interactive prompt — in that order. */

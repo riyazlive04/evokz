@@ -173,7 +173,7 @@ export function ClientDangerZone({
           <p className="text-[11px] text-muted-foreground">
             Removes {companyName} and every calendar day. The Drive folder is moved to the
             bin, recoverable there for 30 days. Spend history is kept and reappears on the
-            dashboard under “Removed clients”.
+            dashboard under “Unattributed”.
           </p>
 
           <div className="flex flex-wrap items-end gap-2">

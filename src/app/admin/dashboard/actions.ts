@@ -1,10 +1,15 @@
 'use server';
 
-import { DeliveryStatus, Prisma } from '@prisma/client';
+import { DeliveryStatus, Prisma, UsageKeySource } from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 
-import { describeError, runCreativePipeline } from '@/lib/ai-pipeline';
+import {
+  describeError,
+  getFalEndpoint,
+  probeFalKey,
+  runCreativePipeline,
+} from '@/lib/ai-pipeline';
 import { tokenizeClientBrand } from '@/lib/ai/brand-tokenizer';
 import { generateContentCalendar } from '@/lib/ai/calendar-generator';
 import {
@@ -31,8 +36,24 @@ import {
   repairClientDriveFolder,
 } from '@/lib/onboarding';
 import { mapWithConcurrency } from '@/lib/cron-worker';
-import { intEnv } from '@/lib/env';
+import { intEnv, MissingEnvError } from '@/lib/env';
+import {
+  APP_SETTING_ID,
+  FAL_KEY_PATTERN,
+  FAL_KEY_PURPOSE,
+  loadFalKeyStatus,
+  normalizeFalKey,
+  resolveFalCredentials,
+  type FalKeyStatus,
+} from '@/lib/fal-credentials';
 import { prisma } from '@/lib/prisma';
+import {
+  encryptSecret,
+  isSecretEncryptionConfigured,
+  secretLast4,
+  SecretDecryptionError,
+} from '@/lib/secret-box';
+import { recordImageUsage } from '@/lib/usage';
 import {
   describeDeliveryDays,
   formatDisplayDate,
@@ -1869,5 +1890,187 @@ function logoExtension(mimeType: string): string {
       return '.svg';
     default:
       return '.png';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Image generation key (operator-supplied fal.ai credential)
+// ---------------------------------------------------------------------------
+
+/**
+ * Copy for a deployment that cannot encrypt.
+ *
+ * Refusing outright is the whole point. An operator who pasted a key and saw
+ * "Saved" would reasonably assume it was protected, and a plaintext credential in a
+ * table that lands in every nightly dump is worse than not shipping the panel.
+ */
+const ENCRYPTION_UNAVAILABLE =
+  'Cannot save: SETTINGS_ENCRYPTION_KEY is not set on this deployment, and this panel will ' +
+  'not store a key in plain text. Generate one with `node scripts/hash-password.mjs ' +
+  '--settings-key`, add it to .env, then run `docker compose up -d app` — a plain restart ' +
+  'does not re-read .env. Nothing was saved.';
+
+/**
+ * Validates a pasted key.
+ *
+ * No message below may echo the value: `toFailure` writes `describeError(error)`
+ * straight to the container log, so a validator that quoted its input would put the
+ * key on disk in the one case where the operator most expects it not to be.
+ */
+const falApiKeySchema = z.object({
+  key: z
+    .string()
+    .trim()
+    .min(1, 'Paste your fal.ai key first.')
+    .transform(normalizeFalKey)
+    .refine(
+      (value) => FAL_KEY_PATTERN.test(value),
+      'That does not look like a fal.ai key. It is two parts joined by a colon — ' +
+        '"<key id>:<key secret>" — copied whole from fal.ai → Settings → API Keys.',
+    ),
+  label: z
+    .string()
+    .trim()
+    .max(80, 'Label must be 80 characters or fewer')
+    .optional()
+    .transform((value) => value?.trim() || null),
+});
+
+export type FalApiKeyInput = z.input<typeof falApiKeySchema>;
+
+/**
+ * Stores the operator's own fal.ai key, encrypted.
+ *
+ * Takes effect on the next render — there is no process restart and no redeploy,
+ * because the pipeline resolves the credential per call rather than at boot.
+ */
+export async function saveFalApiKey(
+  input: FalApiKeyInput,
+): Promise<ActionResult<FalKeyStatus>> {
+  try {
+    const data = falApiKeySchema.parse(input);
+
+    // Checked before the database is touched, so a deployment that cannot encrypt
+    // never half-writes a row.
+    if (!isSecretEncryptionConfigured()) {
+      return failure(ENCRYPTION_UNAVAILABLE);
+    }
+
+    const cipher = encryptSecret(data.key, FAL_KEY_PURPOSE);
+
+    await prisma.appSetting.upsert({
+      where: { id: APP_SETTING_ID },
+      create: {
+        id: APP_SETTING_ID,
+        falKeyCipher: cipher,
+        falKeyLast4: secretLast4(data.key),
+        falKeyLabel: data.label,
+        falKeyUpdatedAt: new Date(),
+      },
+      update: {
+        falKeyCipher: cipher,
+        falKeyLast4: secretLast4(data.key),
+        falKeyLabel: data.label,
+        falKeyUpdatedAt: new Date(),
+      },
+    });
+
+    revalidateAdmin();
+    return success(await loadFalKeyStatus());
+  } catch (error) {
+    return toFailure(error, 'Saving the fal.ai key');
+  }
+}
+
+/*
+ * There is deliberately no `clearFalApiKey`.
+ *
+ * The switch to an operator key is one-way from the console: once saved, a key can
+ * be *replaced* by another of the operator's own, but generation never returns to
+ * the platform FAL_KEY from here. Hiding a button would not be enough — Next.js
+ * publishes Server Action IDs in the client bundle, so an action that existed would
+ * be invocable by anyone who loaded the page, whatever the UI showed. The
+ * enforcement is the absence of the action, not the absence of the control.
+ *
+ * Reverting is an operator task with server access, not a console gesture:
+ *
+ *   docker compose exec db psql -U evokz -d evokz_ace \
+ *     -c 'UPDATE "AppSetting" SET "falKeyCipher" = NULL, "falKeyLast4" = NULL,
+ *         "falKeyLabel" = NULL, "falKeyUpdatedAt" = NULL;'
+ *
+ * See DEPLOY_VPS.md §10.
+ */
+
+/**
+ * Proves a key works by spending one small render on it.
+ *
+ * With no argument this tests **whatever the pipeline would actually use** — the
+ * saved key if there is one, the platform key otherwise — which is more useful than
+ * testing only the saved key, and gives an operator a way to check FAL_KEY too.
+ */
+export async function testFalApiKey(input?: { key?: string }): Promise<
+  ActionResult<{
+    scope: 'entered' | 'saved' | 'platform';
+    endpoint: string;
+    renderEndpoint: string;
+    elapsedMs: number;
+  }>
+> {
+  const entered = input?.key?.trim() ?? '';
+
+  try {
+    const credentials = entered
+      ? (() => {
+          const key = falApiKeySchema.shape.key.parse(entered);
+          return { key, source: UsageKeySource.BYO, last4: secretLast4(key) };
+        })()
+      : await resolveFalCredentials();
+
+    const probe = await probeFalKey(credentials);
+
+    // Real money on a real account. The ledger's contract is that it is a faithful
+    // record of what was spent, so a probe belongs in it — and repeated testing
+    // becomes visible rather than invisible. No client, so it lands unattributed.
+    await recordImageUsage(probe.endpoint, {}, credentials.source);
+
+    revalidateAdmin();
+    return success({
+      scope: entered
+        ? 'entered'
+        : credentials.source === UsageKeySource.BYO
+          ? 'saved'
+          : 'platform',
+      endpoint: probe.endpoint,
+      renderEndpoint: getFalEndpoint(),
+      elapsedMs: probe.elapsedMs,
+    });
+  } catch (error) {
+    // `probeFalKey` has already redacted. Map the statuses an operator can act on;
+    // anything else falls through to the generic handler.
+    const message = describeError(error);
+
+    // Both of these already carry operator-legible copy and no key material, so
+    // pass them through rather than let `toFailure` flatten them into "check the
+    // server logs" — the server log would say exactly what the panel just hid.
+    if (error instanceof SecretDecryptionError || error instanceof MissingEnvError) {
+      return failure(message);
+    }
+    if (/responded (401|403)\b/.test(message)) {
+      return failure(
+        'fal.ai rejected that key. Check you copied both halves — "<key id>:<key secret>" — ' +
+          'from fal.ai → Settings → API Keys, and that the key has not been revoked.',
+      );
+    }
+    if (/responded 402\b/.test(message) || /\bbalance\b/i.test(message)) {
+      return failure(
+        'fal.ai accepted the key but the account has no balance. Top up at fal.ai → Billing.',
+      );
+    }
+    if (/timed out/i.test(message)) {
+      return failure(
+        'fal.ai did not respond within 30s. The key may still be fine — try again.',
+      );
+    }
+    return toFailure(error, 'Testing the fal.ai key');
   }
 }

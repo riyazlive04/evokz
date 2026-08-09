@@ -50,8 +50,16 @@ export function DatabaseErrorState({ message }: { message: string }) {
           <pre className="overflow-x-auto rounded-lg border border-border bg-muted p-3 text-[11px] text-muted-foreground">
             {message}
           </pre>
+          {/* Deliberately not "run prisma:push" any more. Against the VPS that
+              would apply the schema without recording migration history, and the
+              next `migrate deploy` on container start would refuse a non-empty
+              database — turning a connection problem into a deploy problem. */}
           <p className="text-xs text-muted-foreground">
-            Run <code className="text-foreground">npm run prisma:push</code> to sync the schema.
+            On a deployed box the schema is applied by{' '}
+            <code className="text-foreground">prisma migrate deploy</code> on container start,
+            so this is usually connectivity rather than a missing table. Locally,{' '}
+            <code className="text-foreground">npm run prisma:push</code> syncs a scratch
+            database.
           </p>
         </CardContent>
       </Card>

@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Evokz — Admin Guide</title>
+<style>
+  /*
+   * Print-first. Rendered to PDF with:
+   *   chrome --headless --print-to-pdf=docs/Evokz-Admin-Guide.pdf \
+   *          --no-pdf-header-footer docs/admin-guide.html
+   * Four A4 pages, one .page each. Edit here and re-run — never edit the PDF.
+   */
+  @page { size: A4; margin: 0; }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --navy: #0f1e3f;
+    --navy-mid: #213a56;
+    --sand: #7d6244;
+    --sand-soft: #f7f0e6;
+    --ink: #16294b;
+    --muted: #5c6b82;
+    --line: #d9e0ea;
+    --wash: #f5f8fb;
+    --danger: #8c2f2f;
+    --ok: #2c6146;
+  }
+
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+    font-size: 9.6pt;
+    line-height: 1.42;
+  }
+
+  .page {
+    width: 210mm;
+    height: 297mm;
+    padding: 14mm 16mm 12mm;
+    position: relative;
+    break-after: page;
+    overflow: hidden;
+  }
+  .page:last-child { break-after: auto; }
+
+  /* ---- Type ---- */
+  h1 { font-size: 26pt; line-height: 1.1; letter-spacing: -0.4pt; color: var(--navy); font-weight: 700; }
+  h2 {
+    font-size: 13pt; color: var(--navy); font-weight: 700; letter-spacing: -0.15pt;
+    padding-bottom: 2.2mm; margin-bottom: 3.2mm; border-bottom: 1.5pt solid var(--navy);
+  }
+  h3 { font-size: 10pt; color: var(--navy); font-weight: 700; margin-bottom: 1mm; }
+  p { margin-bottom: 2.2mm; }
+  strong { color: var(--navy); font-weight: 600; }
+  .lead { font-size: 11pt; color: var(--muted); line-height: 1.5; }
+  .muted { color: var(--muted); }
+  .small { font-size: 8.5pt; line-height: 1.4; }
+
+  .eyebrow {
+    font-size: 8pt; letter-spacing: 1.6pt; text-transform: uppercase;
+    color: var(--sand); font-weight: 700; margin-bottom: 3mm;
+  }
+
+  /* ---- Cover ---- */
+  .cover-rule { height: 3mm; background: linear-gradient(100deg, var(--navy), var(--navy-mid) 55%, var(--sand)); margin-bottom: 12mm; }
+
+  /* ---- Numbered flow ---- */
+  .flow { margin: 4mm 0 0; }
+  .flow-step { display: flex; gap: 4mm; align-items: flex-start; padding: 1.9mm 0; }
+  .flow-num {
+    flex: 0 0 7mm; height: 7mm; border-radius: 50%;
+    background: var(--navy); color: #fff;
+    font-size: 9pt; font-weight: 700; text-align: center; line-height: 7mm;
+  }
+  .flow-body { flex: 1; padding-top: 0.4mm; }
+  .flow-body b { color: var(--navy); }
+  .flow-rail { border-left: 1.2pt solid var(--line); margin-left: 3.5mm; padding-left: 0; }
+
+  /* ---- Tables ---- */
+  table { width: 100%; border-collapse: collapse; margin-bottom: 4mm; }
+  th {
+    text-align: left; font-size: 7.5pt; letter-spacing: 0.8pt; text-transform: uppercase;
+    color: var(--muted); font-weight: 700; padding: 0 3mm 1.8mm 0;
+    border-bottom: 1pt solid var(--line);
+  }
+  td { padding: 2mm 3mm 2mm 0; border-bottom: 0.7pt solid var(--line); vertical-align: top; }
+  td:first-child { font-weight: 600; color: var(--navy); white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+
+  /* ---- Section blocks ---- */
+  .block { padding: 2.5mm 0; border-bottom: 0.7pt solid var(--line); }
+  .block:last-child { border-bottom: none; }
+  .block-head { display: flex; align-items: baseline; gap: 3mm; margin-bottom: 1.2mm; }
+  .tag {
+    font-size: 7pt; font-weight: 700; letter-spacing: 0.6pt; text-transform: uppercase;
+    color: var(--sand); border: 0.8pt solid var(--sand); border-radius: 2mm;
+    padding: 0.4mm 1.6mm; white-space: nowrap;
+  }
+
+  /* ---- Callouts ---- */
+  .note {
+    background: var(--wash); border-left: 2.5pt solid var(--navy-mid);
+    padding: 3mm 3.5mm; margin: 3.5mm 0; border-radius: 0 1.5mm 1.5mm 0;
+  }
+  .warn {
+    background: var(--sand-soft); border-left: 2.5pt solid var(--sand);
+    padding: 3mm 3.5mm; margin: 3.5mm 0; border-radius: 0 1.5mm 1.5mm 0;
+  }
+  .note h3, .warn h3 { margin-bottom: 1.2mm; }
+  .warn h3 { color: #6b4f2f; }
+
+  /* ---- UI references ---- */
+  .ui {
+    font-weight: 600; color: var(--navy);
+    background: #eaf0f7; border-radius: 1.2mm; padding: 0.3mm 1.4mm;
+    white-space: nowrap;
+  }
+  .path { color: var(--muted); font-size: 9pt; }
+
+  /* ---- Two-column ---- */
+  .cols { display: flex; gap: 8mm; }
+  .col { flex: 1; }
+
+  /* ---- Footer ---- */
+  .foot {
+    position: absolute; left: 17mm; right: 17mm; bottom: 8mm;
+    display: flex; justify-content: space-between;
+    font-size: 7.5pt; color: var(--muted);
+    border-top: 0.7pt solid var(--line); padding-top: 2mm;
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================ PAGE 1 ============================ -->
+<div class="page">
+  <div class="cover-rule"></div>
+
+  <div class="eyebrow">Admin Guide</div>
+  <h1>Evokz Console</h1>
+  <p class="lead" style="margin-top:4mm; max-width:135mm;">
+    What each part of the dashboard does, and how to run image generation on your own
+    fal.ai account.
+  </p>
+
+  <div style="margin-top:9mm;">
+    <h2>What Evokz does</h2>
+    <p>
+      Evokz writes, designs and delivers social media posters for your clients — automatically,
+      every day, on a schedule you set once. You add a client and pick their plan; Evokz does the
+      rest and sends each finished poster straight to their WhatsApp.
+    </p>
+  </div>
+
+  <div style="margin-top:6mm;">
+    <h2>How one poster gets made</h2>
+    <p class="muted" style="margin-bottom:1mm;">This runs on its own, every day, at each client's set time.</p>
+
+    <div class="flow flow-rail">
+      <div class="flow-step">
+        <div class="flow-num">1</div>
+        <div class="flow-body"><b>The clock reaches the client's delivery time.</b>
+          Evokz picks up today's entry from that client's content calendar.</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">2</div>
+        <div class="flow-body"><b>The background image is generated.</b>
+          This is the step that costs money, and the only step your fal.ai key pays for.</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">3</div>
+        <div class="flow-body"><b>The poster is designed.</b>
+          Evokz lays the client's logo, colours, headline and contact details over the image.</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">4</div>
+        <div class="flow-body"><b>It is saved to Google Drive</b>, in that client's own folder.</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">5</div>
+        <div class="flow-body"><b>It is sent to the client on WhatsApp</b>, with the caption and
+          hashtags. The entry is marked <span class="ui">Delivered</span>.</div>
+      </div>
+    </div>
+
+    <div class="note">
+      <h3>If anything goes wrong</h3>
+      <p style="margin:0;">
+        The day is marked <span class="ui">Failed</span> and the reason is written next to it in
+        plain words on the dashboard. Nothing is silently skipped, and nothing half-finished is
+        ever sent to a client.
+      </p>
+    </div>
+  </div>
+
+  <div style="margin-top:5mm;">
+    <h2>The tabs across the top</h2>
+    <table>
+      <tr>
+        <td>Dashboard</td>
+        <td>Your home screen. Today's numbers, costs, failures, and what is going out next.</td>
+      </tr>
+      <tr>
+        <td>Plan</td>
+        <td>Your campaign packages — name, how many days it runs, and the price you charge.</td>
+      </tr>
+      <tr>
+        <td>Verticals</td>
+        <td>The industries you serve. Each client belongs to one, which steers their creative style.</td>
+      </tr>
+      <tr>
+        <td>Clients</td>
+        <td>Every client, their campaign dates, and their daily delivery time.</td>
+      </tr>
+      <tr>
+        <td>Posters</td>
+        <td>A free preview of every poster layout. Costs nothing — use it to show people the range.</td>
+      </tr>
+      <tr>
+        <td>Demo</td>
+        <td>A practice client for sales calls. Nothing here ever sends on its own.</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="foot"><span>Evokz Console — Admin Guide</span><span>Page 1 of 4</span></div>
+</div>
+
+<!-- ============================ PAGE 2 ============================ -->
+<div class="page">
+  <div class="eyebrow">Section by section</div>
+  <h2 style="font-size:16pt;">The Dashboard, top to bottom</h2>
+
+  <div class="block">
+    <div class="block-head"><h3>1 &nbsp;Four counters</h3><span class="tag">At a glance</span></div>
+    <p style="margin:0;">
+      <span class="ui">Active clients</span> · <span class="ui">Due today</span> ·
+      <span class="ui">Delivered</span> · <span class="ui">Failed</span>.
+      <strong>Click any one</strong> to see exactly which clients are behind that number.
+      If <span class="ui">Failed</span> is not zero, start there.
+    </p>
+  </div>
+
+  <div class="block">
+    <div class="block-head"><h3>2 &nbsp;Spend</h3><span class="tag">Money</span></div>
+    <p style="margin:0;">
+      What the automation is costing you, in rupees, over the period you choose at the top.
+      It splits the cost by service and by client, and shows your <strong>margin</strong> —
+      the plan fee minus what that client actually cost to run. Set a monthly cap on a client
+      and Evokz will flag them here when they go over it.
+    </p>
+  </div>
+
+  <div class="block">
+    <div class="block-head"><h3>3 &nbsp;Failed deliveries</h3><span class="tag">Only when needed</span></div>
+    <p style="margin:0;">
+      Appears only when something did not go out. Each one shows the reason in plain words.
+      <span class="ui">Retry failed</span> tries them all again; where the poster was already made,
+      it re-sends that same poster instead of paying to make a new one.
+    </p>
+  </div>
+
+  <div class="block">
+    <div class="block-head"><h3>4 &nbsp;Event queue feed</h3><span class="tag">What's next</span></div>
+    <p style="margin:0;">
+      The next posters due to go out, across all clients, with a thumbnail of each. This is your
+      check that tomorrow morning is covered. Two buttons on each card:
+    </p>
+    <table style="margin-top:2.5mm; margin-bottom:0;">
+      <tr>
+        <td style="width:34mm;">Send now</td>
+        <td>Sends the poster that already exists, straight away. <strong>Free</strong> — nothing is re-made.</td>
+      </tr>
+      <tr>
+        <td>Regenerate</td>
+        <td>Throws away the image and makes a brand new one. <strong>This costs money</strong> — use it when the client did not like the picture.</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="block">
+    <div class="block-head"><h3>5 &nbsp;Image generation key</h3><span class="tag">Your fal.ai account</span></div>
+    <p style="margin:0;">
+      At the very bottom. This is where you put your own fal.ai key, so that image generation is
+      billed to you rather than to Evokz. <strong>Full instructions on page 4.</strong>
+    </p>
+  </div>
+
+  <div class="warn" style="margin-top:6mm;">
+    <h3>A yellow strip near the top</h3>
+    <p style="margin:0;">
+      If you ever see a yellow bar listing settings in capital letters, something the system needs
+      has not been filled in and that part will not work. Send a photo of it to your technical
+      contact — it is not something to fix from the dashboard.
+    </p>
+  </div>
+
+  <div style="margin-top:6mm;">
+    <h2>Two words worth knowing</h2>
+    <table style="margin-bottom:0;">
+      <tr>
+        <td style="width:34mm;">Content calendar</td>
+        <td>The list of what each client gets on each day of their campaign — the topic, the caption,
+          the hashtags, and the description used to make the picture. It is written once, up front,
+          and you can edit any day before it goes out.</td>
+      </tr>
+      <tr>
+        <td>Vertical</td>
+        <td>The client's industry — real estate, construction, and so on. It shapes how their
+          posters look and read. Each client has exactly one.</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="foot"><span>Evokz Console — Admin Guide</span><span>Page 2 of 4</span></div>
+</div>
+
+<!-- ============================ PAGE 3 ============================ -->
+<div class="page">
+  <div class="eyebrow">Section by section</div>
+  <h2 style="font-size:16pt;">The other tabs</h2>
+
+  <div class="block">
+    <h3>Plan</h3>
+    <p style="margin:0;">
+      Your packages — for example <em>“100-Day Blitz”</em>. Each has a name, a number of days, and
+      the full price you charge for the whole campaign.
+      <strong>The number of days decides when a client's campaign ends.</strong>
+      The price is what the dashboard uses to work out your margin, so it is worth filling in.
+      A package cannot be deleted while clients are still on it — Evokz will tell you how many.
+    </p>
+  </div>
+
+  <div class="block">
+    <h3>Verticals</h3>
+    <p style="margin:0;">
+      The industries you serve. Add one before you can add a client in it.
+      <strong>Open a vertical</strong> to upload up to 20 reference posters — examples of how
+      posters in that industry should look. These are a design library for your team; they do not
+      change what the system produces today.
+    </p>
+  </div>
+
+  <div class="block">
+    <h3>Clients</h3>
+    <p style="margin:0;">Every client in one table. From this screen you can:</p>
+    <table style="margin-top:2.5mm; margin-bottom:0;">
+      <tr><td style="width:40mm;">Change delivery time</td><td>Click the time, type a new one, press Enter. Escape cancels.</td></tr>
+      <tr><td>Pause or resume</td><td>A paused client receives nothing until you switch them back on.</td></tr>
+      <tr><td>Open a client</td><td>Click the company name for their full detail page.</td></tr>
+    </table>
+    <p class="small muted" style="margin-top:2.5mm; margin-bottom:0;">
+      Inside a client you will find their campaign progress, their brand page (logo, colours,
+      tagline, phone and website that appear on every poster), the option to upload a calendar you
+      wrote yourself instead of having it generated, and the controls to delete the client or clear
+      their unsent days.
+    </p>
+  </div>
+
+  <div class="block">
+    <h3>Posters</h3>
+    <p style="margin:0;">
+      Every poster layout, side by side, at whatever size you pick.
+      <strong>This is free and uses no credit at all</strong> — the pictures are made on your own
+      machine. Refresh it as often as you like. It is the right screen to show a prospect what
+      their posters could look like.
+    </p>
+  </div>
+
+  <div class="block">
+    <h3>Demo</h3>
+    <p style="margin:0;">
+      A practice client built for live sales calls: set up a fake company, generate a real poster,
+      and it arrives on WhatsApp immediately so the prospect sees the whole thing work.
+      <strong>It is excluded from the daily schedule</strong>, so it never sends anything on its
+      own. Generating here does cost money, exactly like a real client.
+    </p>
+  </div>
+
+  <div class="note" style="margin-top:5mm;">
+    <h3>The one rule worth remembering</h3>
+    <p style="margin:0;">
+      <strong>Sending an existing poster is free. Making a new picture costs money.</strong>
+      So <span class="ui">Send now</span> and <span class="ui">Retry failed</span> are safe to use
+      freely; <span class="ui">Regenerate</span> and the Demo tab spend real credit each time.
+    </p>
+  </div>
+
+  <div class="foot"><span>Evokz Console — Admin Guide</span><span>Page 3 of 4</span></div>
+</div>
+
+<!-- ============================ PAGE 4 ============================ -->
+<div class="page">
+  <div class="eyebrow">Billing</div>
+  <h2 style="font-size:16pt;">Using your own fal.ai key</h2>
+  <p class="muted" style="margin-top:-1mm;">
+    fal.ai generates the background pictures. By default Evokz pays for it — add your own key and
+    every picture is billed to you instead.
+  </p>
+
+  <h3 style="margin-top:5mm; font-size:10.5pt;">Part 1 — Get your key from fal.ai</h3>
+  <div class="flow flow-rail" style="margin-top:2.5mm;">
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <div class="flow-body">Go to <b>fal.ai</b> and create an account, or sign in to your existing one.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <div class="flow-body">Open <b>Billing</b> and add a payment method or top up.
+        <span class="muted">A key with no money behind it will not make pictures.</span></div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <div class="flow-body">Open <b>Settings → API Keys</b> <span class="muted">(on some screens it sits under your
+        account menu, top right).</span></div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">4</div>
+      <div class="flow-body">Click <b>Add key</b> / <b>Create key</b>. Give it a name like
+        <em>“Evokz”</em> so you know later what it is for.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">5</div>
+      <div class="flow-body"><b>Copy the whole key immediately</b> — a long code with a colon in the
+        middle; copy both sides of it.
+        <span class="muted">fal.ai shows it only once. If you lose it, delete that key and make a new one.</span></div>
+    </div>
+  </div>
+
+  <h3 style="margin-top:5mm; font-size:10.5pt;">Part 2 — Put it into Evokz</h3>
+  <div class="flow flow-rail" style="margin-top:2.5mm;">
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <div class="flow-body">Open the <b>Dashboard</b> and scroll to the bottom, to
+        <span class="ui">Image generation key</span>.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <div class="flow-body"><b>Paste the key</b> into the box. Add a label if you like — just a note
+        to yourself about which account it is.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <div class="flow-body">Click <span class="ui">Test key</span> first. This makes one small
+        picture to prove the key works — it costs under a rupee and <b>changes nothing</b>.
+        Wait for the green tick.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">4</div>
+      <div class="flow-body">Click <span class="ui">Switch to my fal.ai key</span>. A yellow warning
+        appears; <b>click the red button</b> to confirm. From the very next poster onward, fal.ai
+        bills you — nothing to restart, no waiting.</div>
+    </div>
+  </div>
+
+  <div class="warn">
+    <h3>This is a one-way switch</h3>
+    <p style="margin:0;">
+      You can swap in a <strong>different key of your own</strong> at any time — just paste the new
+      one and save. But the dashboard cannot hand billing back to Evokz. If you need that, ask your
+      technical contact; it takes them under a minute.
+    </p>
+  </div>
+
+  <h3 style="margin-top:4mm; font-size:10.5pt;">To change your key later</h3>
+  <p style="margin-bottom:3.5mm;">
+    Same place, same steps: paste the new key, <span class="ui">Test key</span>, then
+    <span class="ui">Save key</span>. No second confirmation is needed.
+  </p>
+
+  <h2 style="font-size:11.5pt;">If posters stop going out</h2>
+  <table style="margin-bottom:0;">
+    <tr><th style="width:50mm;">What you see</th><th>What to do</th></tr>
+    <tr>
+      <td>“fal.ai rejected the&nbsp;key”</td>
+      <td>Cancelled, mistyped, or out of money. Check your fal.ai balance, then save a working key.</td>
+    </tr>
+    <tr>
+      <td>“cannot be&nbsp;decrypted”</td>
+      <td>Something changed on the server. Paste your key in again and save — that fixes it.</td>
+    </tr>
+    <tr>
+      <td>A yellow bar in the key section</td>
+      <td>The server is missing a one-time setting. Send it to your technical contact.</td>
+    </tr>
+  </table>
+
+  <div class="note" style="margin-top:2.5mm;">
+    <p style="margin:0;">
+      <strong>Evokz will never quietly pay on your behalf.</strong> If your key stops working,
+      posters stop and the dashboard says why.
+    </p>
+  </div>
+
+  <div class="foot"><span>Evokz Console — Admin Guide</span><span>Page 4 of 4</span></div>
+</div>
+
+</body>
+</html>

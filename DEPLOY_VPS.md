@@ -182,6 +182,12 @@ POSTGRES_DB="evokz_ace"
 # 4. Console login — see 4b.
 ADMIN_PASSWORD_HASH="..."
 SESSION_SECRET="..."
+
+# 5. Encrypts anything the console stores on the operator's behalf — today the
+#    fal.ai key entered under Dashboard → Image generation key. Without it that
+#    panel refuses to save rather than storing a key in plain text, so set it now
+#    even if nobody uses the panel yet. Rotating it later orphans the stored key.
+SETTINGS_ENCRYPTION_KEY="PASTE_FROM_openssl_rand_-hex_32"
 ```
 
 Generate the random values:
@@ -189,6 +195,7 @@ Generate the random values:
 ```bash
 openssl rand -hex 32   # CRON_SECRET
 openssl rand -hex 24   # POSTGRES_PASSWORD
+openssl rand -hex 32   # SETTINGS_ENCRYPTION_KEY
 ```
 
 And the console credentials — this prints both lines ready to paste, and the
@@ -430,6 +437,13 @@ Retention is 14 days, set at the top of the script.
 application bug; it does not survive the VPS. Add an off-site copy — the script
 has a commented `rclone` line at the bottom for exactly this.
 
+**Dumps now contain a credential — as ciphertext.** If an operator has saved a
+fal.ai key in the console, `AppSetting.falKeyCipher` is in every dump. It is
+AES-256-GCM and useless without `SETTINGS_ENCRYPTION_KEY`, which lives in `.env`
+and is deliberately *not* in the dump. Two consequences: an off-site dump does not
+leak the key, and a restore onto a box with a different `SETTINGS_ENCRYPTION_KEY`
+comes up with a key it cannot read. Store that value with the restore notes.
+
 Restore:
 
 ```bash
@@ -496,6 +510,46 @@ Rotating `SESSION_SECRET` invalidates every live session immediately. That is th
 **only** revocation mechanism — sessions are stateless signed tokens, so there is
 no session table to delete rows from.
 
+### The operator's own fal.ai key
+
+Entered in the console at **Dashboard → Image generation key**, not in `.env`. It
+is encrypted with `SETTINGS_ENCRYPTION_KEY` and stored in `AppSetting`, and it is
+resolved per render — so saving one takes effect on the next generation with no
+restart and no redeploy.
+
+While a key is saved, **`FAL_KEY` is never used**. A rejected key, an empty
+balance, or a key that will not decrypt all fail the row with a message naming the
+cause; none of them quietly fall back to the platform key, because that would spend
+Evokz's money against an explicit instruction and nobody would notice until the
+invoice.
+
+**The switch is one-way from the console.** There is no remove control and no
+`clearFalApiKey` server action — hiding a button would not be enough, since Next.js
+publishes Server Action IDs in the client bundle. The operator can replace their key
+with another of their own; they cannot hand billing back to Evokz. Reverting takes
+server access, deliberately:
+
+```bash
+docker compose exec db psql -U evokz -d evokz_ace \
+  -c 'UPDATE "AppSetting" SET "falKeyCipher" = NULL, "falKeyLast4" = NULL,
+      "falKeyLabel" = NULL, "falKeyUpdatedAt" = NULL;'
+```
+
+No restart is needed — the credential is resolved per render, so the next poster
+uses `FAL_KEY` again. Confirm it is still set in `.env` first, or generation will
+fail with `Missing required environment variable: FAL_KEY`.
+
+Two further operational notes:
+
+- **`docker compose restart app` does not re-read `.env`.** Restart re-runs the
+  container with the environment it was *created* with. After adding or changing
+  `SETTINGS_ENCRYPTION_KEY`, use `docker compose up -d app`, which recreates it.
+- **Rotating `SETTINGS_ENCRYPTION_KEY` orphans the stored key.** Nothing
+  re-encrypts it. The panel shows a "cannot be decrypted" state and every render
+  fails until the operator pastes their key in again and saves, which overwrites the
+  unreadable one. Rotate it only when you intend that, and keep the old value until
+  the new key is saved.
+
 ---
 
 ## 11. Troubleshooting
@@ -512,6 +566,9 @@ no session table to delete rows from.
 | Posters fail with `Unsupported OpenType signature wOF2` | Outbound access to `fonts.googleapis.com` is blocked. Set `POSTER_FONT_DIR` to a directory of TTFs and mount it into the container. |
 | Clients receive nothing, no errors anywhere | The §7 cron was never installed. |
 | WhatsApp delivery fails, everything else works | `EVOLUTION_API_KEY` is the global key rather than the per-instance token. |
+| The key panel still says `SETTINGS_ENCRYPTION_KEY is not set` after adding it | You ran `docker compose restart app`. Restart re-runs the container with the environment it was *created* with; `.env` is only re-read on create. Use `docker compose up -d app`. |
+| Deliveries fail with `[generate] Stored key could not be decrypted` | `SETTINGS_ENCRYPTION_KEY` changed, or `.env` came from a different box, since the fal.ai key was saved. Save the key again in the console to overwrite the unreadable one — there is deliberately no fallback to `FAL_KEY`. |
+| Deliveries fail with `[generate] fal.ai rejected the operator key` | The saved key is revoked, mistyped, or the account is out of balance. Use **Test key** on the dashboard, then save a working key. A valid key can also be rejected because the account cannot reach `FAL_MODEL_ENDPOINT` — the error names the endpoint. The console cannot revert to `FAL_KEY`; that is the `UPDATE "AppSetting"` above. |
 
 ---
 
@@ -527,6 +584,10 @@ Being explicit about what this deploy does *not* fix:
   both. §8's off-site copy is what limits the damage.
 - **`UsageEvent.backfilled`** is read but never written, so spend reports treat
   every event as live.
+- **At-rest encryption on a single box has a short reach.** The operator's fal.ai
+  key is encrypted with a value that lives in `.env` on the same host, so anyone
+  holding both the database and `.env` holds the key. That is the honest boundary:
+  it protects a leaked dump or an off-site backup, not a compromised host.
 - **In-memory login throttle.** Per-process, and reset by any restart. With the
   Caddy gateway removed this is the outermost defence against online guessing,
   and it does not stop a distributed attempt. It is the weakest point of the

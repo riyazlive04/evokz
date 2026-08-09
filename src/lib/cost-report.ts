@@ -1,4 +1,4 @@
-import { DeliveryStatus, UsageProvider } from '@prisma/client';
+import { DeliveryStatus, UsageKeySource, UsageProvider } from '@prisma/client';
 
 import { prisma } from '@/lib/prisma';
 import { getRateCard, microsToInr, type RateCard } from '@/lib/pricing';
@@ -127,6 +127,13 @@ export interface CostReport {
   trackingSince: Date | null;
   /** True when any row in range was reconstructed rather than observed. */
   hasBackfilled: boolean;
+  /**
+   * Images rendered on the operator's own fal.ai key in range — counted here but
+   * costed nowhere, because that invoice arrives from fal.ai directly. Lets the
+   * panel say why its image count and its spend no longer move together.
+   */
+  byoImageCount: number;
+  byoEvents: number;
   clientOptions: Array<{ id: string; companyName: string; isDemo: boolean }>;
 }
 
@@ -161,6 +168,23 @@ const SUM_FIELDS = {
   messageCount: true,
 } as const;
 
+/**
+ * Folds one grouped row into totals, counting money only when the platform paid.
+ *
+ * A BYO row is a real call — it rendered an image, and it shows in every unit count
+ * — but its invoice arrives from fal.ai on the operator's own account. Adding its
+ * `costUsdMicros` would inflate agency spend, deflate cost-per-post, and fire budget
+ * alerts over money Evokz never pays.
+ */
+function toAttributedTotals(
+  sum: SumBlock,
+  events: number,
+  keySource: UsageKeySource,
+): SpendTotals {
+  const totals = toTotals(sum, events);
+  return keySource === UsageKeySource.PLATFORM ? totals : { ...totals, costUsdMicros: 0 };
+}
+
 function addTotals(a: SpendTotals, b: SpendTotals): SpendTotals {
   return {
     costUsdMicros: a.costUsdMicros + b.costUsdMicros,
@@ -189,7 +213,6 @@ export async function loadCostReport(
   };
 
   const [
-    overallAgg,
     providerGroups,
     clientGroups,
     monthGroups,
@@ -198,24 +221,35 @@ export async function loadCostReport(
     firstEvent,
     backfilledCount,
   ] = await Promise.all([
-    prisma.usageEvent.aggregate({ where, _sum: SUM_FIELDS, _count: { _all: true } }),
+    // Grouped by key source as well, so BYO spend can be dropped from the money
+    // while its unit counts stay. `provider` is NOT NULL, so these rows are an
+    // exact partition of `where` — which is why there is no separate overall
+    // aggregate any more: folding these gives the same figure and the two can no
+    // longer disagree.
     prisma.usageEvent.groupBy({
-      by: ['provider'],
+      by: ['provider', 'keySource'],
       where,
       _sum: SUM_FIELDS,
       _count: { _all: true },
     }),
     prisma.usageEvent.groupBy({
-      by: ['clientId'],
+      by: ['clientId', 'keySource'],
       where,
       _sum: SUM_FIELDS,
       _count: { _all: true },
     }),
     // Budget alerts always measure the calendar month, whatever range is shown,
     // so switching to "Last 7 days" cannot make an over-budget client look fine.
+    //
+    // BYO rows are excluded outright here rather than zeroed: the cap exists to
+    // protect the agency's margin, and spend on the operator's own fal.ai account
+    // never touches it.
     prisma.usageEvent.groupBy({
       by: ['clientId'],
-      where: monthFrom ? { createdAt: { gte: monthFrom } } : {},
+      where: {
+        keySource: UsageKeySource.PLATFORM,
+        ...(monthFrom ? { createdAt: { gte: monthFrom } } : {}),
+      },
       _sum: { costUsdMicros: true },
     }),
     prisma.contentCalendar.groupBy({
@@ -240,12 +274,38 @@ export async function loadCostReport(
     prisma.usageEvent.count({ where: { ...where, backfilled: true } }),
   ]);
 
-  const spendByClient = new Map(
-    clientGroups.map((group) => [
+  // Both group sets now carry two rows per key where they used to carry one, so
+  // each is folded back down with money attributed as it goes.
+  const spendByClient = new Map<string | null, SpendTotals>();
+  for (const group of clientGroups) {
+    spendByClient.set(
       group.clientId,
-      toTotals(group._sum, group._count._all),
-    ]),
-  );
+      addTotals(
+        spendByClient.get(group.clientId) ?? ZERO,
+        toAttributedTotals(group._sum, group._count._all, group.keySource),
+      ),
+    );
+  }
+
+  const spendByProvider = new Map<UsageProvider, SpendTotals>();
+  let byoImageCount = 0;
+  let byoEvents = 0;
+  for (const group of providerGroups) {
+    spendByProvider.set(
+      group.provider,
+      addTotals(
+        spendByProvider.get(group.provider) ?? ZERO,
+        toAttributedTotals(group._sum, group._count._all, group.keySource),
+      ),
+    );
+    if (group.keySource === UsageKeySource.BYO) {
+      byoImageCount += group._sum.imageCount ?? 0;
+      byoEvents += group._count._all;
+    }
+  }
+
+  const overall = [...spendByProvider.values()].reduce(addTotals, ZERO);
+
   const monthByClient = new Map(
     monthGroups.map((group) => [group.clientId, group._sum.costUsdMicros ?? 0]),
   );
@@ -292,7 +352,9 @@ export async function loadCostReport(
     const spendInr = microsToInr(orphan.costUsdMicros, rates);
     rows.push({
       clientId: null,
-      companyName: 'Removed clients',
+      // Not "Removed clients": a Test-key probe has no client either, and lands
+      // in exactly this bucket the moment an operator checks their key.
+      companyName: 'Unattributed',
       isDemo: false,
       planName: null,
       priceInr: null,
@@ -316,22 +378,21 @@ export async function loadCostReport(
     rates,
     rangeLabel: RANGE_LABELS[filters.range],
     from,
-    overall: toTotals(overallAgg._sum, overallAgg._count._all),
-    overallInr: microsToInr(overallAgg._sum.costUsdMicros ?? 0, rates),
-    byProvider: providerGroups
-      .map((group) => {
-        const totals = toTotals(group._sum, group._count._all);
-        return {
-          provider: group.provider,
-          totals,
-          inr: microsToInr(totals.costUsdMicros, rates),
-        };
-      })
+    overall,
+    overallInr: microsToInr(overall.costUsdMicros, rates),
+    byProvider: [...spendByProvider.entries()]
+      .map(([provider, totals]) => ({
+        provider,
+        totals,
+        inr: microsToInr(totals.costUsdMicros, rates),
+      }))
       .sort((a, b) => b.totals.costUsdMicros - a.totals.costUsdMicros),
     clients: rows,
     alerts: rows.filter((row) => row.overBudget),
     trackingSince: firstEvent?.createdAt ?? null,
     hasBackfilled: backfilledCount > 0,
+    byoImageCount,
+    byoEvents,
     clientOptions: clientRecords.map((client) => ({
       id: client.id,
       companyName: client.companyName,

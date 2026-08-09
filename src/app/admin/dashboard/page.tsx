@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 
 import { ClientRoster, type ClientRosterRow } from '@/components/admin/ClientRoster';
+import { ImageKeyPanel } from '@/components/admin/ImageKeyPanel';
 import { PageHeader } from '@/components/admin/PageHeader';
 import { QueueLedger, type QueueEntry } from '@/components/admin/QueueLedger';
 import { RetryFailedButton } from '@/components/admin/RetryFailedButton';
@@ -26,7 +27,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { SpendPanel } from '@/components/admin/SpendPanel';
-import { describeError } from '@/lib/ai-pipeline';
+import { describeError, getFalEndpoint } from '@/lib/ai-pipeline';
 import {
   loadCostReport,
   parseProvider,
@@ -34,6 +35,7 @@ import {
   type CostReport,
 } from '@/lib/cost-report';
 import { findUnsetIntegrationKeys } from '@/lib/env';
+import { loadFalKeyStatus, type FalKeyStatus } from '@/lib/fal-credentials';
 import { prisma } from '@/lib/prisma';
 import { queueSelect, toQueueEntry } from '@/lib/queue-entry';
 import {
@@ -110,8 +112,9 @@ export default async function AdminDashboardPage({
   let data: DashboardData;
   let detail: DetailData | null = null;
   let costReport: CostReport;
+  let falKeyStatus: FalKeyStatus;
   try {
-    [data, costReport] = await Promise.all([
+    [data, costReport, falKeyStatus] = await Promise.all([
       loadDashboardData({ todayStart, todayEnd, timeZone }),
       loadCostReport(
         {
@@ -121,6 +124,7 @@ export default async function AdminDashboardPage({
         },
         now,
       ),
+      loadFalKeyStatus(),
     ]);
     if (view) {
       detail = await loadDetail({ view, todayStart, todayEnd, timeZone });
@@ -145,7 +149,11 @@ export default async function AdminDashboardPage({
         </Button>
       </PageHeader>
 
-      <ConfigWarning missing={findUnsetIntegrationKeys()} />
+      {/* An operator key supersedes FAL_KEY entirely, so listing it as unset
+          would be a permanent false alarm on a correctly configured box. */}
+      <ConfigWarning
+        missing={findUnsetIntegrationKeys(falKeyStatus.configured ? ['FAL_KEY'] : [])}
+      />
 
       {/* ---- Operational counters ---- */}
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -232,6 +240,9 @@ export default async function AdminDashboardPage({
           <QueueLedger entries={data.upcoming} />
         </CardContent>
       </Card>
+
+      {/* ---- Image generation key ---- */}
+      <ImageKeyPanel status={falKeyStatus} endpoint={getFalEndpoint()} />
     </>
   );
 }

@@ -21,6 +21,17 @@ enum UsageProvider {
   EVOLUTION // WhatsApp broadcast, billed per message (often self-hosted, ₹0)
 }
 
+/// Which credential paid for a call.
+///
+/// An enum rather than a String: unlike `Client.imageSizePreset`, whose catalogue
+/// grows whenever a platform changes a spec, this set is closed and binary. It is
+/// also a discriminator the cost report filters on in SQL, where a typo'd string
+/// would silently mis-bill rather than fail.
+enum UsageKeySource {
+  PLATFORM // Evokz's own provider account, from the environment.
+  BYO // The operator's own account, from the key stored in AppSetting.
+}
+
 model Plan {
   id           String   @id @default(uuid())
   name         String // e.g., "100-Day Blitz", "365-Day Scale"
@@ -239,10 +250,51 @@ model UsageEvent {
   /// time, so it carries an exact count but today's rate.
   backfilled Boolean @default(false)
 
+  /// Which credential paid. PLATFORM rows are the agency's own spend and the only
+  /// ones the cost report and the monthly budget alerts add up; BYO rows still
+  /// carry their unit counts, so render volume stays visible even though the
+  /// invoice lands on the operator's provider account rather than Evokz's.
+  ///
+  /// Only the image recorder sets this today. A future operator-supplied OpenAI
+  /// key would have to teach `recordOpenAiUsage` the same thing — the default is
+  /// a statement about the past, not a shortcut.
+  ///
+  /// Not indexed: two values across the whole ledger is the worst possible
+  /// selectivity, and the indexes below still drive every query that filters it.
+  keySource UsageKeySource @default(PLATFORM)
+
   createdAt DateTime @default(now())
 
   // Per-client spend over a window is the dashboard's hottest query.
   @@index([clientId, createdAt])
   @@index([provider, createdAt])
   @@index([createdAt])
+}
+
+/// Install-wide operator settings. Exactly one row, id "singleton".
+///
+/// Scope is the whole install, not the client: there is one operator and one
+/// login, so a per-tenant credential would be a column nobody could fill in
+/// differently. A typed singleton row rather than a key/value table because the
+/// values are few and typed — the same reasoning that keeps `logoUrl` a column
+/// instead of a slot inside `brandGuideline`.
+model AppSetting {
+  id String @id @default("singleton")
+
+  /// AES-256-GCM envelope produced by src/lib/secret-box.ts, never plaintext.
+  /// Null means no operator key, and the pipeline then uses the platform FAL_KEY.
+  /// While it is set, FAL_KEY is deliberately never used — not even as a fallback
+  /// when this key is rejected or cannot be decrypted.
+  falKeyCipher    String?   @db.Text
+  /// Last four characters of the key, so the console can identify which key is
+  /// live without ever receiving the key itself.
+  falKeyLast4     String?
+  /// The operator's own note, e.g. "personal fal account".
+  falKeyLabel     String?
+  /// When the key was last written. Distinct from `updatedAt`, which will move
+  /// for any future setting added to this row.
+  falKeyUpdatedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

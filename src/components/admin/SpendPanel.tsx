@@ -128,7 +128,11 @@ export function SpendPanel({
                 label={PROVIDER_LABELS[provider]}
                 micros={totals.costUsdMicros}
                 rates={rates}
-                hint={describeUnits(provider, totals)}
+                hint={
+                  provider === UsageProvider.FAL && report.byoImageCount > 0
+                    ? `${describeUnits(provider, totals)} · ${report.byoImageCount.toLocaleString('en-IN')} on your own key`
+                    : describeUnits(provider, totals)
+                }
               />
             ))
           )}
@@ -136,7 +140,15 @@ export function SpendPanel({
 
         {/* ---- Credit consumption in provider units ---- */}
         <section className="grid gap-1 sm:grid-cols-2 xl:grid-cols-4 overflow-hidden rounded-xl border border-border bg-border">
-          <UnitCell label="Images rendered" value={overall.imageCount.toLocaleString('en-IN')} />
+          <UnitCell
+            label="Images rendered"
+            value={overall.imageCount.toLocaleString('en-IN')}
+            hint={
+              report.byoImageCount > 0
+                ? `${report.byoImageCount.toLocaleString('en-IN')} on your own fal.ai key`
+                : undefined
+            }
+          />
           <UnitCell label="WhatsApp messages" value={overall.messageCount.toLocaleString('en-IN')} />
           <UnitCell label="Tokens in / out" value={`${formatTokens(overall.inputTokens)} / ${formatTokens(overall.outputTokens)}`} />
           <UnitCell
@@ -507,6 +519,13 @@ function ClientSplit({ report }: { report: CostReport }) {
         full campaign price, and margin is that fee minus period spend — so margin only reads
         true once the period covers the whole campaign. Budget always measures the current
         calendar month, whatever period is selected.
+        {report.byoImageCount > 0 && (
+          <>
+            {' '}
+            Images include renders billed to your own fal.ai key; spend, cost per post and
+            margin do not.
+          </>
+        )}
       </p>
     </div>
   );
@@ -548,6 +567,14 @@ function RateCardNote({ report }: { report: CostReport }) {
         {report.hasBackfilled &&
           ' Rows reconstructed from delivery history carry exact counts priced at the current rate, not the rate in force at the time.'}
       </p>
+      {report.byoImageCount > 0 && (
+        <p>
+          {report.byoImageCount.toLocaleString('en-IN')} render
+          {report.byoImageCount === 1 ? '' : 's'} in this period were paid for with your own
+          fal.ai key. They are counted but not costed — that invoice arrives from fal.ai
+          directly, so every ₹ above is money Evokz pays.
+        </p>
+      )}
     </div>
   );
 }

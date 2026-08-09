@@ -1,6 +1,7 @@
-import { DeliveryStatus } from '@prisma/client';
+import { DeliveryStatus, UsageKeySource } from '@prisma/client';
 
 import { intEnv, optionalEnv, requireEnv } from '@/lib/env';
+import { resolveFalCredentials, type FalCredentials } from '@/lib/fal-credentials';
 import { uploadClientAsset } from '@/lib/google-drive';
 import { ensurePosterCopy } from '@/lib/ai/poster-copy';
 import { resolveImageSizePreset } from '@/lib/image-sizes';
@@ -107,6 +108,10 @@ export async function runCreativePipeline(
   options: PipelineOptions = {},
 ): Promise<PipelineOutcome> {
   let stage: PipelineStage = 'load';
+  // Declared out here rather than inside the `if (!canReuse)` block below because
+  // the catch feeds it to `redactSecrets`: an operator-supplied key comes from the
+  // database, so it is not in `process.env` for that helper to find on its own.
+  let falCredentials: FalCredentials | null = null;
 
   try {
     const entry = await prisma.contentCalendar.findUnique({
@@ -171,14 +176,26 @@ export async function runCreativePipeline(
 
       // ---- Step 1: Flux.1 via fal.ai --------------------------------------
       stage = 'generate';
-      const photo = await generateCreativeAsset(entry.imagePrompt, photoRequest);
+      // Resolved *after* `stage` is set, so a missing FAL_KEY or an undecryptable
+      // operator key lands as "[generate] …" rather than "[load] …". An operator
+      // reading a generate failure goes and looks at the fal credentials, which is
+      // exactly where the fault is.
+      falCredentials = await resolveFalCredentials();
+      const photo = await generateCreativeAsset(
+        entry.imagePrompt,
+        photoRequest,
+        falCredentials,
+      );
 
       // Billed the moment fal returns pixels — before the upload, which can
-      // still fail without making the render free.
-      await recordImageUsage(getFalEndpoint(), {
-        clientId: client.id,
-        calendarId: entry.id,
-      });
+      // still fail without making the render free. The source comes from the same
+      // credentials object that made the call, never re-resolved: a key saved
+      // mid-sweep must not re-attribute a render it did not pay for.
+      await recordImageUsage(
+        getFalEndpoint(),
+        { clientId: client.id, calendarId: entry.id },
+        falCredentials.source,
+      );
 
       // ---- Step 2: Poster composition -------------------------------------
       stage = 'compose';
@@ -284,7 +301,12 @@ export async function runCreativePipeline(
     };
   } catch (error) {
     const failedStage = error instanceof PipelineStageError ? error.stage : stage;
-    const message = redactSecrets(describeError(error));
+    const message = redactSecrets(describeError(error), [
+      falCredentials?.key,
+      // The halves separately: a provider that echoed back only the secret part
+      // would slip past a whole-string match.
+      falCredentials?.key.split(':')[1],
+    ]);
 
     // Best-effort persistence of the failure trace. A row that vanished
     // mid-flight (deleted client -> cascade) must not mask the original error.
@@ -353,14 +375,16 @@ function resolvePosterArchetype(
 async function generateCreativeAsset(
   imagePrompt: string,
   photoRequest: PhotoRequest,
+  credentials: FalCredentials,
 ): Promise<GeneratedAsset> {
-  const falKey = requireEnv('FAL_KEY');
   const endpoint = getFalEndpoint();
   const timeoutMs = intEnv('FAL_TIMEOUT_MS', 120_000);
   const maxAttempts = Math.max(1, intEnv('FAL_MAX_ATTEMPTS', 3));
 
+  // The source, never the key. `redactSecrets` guards `errorMessage`, not stdout.
   console.info(
-    `[ace:pipeline] photo ${photoRequest.width}×${photoRequest.height} — ${photoRequest.reason}`,
+    `[ace:pipeline] photo ${photoRequest.width}×${photoRequest.height} — ${photoRequest.reason} ` +
+      `(${describeKeySource(credentials.source)} fal key)`,
   );
 
   const url = `https://fal.run/${endpoint.replace(/^\/+/, '')}`;
@@ -374,23 +398,40 @@ async function generateCreativeAsset(
     enable_safety_checker: true,
   };
 
-  const response = await withRetries(
-    'fal.ai',
-    maxAttempts,
-    async () =>
-      fetchJson<FalResponse>(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Key ${falKey}`,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify(payload),
-        timeoutMs,
-        stage: 'generate',
-      }),
-    'generate',
-  );
+  let response: FalResponse;
+  try {
+    response = await withRetries(
+      'fal.ai',
+      maxAttempts,
+      async () =>
+        fetchJson<FalResponse>(url, {
+          method: 'POST',
+          headers: {
+            // The key belongs in this header and nowhere else. It must never be
+            // interpolated into a log line or an error message: `withRetries`
+            // logs unredacted, and only `errorMessage` is scrubbed downstream.
+            Authorization: `Key ${credentials.key}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(payload),
+          timeoutMs,
+          stage: 'generate',
+        }),
+      'generate',
+    );
+  } catch (error) {
+    // A 401/403 already breaks out on the first attempt — `isRetryable` treats
+    // every status outside 408/425/429/5xx as terminal — so no attempts are burned
+    // on a dead key. What is missing is *which* key died, which is the difference
+    // between a legible failure and a support conversation.
+    if (/responded (401|403)\b/.test(describeError(error))) {
+      throw new PipelineStageError('generate', describeKeyRejection(credentials, endpoint), {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 
   const image = response.images?.[0];
   if (!image?.url) {
@@ -435,6 +476,86 @@ function decodeDataUri(dataUri: string): GeneratedAsset {
   }
 
   return { body, mimeType: mimeType ?? 'image/png' };
+}
+
+/** One word for a log line: whose account this render is being billed to. */
+function describeKeySource(source: UsageKeySource): string {
+  return source === UsageKeySource.BYO ? 'operator' : 'platform';
+}
+
+/**
+ * Turns a bare 401/403 into something an operator can act on.
+ *
+ * Names the endpoint as well as the key, because the two failures look identical
+ * from here: a valid key on an account that cannot reach `FAL_MODEL_ENDPOINT` is
+ * rejected exactly like a revoked one.
+ */
+function describeKeyRejection(credentials: FalCredentials, endpoint: string): string {
+  return credentials.source === UsageKeySource.BYO
+    ? `fal.ai rejected the operator key saved in the console (…${credentials.last4}) for ` +
+        `${endpoint}. Check the account's balance and that the key is still valid, then save ` +
+        'a working key from the dashboard — "Test key" verifies one before you commit to it. ' +
+        'The platform FAL_KEY is deliberately never used as a fallback.'
+    : `fal.ai rejected the platform FAL_KEY for ${endpoint}. Check the value in .env, or save ` +
+        'an operator key from the dashboard.';
+}
+
+/** The cheapest render fal will do — a diagnostic, not a creative call. */
+const PROBE_ENDPOINT = 'fal-ai/flux/schnell';
+const PROBE_EDGE = 512;
+const PROBE_TIMEOUT_MS = 30_000;
+
+export interface FalProbeResult {
+  endpoint: string;
+  elapsedMs: number;
+}
+
+/**
+ * Spends one real render to prove a key works.
+ *
+ * Deliberately not routed through `withRetries`: this answers a diagnostic
+ * question, and a retry would both muddy the signal and spend again. The timeout is
+ * fixed at 30s rather than `FAL_TIMEOUT_MS`'s 120s so a hung probe cannot hold a
+ * server action open for two minutes.
+ *
+ * Rethrows already-redacted, so the caller never has to think about the key.
+ */
+export async function probeFalKey(credentials: FalCredentials): Promise<FalProbeResult> {
+  const startedAt = Date.now();
+
+  try {
+    const response = await fetchJson<FalResponse>(`https://fal.run/${PROBE_ENDPOINT}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Key ${credentials.key}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        prompt: 'a plain neutral grey background',
+        image_size: { width: PROBE_EDGE, height: PROBE_EDGE },
+        num_images: 1,
+        sync_mode: true,
+        enable_safety_checker: true,
+      }),
+      timeoutMs: PROBE_TIMEOUT_MS,
+      stage: 'generate',
+    });
+
+    if (!response.images?.[0]?.url) {
+      throw new PipelineStageError(
+        'generate',
+        'fal.ai accepted the key but returned no image — the account may be rate limited.',
+      );
+    }
+
+    return { endpoint: PROBE_ENDPOINT, elapsedMs: Date.now() - startedAt };
+  } catch (error) {
+    throw new PipelineStageError('generate', redactSecrets(describeError(error), [
+      credentials.key,
+      credentials.key.split(':')[1],
+    ]), { cause: error });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -679,9 +800,16 @@ export function describeError(error: unknown): string {
   }
 }
 
-/** Keeps API credentials out of `errorMessage`, which the dashboard renders. */
-function redactSecrets(message: string): string {
+/**
+ * Keeps API credentials out of `errorMessage`, which the dashboard renders.
+ *
+ * `extra` exists for credentials that are not in the environment: an
+ * operator-supplied fal key lives in the database, so there is nothing here for
+ * this function to find on its own and the caller has to hand it in.
+ */
+function redactSecrets(message: string, extra: Array<string | null | undefined> = []): string {
   const secrets = [
+    ...extra,
     process.env.FAL_KEY,
     process.env.EVOLUTION_API_KEY,
     process.env.RAZORPAY_WEBHOOK_SECRET,

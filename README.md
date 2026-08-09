@@ -19,6 +19,10 @@ npm run dev                # http://localhost:3000/admin/dashboard
 The dashboard renders a banner listing any unset integration variables (names only), so a
 config gap is distinguishable from a code bug at a glance.
 
+`SETTINGS_ENCRYPTION_KEY` is only needed if the operator will supply their own fal.ai key from
+the console (see **Operating the console**). Without it that panel refuses to save rather than
+storing a credential in plain text; everything else runs.
+
 Seed at least one **Plan** and one **Category** from the console before onboarding a client —
 provisioning validates both foreign keys.
 
@@ -31,6 +35,8 @@ provisioning validates both foreign keys.
 | Client provisioning (shared) | [src/lib/onboarding.ts](src/lib/onboarding.ts) |
 | Dispatch engine | [src/lib/cron-worker.ts](src/lib/cron-worker.ts) · [src/app/api/cron/route.ts](src/app/api/cron/route.ts) |
 | Creative pipeline | [src/lib/ai-pipeline.ts](src/lib/ai-pipeline.ts) |
+| fal.ai credential resolution | [src/lib/fal-credentials.ts](src/lib/fal-credentials.ts) |
+| Secret encryption at rest | [src/lib/secret-box.ts](src/lib/secret-box.ts) |
 | Poster renderer | [src/lib/poster/](src/lib/poster/) · [docs/creative-style-spec.md](docs/creative-style-spec.md) |
 | Google Drive client | [src/lib/google-drive.ts](src/lib/google-drive.ts) |
 | Timezone helpers | [src/lib/time.ts](src/lib/time.ts) |
@@ -222,6 +228,18 @@ window of 1, four out of five clients would never be picked up. All matching is 
 - **Event queue feed** — upcoming entries previewed from Drive thumbnails. Failed deliveries
   get their own section above the queue, with the persisted `errorMessage` shown inline.
 - **Send now** reuses the stored Drive asset; **Regenerate** forces a fresh Flux.1 render.
+- **Image generation key** (bottom of the dashboard) — point image generation at your own
+  fal.ai account instead of the platform's. The key is AES-256-GCM encrypted with
+  `SETTINGS_ENCRYPTION_KEY` before it is stored, never returned to the browser, and resolved
+  per render — so saving one takes effect on the next generation with no redeploy.
+  **While a key is saved, `FAL_KEY` is never used**: a rejected key, an empty balance, or a
+  key that will not decrypt each fail the row with a message naming the cause rather than
+  quietly billing Evokz. The switch is also **one-way from the console** — a saved key can be
+  replaced by another of the operator's own, but only someone with server access can hand
+  billing back (DEPLOY_VPS.md §10), so the first save asks for confirmation. **Test key**
+  spends one 512×512 render to prove a key works before the 9am sweep does, and does not
+  switch anything. Renders on your own key are counted in the spend panel but not costed, and
+  they never count toward a client's monthly budget cap.
 - **Bulk content import** (client detail page) — load a calendar the team wrote by hand
   instead of generating it. See below.
 
@@ -384,5 +402,6 @@ the client is already generated.
 | `npm run build` | `prisma generate` + production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint (next/core-web-vitals) |
+| `npm run check:secret-box` | Fixture suite for the at-rest encryption — no database needed |
 | `npm run prisma:push` | Push schema without migrations |
 | `npm run prisma:studio` | Browse/seed data |

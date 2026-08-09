@@ -1,4 +1,4 @@
-import { UsageProvider } from '@prisma/client';
+import { UsageKeySource, UsageProvider } from '@prisma/client';
 
 import { prisma } from '@/lib/prisma';
 import {
@@ -44,6 +44,7 @@ async function record(data: {
   imageCount?: number;
   messageCount?: number;
   costUsdMicros: number;
+  keySource?: UsageKeySource;
 }): Promise<void> {
   try {
     await prisma.usageEvent.create({
@@ -59,6 +60,10 @@ async function record(data: {
         imageCount: data.imageCount ?? 0,
         messageCount: data.messageCount ?? 0,
         costUsdMicros: data.costUsdMicros,
+        // Omitted by the OpenAI and WhatsApp recorders, which have no
+        // operator-supplied key to spend — the column default says PLATFORM, and
+        // for them that is simply true.
+        keySource: data.keySource ?? UsageKeySource.PLATFORM,
       },
     });
   } catch (error) {
@@ -93,6 +98,13 @@ export async function recordOpenAiUsage(
 export async function recordImageUsage(
   endpoint: string,
   context: UsageContext,
+  /**
+   * Which credential paid. Must come from the *same* resolved credentials object
+   * that made the call, never re-resolved here: a key saved between the fal
+   * request and this insert would otherwise mis-attribute the one row where the
+   * attribution matters most — the row that straddles the change.
+   */
+  keySource: UsageKeySource,
   count = 1,
 ): Promise<void> {
   await record({
@@ -101,7 +113,11 @@ export async function recordImageUsage(
     context,
     model: endpoint,
     imageCount: count,
+    // Priced at the platform rate card either way. On a BYO row the figure is
+    // never added up — see `toAttributedTotals` in cost-report — but recording it
+    // keeps the ledger a faithful statement of what the render was worth.
     costUsdMicros: priceImages(count),
+    keySource,
   });
 }
 

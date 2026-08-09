@@ -63,9 +63,17 @@ const INTEGRATION_KEYS = [
 /**
  * Names of unset integration credentials — names only, never values — so an
  * operator can tell a config gap from a code bug at a glance.
+ *
+ * `satisfied` lets a caller suppress a variable it knows is covered by something
+ * outside the environment. The console stores an operator-supplied fal.ai key in
+ * the database, and while one exists `FAL_KEY` is not merely optional but unread,
+ * so listing it would be a permanent false alarm on a correctly configured box.
+ * A parameter rather than a database read here, because this module is imported
+ * from places that have no Prisma and must not grow one.
  */
-export function findUnsetIntegrationKeys(): string[] {
+export function findUnsetIntegrationKeys(satisfied: readonly string[] = []): string[] {
   return INTEGRATION_KEYS.filter((key) => {
+    if (satisfied.includes(key)) return false;
     const value = process.env[key];
     return value === undefined || value.trim() === '';
   });
