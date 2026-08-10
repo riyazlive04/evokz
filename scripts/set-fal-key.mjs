@@ -129,6 +129,13 @@ async function verifyStoredKey() {
     console.log(`\n  stored key ••••${row.falKeyLast4}${row.falKeyLabel ? ` (${row.falKeyLabel})` : ''}`);
     console.log('  decrypts: yes');
 
+    // Identifies *which* key is stored without disclosing it. Compare against
+    // `printf '%s' '<key>' | sha256sum` run wherever the key came from: equal
+    // fingerprints prove the stored credential is that exact key, and four
+    // shared last-4 characters do not.
+    const fingerprint = crypto.createHash('sha256').update(plain, 'utf8').digest('hex').slice(0, 16);
+    console.log(`  fingerprint (sha256, first 16): ${fingerprint}`);
+
     const startedAt = Date.now();
     const response = await fetch('https://fal.run/fal-ai/flux/schnell', {
       method: 'POST',
