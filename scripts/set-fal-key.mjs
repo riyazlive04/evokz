@@ -106,6 +106,68 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * Reads back what is stored and spends one small render proving fal accepts it.
+ *
+ * The same question the dashboard's "Test key" answers, asked from the server —
+ * and the stronger version of it, because this exercises the *stored* envelope
+ * rather than a key someone still has in their clipboard. A round trip through
+ * the database is the only thing that proves the whole chain.
+ *
+ * Costs one 512x512 flux/schnell render on the operator's own account.
+ */
+async function verifyStoredKey() {
+  const prismaClient = new PrismaClient();
+  try {
+    const row = await prismaClient.appSetting.findUnique({
+      where: { id: APP_SETTING_ID },
+      select: { falKeyCipher: true, falKeyLast4: true, falKeyLabel: true },
+    });
+    if (!row?.falKeyCipher) fail('No fal.ai key is stored.');
+
+    const plain = decrypt(row.falKeyCipher, readEncryptionKey());
+    console.log(`\n  stored key ••••${row.falKeyLast4}${row.falKeyLabel ? ` (${row.falKeyLabel})` : ''}`);
+    console.log('  decrypts: yes');
+
+    const startedAt = Date.now();
+    const response = await fetch('https://fal.run/fal-ai/flux/schnell', {
+      method: 'POST',
+      headers: {
+        Authorization: `Key ${plain}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        prompt: 'a plain neutral grey background',
+        image_size: { width: 512, height: 512 },
+        num_images: 1,
+        sync_mode: true,
+        enable_safety_checker: true,
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    if (!response.ok) {
+      // The body can echo request detail; print only the status.
+      fail(`fal.ai rejected the stored key — HTTP ${response.status} after ${elapsed}s.`);
+    }
+
+    const payload = await response.json();
+    if (!payload?.images?.[0]?.url) fail(`fal.ai returned no image after ${elapsed}s.`);
+
+    console.log(`  fal.ai accepted it: image returned in ${elapsed}s`);
+    console.log('  every render is now billed to this account.\n');
+  } finally {
+    await prismaClient.$disconnect();
+  }
+}
+
+if (process.argv.includes('--verify')) {
+  await verifyStoredKey();
+  process.exit(0);
+}
+
 const label = process.argv[2] ?? null;
 const key = normalize(await readStdin());
 
