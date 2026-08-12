@@ -10,7 +10,6 @@ import {
 } from '@/components/admin/VerticalTemplatePanel';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { buildThumbnailUrl } from '@/lib/google-drive';
 import { prisma } from '@/lib/prisma';
 
 /**
@@ -26,21 +25,41 @@ export const dynamic = 'force-dynamic';
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Templates listed at once.
+ *
+ * The cap is a hundred per vertical, and every card carries a Drive-hosted image
+ * and its own layout picker — a hundred of those is a great deal of DOM for a
+ * surface an operator works through a screenful at a time.
+ */
+const TEMPLATES_PER_PAGE = 24;
+
+function parsePage(raw: string | string[] | undefined): number {
+  const value = Number.parseInt(Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? ''), 10);
+  return Number.isFinite(value) && value > 1 ? value : 1;
+}
+
 export default async function VerticalDetailPage({
   params,
+  searchParams,
 }: {
   params: { categoryId: string };
+  searchParams: { page?: string | string[] };
 }) {
   if (!UUID_PATTERN.test(params.categoryId)) notFound();
+
+  const page = parsePage(searchParams.page);
 
   const category = await prisma.category.findUnique({
     where: { id: params.categoryId },
     select: {
       id: true,
       name: true,
-      _count: { select: { clients: true } },
+      _count: { select: { clients: true, templates: true } },
       templates: {
         orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * TEMPLATES_PER_PAGE,
+        take: TEMPLATES_PER_PAGE,
         select: {
           id: true,
           label: true,
@@ -48,6 +67,7 @@ export default async function VerticalDetailPage({
           gDriveViewUrl: true,
           width: true,
           height: true,
+          archetype: true,
         },
       },
     },
@@ -58,13 +78,28 @@ export default async function VerticalDetailPage({
   const templates: VerticalTemplateRow[] = category.templates.map((template) => ({
     id: template.id,
     label: template.label,
-    // Derived, never persisted: the API's own thumbnailLink is fixed-size and
-    // expires, and the `lh3` host is the one that answers with permissive CORS.
-    thumbnailUrl: buildThumbnailUrl(template.gDriveFileId, 640),
-    viewUrl: template.gDriveViewUrl,
+    // Through the console's own route, not a Google content host. References
+    // are uploaded unpublished, so `lh3` has nothing to serve for them — and
+    // this way the images are readable by an operator with a session and by
+    // nobody else.
+    thumbnailUrl: `/api/templates/${template.id}/thumbnail?w=640`,
+    viewUrl: `/api/templates/${template.id}/thumbnail?full=1`,
     width: template.width,
     height: template.height,
+    archetype: template.archetype,
   }));
+
+  const totalTemplates = category._count.templates;
+  const pageCount = Math.max(1, Math.ceil(totalTemplates / TEMPLATES_PER_PAGE));
+  // A page past the end — a hand-edited URL, or a template deleted from the last
+  // page — would otherwise render an empty grid with no way back.
+  if (page > pageCount) notFound();
+
+  // Counted in the database, not over `templates` — that array is now one page,
+  // and a per-page figure would report "3 of 24 mapped" on a library of ninety.
+  const mapped = await prisma.categoryTemplate.count({
+    where: { categoryId: category.id, archetype: { not: null } },
+  });
 
   return (
     <>
@@ -85,7 +120,11 @@ export default async function VerticalDetailPage({
         icon={Layers}
         eyebrow="Configuration"
         title={category.name}
-        description="Reference posters for this vertical. A library for the layout work — nothing here changes generated creatives yet."
+        description={
+          mapped > 0
+            ? `Reference posters for this vertical. ${mapped} of ${totalTemplates} are mapped to a layout, and those layouts are what this vertical's clients receive — in proportion, so mapping five references to one layout makes it five times as likely as a layout mapped once.`
+            : 'Reference posters for this vertical. Map each one to the layout it represents and generated creatives will follow them; unmapped templates are stored but never used.'
+        }
       />
 
       <Card>
@@ -104,7 +143,47 @@ export default async function VerticalDetailPage({
             categoryId={category.id}
             categoryName={category.name}
             templates={templates}
+            totalCount={totalTemplates}
           />
+
+          {pageCount > 1 && (
+            <nav
+              aria-label="Template pages"
+              className="mt-5 flex items-center justify-between gap-3 border-t border-border pt-4"
+            >
+              <Button
+                asChild={page > 1}
+                variant="outline"
+                size="sm"
+                disabled={page <= 1}
+              >
+                {page > 1 ? (
+                  <Link href={`/admin/verticals/${category.id}?page=${page - 1}`}>
+                    Previous
+                  </Link>
+                ) : (
+                  <span>Previous</span>
+                )}
+              </Button>
+
+              <span className="font-mono text-[11px] text-muted-foreground">
+                Page {page} of {pageCount} · {totalTemplates} templates
+              </span>
+
+              <Button
+                asChild={page < pageCount}
+                variant="outline"
+                size="sm"
+                disabled={page >= pageCount}
+              >
+                {page < pageCount ? (
+                  <Link href={`/admin/verticals/${category.id}?page=${page + 1}`}>Next</Link>
+                ) : (
+                  <span>Next</span>
+                )}
+              </Button>
+            </nav>
+          )}
         </CardContent>
       </Card>
     </>

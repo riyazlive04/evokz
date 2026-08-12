@@ -5,6 +5,7 @@ import { ArrowLeft, FolderOpen } from 'lucide-react';
 
 import BrandCanvasView from '@/components/brand/BrandCanvasView';
 import { BrandTokenizerPanel } from '@/components/brand/BrandTokenizerPanel';
+import { ManualBrandPanel } from '@/components/brand/ManualBrandPanel';
 import { PosterIdentityPanel } from '@/components/brand/PosterIdentityPanel';
 import { WebsiteColorPanel } from '@/components/brand/WebsiteColorPanel';
 import { Button } from '@/components/ui/button';
@@ -62,6 +63,8 @@ export default async function ClientBrandCanvasPage({
   });
 
   if (!client) notFound();
+
+  const guideline = parseBrandGuideline(client.brandGuideline);
 
   return (
     <>
@@ -124,7 +127,17 @@ export default async function ClientBrandCanvasPage({
       <BrandTokenizerPanel
         clientId={client.id}
         companyName={client.companyName}
-        hasTokens={parseBrandGuideline(client.brandGuideline).colors.length > 0}
+        hasTokens={guideline.colors.length > 0}
+      />
+
+      {/* Last of the three routes on purpose: the website harvest and the
+          tokenizer both derive tokens from something the client already has, and
+          are preferable when there is anything to read. This is what remains when
+          there is not. */}
+      <ManualBrandPanel
+        clientId={client.id}
+        companyName={client.companyName}
+        guideline={guideline}
       />
     </>
   );

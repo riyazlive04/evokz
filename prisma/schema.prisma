@@ -56,9 +56,10 @@ model Category {
 
 /// One operator-uploaded reference poster for a vertical.
 ///
-/// A library, not a renderer input: nothing in the poster pipeline reads these
-/// yet. They exist so an operator can collect the compositions a vertical should
-/// be producing, ahead of the layout engine that will interpret them.
+/// Once an operator states which layout a template represents, it stops being a
+/// library and becomes an input: the generator draws that vertical's layouts from
+/// the set mapped here, duplicates included, so the mix of compositions a client
+/// receives follows the mix of references uploaded for their industry.
 model CategoryTemplate {
   id         String   @id @default(uuid())
   categoryId String
@@ -70,9 +71,12 @@ model CategoryTemplate {
   /// Operator-facing name. Defaults to the uploaded filename.
   label String
 
-  // Mirrors ContentCalendar's pair. The id drives the cheap `lh3` thumbnail; the
-  // URL is what a server-side fetch would use. Both are kept because the API's
-  // own thumbnailLink is fixed-size and expires, so it is not worth persisting.
+  // Mirrors ContentCalendar's pair, but used differently. Unlike a poster, a
+  // reference template is uploaded *unpublished* — it never leaves the console,
+  // so nothing outside it should be able to read one. The id is what
+  // `/api/templates/[templateId]/thumbnail` fetches with the service account's
+  // own credentials; the URL only resolves for a signed-in vault member, and is
+  // kept for an operator working in Drive directly.
   gDriveFileId  String
   gDriveViewUrl String
 
@@ -81,23 +85,38 @@ model CategoryTemplate {
   width    Int?
   height   Int?
 
+  /// Which layout from `POSTER_ARCHETYPES` this reference poster represents,
+  /// chosen by the operator looking at it.
+  ///
+  /// Null means unmapped, which excludes it from generation entirely: an image
+  /// with no stated composition tells the renderer nothing, and guessing from the
+  /// filename would be worse than leaving it out.
+  ///
+  /// A String rather than an enum, matching `ContentCalendar.posterArchetype` —
+  /// the set grows whenever a layout is added, and each addition would otherwise
+  /// need its own migration. Validated against `posterArchetypeSchema` at the
+  /// action boundary.
+  archetype String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Serves the gallery query: every template for one vertical, newest first.
   @@index([categoryId, createdAt])
+  // Serves generation: the mapped layouts for one vertical, in upload order.
+  @@index([categoryId, archetype])
 }
 
 model Client {
-  id             String            @id @default(uuid())
-  companyName    String
-  whatsappNumber String // E.164 without "+", e.g., "919876543210"
-  cronTime       String            @default("09:00") // Per-client delivery time (HH:MM)
-  startDate      DateTime
+  id               String   @id @default(uuid())
+  companyName      String
+  whatsappNumber   String // E.164 without "+", e.g., "919876543210"
+  cronTime         String   @default("09:00") // Per-client delivery time (HH:MM)
+  startDate        DateTime
   // Last deliverable day, derived from the plan duration AND `deliveryDays` —
   // a weekday-restricted 30-day campaign ends well past 30 calendar days. The
   // dispatch sweep filters on it, so it must move whenever either input changes.
-  endDate        DateTime
+  endDate          DateTime
   // ISO-8601 weekdays this client accepts delivery on (1 = Monday … 7 = Sunday).
   //
   // Empty means every day. That is deliberately the unrestricted value rather
@@ -106,16 +125,16 @@ model Client {
   //
   // Only `scheduledDate` computation consults this — the dispatcher already
   // selects by date, so a day with no row simply never sends.
-  deliveryDays   Int[]
-  isActive       Boolean           @default(true)
+  deliveryDays     Int[]
+  isActive         Boolean  @default(true)
   // Sales-demo tenant. Behaves like a client everywhere except the dispatch
   // sweep, which skips it — demo creatives are sent on demand, never on cron.
-  isDemo         Boolean           @default(false)
+  isDemo           Boolean  @default(false)
   // Spend cap for the current calendar month, in whole rupees. Null disables
   // the alert for this client rather than treating it as a ₹0 cap.
   monthlyBudgetInr Int?
-  brandGuideline Json? // Extracted design-system tokens
-  gDriveFolderId String? // Client-isolated Google Drive subfolder ID
+  brandGuideline   Json? // Extracted design-system tokens
+  gDriveFolderId   String? // Client-isolated Google Drive subfolder ID
 
   // Output-size preset id from src/lib/image-sizes.ts, e.g. "whatsapp-status",
   // "linkedin-portrait", "desktop-4k". A plain String rather than an enum: the
@@ -163,50 +182,50 @@ model Client {
   logoOriginalDriveFileId String?
   logoBackgroundRemoved   Boolean @default(false)
   // Letterspaced caps line under the logo, e.g. "BUILDING TRUST SINCE 1998".
-  brandTagline    String?
+  brandTagline            String?
   // Contact bar, right cell. Stored as typed, e.g. "www.example.com".
-  websiteUrl      String?
+  websiteUrl              String?
   // Contact bar, left cell. Display formatting is preserved verbatim, so
   // "+91 98765 43210" renders with its spacing. Falls back to whatsappNumber.
-  displayPhone    String?
+  displayPhone            String?
 
-  planId         String
-  plan           Plan              @relation(fields: [planId], references: [id], onDelete: Restrict)
-  categoryId     String
-  category       Category          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  calendarDays   ContentCalendar[]
-  usageEvents    UsageEvent[]
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  planId       String
+  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Restrict)
+  categoryId   String
+  category     Category          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  calendarDays ContentCalendar[]
+  usageEvents  UsageEvent[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
 
   // Drives the per-minute dispatch sweep: (cronTime IN window) AND isActive.
   @@index([cronTime, isActive])
 }
 
 model ContentCalendar {
-  id             String         @id @default(uuid())
-  clientId       String
-  client         Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  dayNumber      Int
-  scheduledDate  DateTime
-  theme          String
-  caption        String         @db.Text
-  hashtags       String
+  id                 String         @id @default(uuid())
+  clientId           String
+  client             Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dayNumber          Int
+  scheduledDate      DateTime
+  theme              String
+  caption            String         @db.Text
+  hashtags           String
   // Background-photo prompt only. The poster's text is never diffusion-rendered;
   // it is composited as vector type from `posterCopy`.
-  imagePrompt    String         @db.Text
+  imagePrompt        String         @db.Text
   // Slot content for the poster layer: headline lines, accent line index, body,
   // feature items, CTA labels. Shape validated by `posterCopySchema`
   // (src/lib/types/poster.ts). Null on rows seeded before the poster layer
   // existed — `ensurePosterCopy` backfills them on first render.
-  posterCopy     Json?
+  posterCopy         Json?
   // Which of the five layout archetypes to compose. Null means "let the
   // renderer pick deterministically from dayNumber", which keeps a long
   // campaign visually varied without storing a choice per row.
-  posterArchetype String?
-  gDriveFileId   String? // Storage reference inside Google Drive
-  gDriveViewUrl  String? // Public link used by Evolution API + the dashboard
-  deliveryStatus DeliveryStatus @default(PENDING)
+  posterArchetype    String?
+  gDriveFileId       String? // Storage reference inside Google Drive
+  gDriveViewUrl      String? // Public link used by Evolution API + the dashboard
+  deliveryStatus     DeliveryStatus @default(PENDING)
   /// Earliest instant the WhatsApp broadcast may go out, set when the poster
   /// reaches GENERATED. Generation runs at the client's exact `cronTime`; the
   /// send is held back by a random few minutes so a fleet of clients does not
@@ -218,10 +237,31 @@ model ContentCalendar {
   /// on rows written before this column existed, which is why the dispatch
   /// sweep's send phase requires a non-null value rather than treating null as
   /// due: those rows are historical failures and must not suddenly deliver.
-  sendAfter      DateTime?
-  errorMessage   String?        @db.Text
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  sendAfter          DateTime?
+  /// Set when the operator approves this poster for delivery. Null means the
+  /// asset exists but must not be broadcast.
+  ///
+  /// A nullable column rather than a fifth `DeliveryStatus`, because approval is
+  /// orthogonal to where a row sits in the pipeline: a FAILED row keeps its
+  /// approval across a retry, and a GENERATED row is the same state whether or
+  /// not a human has looked at it yet.
+  ///
+  /// Backfilled to `createdAt` for every pre-existing row by the migration that
+  /// adds it. That is not cosmetic — the dispatch sweep refuses to release an
+  /// unapproved poster, so leaving live campaigns null would silently stop every
+  /// paying client's delivery on deploy.
+  approvedAt         DateTime?
+  /// Set when the operator queues this day for batch pre-generation, cleared once
+  /// the poster is rendered.
+  ///
+  /// A whole campaign is 30-365 renders at ~20s each, which no single request can
+  /// hold open. So the console only marks the rows and returns; the sweep's
+  /// backlog phase drains a few per minute. Restart-safe by construction — the
+  /// mark is the queue, so a killed container resumes where it stopped.
+  generationQueuedAt DateTime?
+  errorMessage       String?        @db.Text
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   @@unique([clientId, dayNumber])
   // Ultra-fast time-window scanning for the dispatch engine.
@@ -230,6 +270,9 @@ model ContentCalendar {
   // asked once a minute and answered without touching scheduledDate — a send
   // held past midnight still belongs to the day it was generated for.
   @@index([deliveryStatus, sendAfter])
+  // Drives the backlog phase: "which pending rows has the operator asked for",
+  // asked once a minute against a column that is null for almost every row.
+  @@index([deliveryStatus, generationQueuedAt])
 }
 
 /// One billable provider call. Append-only: rows are never updated, so the
@@ -245,11 +288,11 @@ model UsageEvent {
   /// a relation — deleting a failed calendar entry must not erase its cost.
   calendarId String?
 
-  provider UsageProvider
+  provider  UsageProvider
   /// Which stage spent it: "calendar", "brand-tokenizer", "image", "whatsapp".
   operation String
   /// Model or endpoint identifier, e.g. "gpt-4o-mini", "fal-ai/flux/schnell".
-  model String?
+  model     String?
 
   inputTokens  Int @default(0)
   /// Subset of inputTokens served from OpenAI's prompt cache at a lower rate.

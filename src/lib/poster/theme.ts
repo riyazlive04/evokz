@@ -98,6 +98,30 @@ const DEFAULT_HEADING: PosterFontChoice = { family: 'Archivo Black', weights: [4
 const DEFAULT_BODY: PosterFontChoice = { family: 'Inter', weights: [400, 700] };
 
 /**
+ * The families an operator may choose from, in table order.
+ *
+ * Derived from the tables above rather than restated, because a second hand-kept
+ * list would drift the moment a face is added or renamed — and the drift would be
+ * silent in the worst direction: `resolveFace` maps an unrecognised name onto the
+ * default instead of reporting it, so a picker offering a face the renderer has no
+ * bytes for would quietly render Archivo Black and tell nobody.
+ *
+ * Anything outside these lists must be rejected at the action boundary rather than
+ * stored, since storing it produces exactly that silent substitution.
+ */
+export const HEADING_FONT_OPTIONS: readonly string[] = Object.values(HEADING_FACES).map(
+  (face) => face.family,
+);
+
+export const BODY_FONT_OPTIONS: readonly string[] = Object.values(BODY_FACES).map(
+  (face) => face.family,
+);
+
+/** What a client with no typography block renders as today. */
+export const DEFAULT_HEADING_FONT = DEFAULT_HEADING.family;
+export const DEFAULT_BODY_FONT = DEFAULT_BODY.family;
+
+/**
  * Maps a free-text family name onto a loadable face.
  *
  * Exact match first, then substring both ways — the tokenizer often returns
@@ -222,8 +246,12 @@ const MEASURED_MIN_SATURATION = 0.1;
  * A brand whose primary is near-black or near-white — common for wordmark-led
  * identities — is well evidenced but unusable as a headline accent, so those
  * fall through to ranking instead.
+ *
+ * Exported so the manual token panel can warn against the same number the engine
+ * enforces: an operator picking a near-black primary otherwise saves a colour
+ * that never reaches a poster and gets no indication of it.
  */
-const MEASURED_MIN_ACCENT_SCORE = 0.25;
+export const MEASURED_MIN_ACCENT_SCORE = 0.25;
 
 /**
  * Picks the accent from a palette that was measured rather than guessed.

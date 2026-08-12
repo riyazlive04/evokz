@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   CalendarClock,
   CheckCircle2,
+  Eye,
   Gauge,
   ShieldAlert,
   Users,
@@ -54,7 +55,7 @@ const FAILURE_LIMIT = 8;
 const DETAIL_LIMIT = 60;
 
 /** Which counter the operator expanded, carried in `?view=`. */
-const STAT_VIEWS = ['clients', 'today', 'delivered', 'failed'] as const;
+const STAT_VIEWS = ['clients', 'today', 'approvals', 'delivered', 'failed'] as const;
 type StatView = (typeof STAT_VIEWS)[number];
 
 function parseView(raw: string | string[] | undefined): StatView | null {
@@ -156,7 +157,7 @@ export default async function AdminDashboardPage({
       />
 
       {/* ---- Operational counters ---- */}
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <StatTile
           icon={Users}
           label="Active clients"
@@ -173,6 +174,17 @@ export default async function AdminDashboardPage({
           tone="amber"
           href={tileHref('today', view, searchParams)}
           active={view === 'today'}
+        />
+        {/* Sits between "due" and "delivered" because that is where it sits in the
+            pipeline: a poster stuck here never becomes either. */}
+        <StatTile
+          icon={Eye}
+          label="Awaiting approval"
+          value={data.awaitingApproval}
+          hint="Rendered, nobody has released it"
+          tone={data.awaitingApproval > 0 ? 'amber' : 'slate'}
+          href={tileHref('approvals', view, searchParams)}
+          active={view === 'approvals'}
         />
         <StatTile
           icon={CheckCircle2}
@@ -296,6 +308,14 @@ interface DashboardData {
   activeClients: number;
   totalClients: number;
   pendingToday: number;
+  /**
+   * Rendered posters nobody has approved, fleet-wide.
+   *
+   * Its own counter rather than a slice of `statusCounts`, because approval is a
+   * separate axis from delivery status: a GENERATED row is either waiting out its
+   * send delay or waiting on a human, and only one of those is anybody's job.
+   */
+  awaitingApproval: number;
 }
 
 interface DetailShell {
@@ -327,6 +347,7 @@ async function loadDashboardData({
     failureRecords,
     statusGroups,
     pendingToday,
+    awaitingApproval,
   ] = await Promise.all([
     prisma.client.count(),
     prisma.client.count({ where: { isActive: true } }),
@@ -355,6 +376,9 @@ async function loadDashboardData({
         deliveryStatus: DeliveryStatus.PENDING,
       },
     }),
+    prisma.contentCalendar.count({
+      where: { deliveryStatus: DeliveryStatus.GENERATED, approvedAt: null },
+    }),
   ]);
 
   const statusCounts: Record<DeliveryStatus, number> = {
@@ -374,6 +398,7 @@ async function loadDashboardData({
     activeClients,
     totalClients,
     pendingToday,
+    awaitingApproval,
   };
 }
 
@@ -459,13 +484,15 @@ async function loadDetail({
           scheduledDate: { gte: todayStart, lt: todayEnd },
           deliveryStatus: DeliveryStatus.PENDING,
         }
-      : {
-          deliveryStatus:
-            view === 'delivered' ? DeliveryStatus.DELIVERED : DeliveryStatus.FAILED,
-        };
+      : view === 'approvals'
+        ? { deliveryStatus: DeliveryStatus.GENERATED, approvedAt: null }
+        : {
+            deliveryStatus:
+              view === 'delivered' ? DeliveryStatus.DELIVERED : DeliveryStatus.FAILED,
+          };
 
   const orderBy =
-    view === 'today'
+    view === 'today' || view === 'approvals'
       ? ([{ scheduledDate: 'asc' }, { dayNumber: 'asc' }] as const)
       : ([{ updatedAt: 'desc' }] as const);
 
@@ -498,6 +525,14 @@ const DETAIL_COPY = {
     description:
       'PENDING entries whose scheduled date falls today. Each fires at its client’s delivery minute — or immediately, via “Send now”.',
     emptyMessage: 'Nothing pending for today. Every entry scheduled today has already run.',
+  },
+  approvals: {
+    icon: Eye,
+    title: 'Awaiting approval',
+    description:
+      'Rendered posters nobody has released, across every client, soonest scheduled first. Nothing here will send on its own — approve a poster and the sweep delivers it at its client’s time on its own day.',
+    emptyMessage:
+      'Nothing waiting. Every rendered poster has been reviewed and released.',
   },
   delivered: {
     icon: CheckCircle2,

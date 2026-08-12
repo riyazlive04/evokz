@@ -8,6 +8,7 @@ import {
   type PosterMetrics,
 } from '@/lib/poster/metrics';
 import type {
+  CopyAlign,
   PosterCopy,
   PosterFeature,
   PosterIdentity,
@@ -88,7 +89,31 @@ interface SlotBase {
   metrics: PosterMetrics;
   theme: PosterTheme;
   ground: Ground;
+  /**
+   * Which edge of its column the slot hangs from. Defaults to `start`, so every
+   * layout that does not ask renders exactly as it did before this existed.
+   *
+   * Needed because the whole file was written start-aligned: a mirrored
+   * composition puts the copy column on the other side of the canvas, and copy
+   * still ragged-right against a photo it now sits left of reads as a mistake
+   * rather than a variant.
+   */
+  align?: CopyAlign;
 }
+
+/** Flexbox equivalent of a `CopyAlign`, for `alignItems` / `alignSelf`. */
+export const FLEX_ALIGN: Record<CopyAlign, 'flex-start' | 'center' | 'flex-end'> = {
+  start: 'flex-start',
+  center: 'center',
+  end: 'flex-end',
+};
+
+/** Text equivalent of a `CopyAlign`, for a slot whose content wraps. */
+const TEXT_ALIGN: Record<CopyAlign, 'left' | 'center' | 'right'> = {
+  start: 'left',
+  center: 'center',
+  end: 'right',
+};
 
 // ---------------------------------------------------------------------------
 // 1. Logo lock
@@ -150,6 +175,7 @@ export function LogoLock({
   metrics,
   theme,
   ground,
+  align = 'start',
   identity,
   logoDimensions,
   logoInkLuminance,
@@ -167,6 +193,7 @@ export function LogoLock({
         letterSpacing: metrics.eyebrow.tracking,
         textTransform: 'uppercase',
         color: withAlpha(ground.text, 0.6),
+        textAlign: TEXT_ALIGN[align],
       }}
     >
       {tagline}
@@ -197,7 +224,13 @@ export function LogoLock({
     });
 
     return (
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: FLEX_ALIGN[align],
+        }}
+      >
         <div
           style={{
             display: 'flex',
@@ -205,7 +238,7 @@ export function LogoLock({
             // inside a `flex-direction: column` parent, whose default
             // `align-items: stretch` would size it to the headline's width rather
             // than the logo's.
-            alignSelf: 'flex-start',
+            alignSelf: FLEX_ALIGN[align],
             padding,
             borderRadius: needsPlate ? metrics.s(10) : 0,
             // Not pure white: the theme's light neutral is the same surface the
@@ -247,7 +280,9 @@ export function LogoLock({
         );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
+    <div
+      style={{ display: 'flex', flexDirection: 'column', alignItems: FLEX_ALIGN[align] }}
+    >
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
         <PosterIconGlyph
           name="skyline"
@@ -283,6 +318,7 @@ export function Eyebrow({
   metrics,
   theme,
   ground,
+  align = 'start',
   text,
 }: SlotBase & { text: string }) {
   return (
@@ -294,6 +330,7 @@ export function Eyebrow({
         letterSpacing: metrics.eyebrow.tracking,
         textTransform: 'uppercase',
         color: withAlpha(ground.text, 0.65),
+        textAlign: TEXT_ALIGN[align],
       }}
     >
       {text}
@@ -326,6 +363,7 @@ export function Headline({
   metrics,
   theme,
   ground,
+  align = 'start',
   lines,
   accentLineIndex,
   trailingPeriod,
@@ -338,7 +376,16 @@ export function Headline({
   const lastIndex = lines.length - 1;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
+    // Aligned on the container rather than with `textAlign`: every line is
+    // `nowrap`, so each shrinks to its own content and the flex alignment is what
+    // decides which edge the ragged side falls on.
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: FLEX_ALIGN[align],
+      }}
+    >
       {lines.map((line, index) => (
         <div
           key={index}
@@ -391,6 +438,7 @@ export function BodyCopy({
   metrics,
   theme,
   ground,
+  align = 'start',
   text,
   maxWidth,
 }: SlotBase & { text: string; maxWidth?: number }) {
@@ -405,6 +453,9 @@ export function BodyCopy({
         // Capped measure is what produces the spec's 3–5 short lines; letting it
         // run the full column width gives 2 long ones and loses the look.
         maxWidth: maxWidth ?? metrics.body.maxWidth,
+        // Unlike the headline this genuinely wraps, so the ragged edge is inside
+        // the block and only `textAlign` can move it.
+        textAlign: TEXT_ALIGN[align],
       }}
     >
       {text}
@@ -427,15 +478,40 @@ export function FeatureList({
   metrics,
   theme,
   ground,
+  align = 'start',
   features,
   width,
 }: FeatureBlockProps) {
   const textWidth = width - metrics.feature.iconBox - metrics.feature.gap;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', width }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width,
+        alignItems: FLEX_ALIGN[align],
+      }}
+    >
       {features.map((feature, index) => (
-        <div key={index} style={{ display: 'flex', flexDirection: 'column' }}>
+        /*
+         * The divider follows the icon, not the block's alignment.
+         *
+         * A row is icon-left / text-right whichever way the poster is aligned —
+         * that pairing comes from the reference set and mirroring it would put the
+         * icon in the middle of the frame. So the 120px hairline stays on the
+         * icon's side, and only a genuinely centred composition centres it.
+         * Aligning it to `end` was measured on a mirrored render and left the rule
+         * stranded at the far edge, visibly detached from the row it divides.
+         */
+        <div
+          key={index}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: align === 'center' ? 'center' : 'flex-start',
+          }}
+        >
           {index > 0 && (
             <div
               style={{
@@ -642,6 +718,11 @@ export interface ContactBarProps {
   /** Stack the two cells vertically instead of side by side. 4/12 references. */
   stacked?: boolean;
   /**
+   * Which edge the stacked cells hang from. Ignored when `stacked` is false —
+   * the side-by-side form is centred and has no ragged edge to move.
+   */
+  align?: CopyAlign;
+  /**
    * Skip the background fill and inherit whatever is behind.
    *
    * Needed by the `curve` archetype, where the bar sits inside an SVG sweep: its
@@ -659,6 +740,7 @@ export function ContactBar({
   variant,
   stacked = false,
   transparent = false,
+  align = 'start',
 }: ContactBarProps) {
   const onAccent = variant === 'accent';
   const background = onAccent ? theme.accent : theme.darkNeutral;
@@ -688,7 +770,7 @@ export function ContactBar({
         width: metrics.width,
         minHeight: stacked ? metrics.contact.height * 1.15 : metrics.contact.height,
         ...(transparent ? {} : { backgroundColor: background }),
-        alignItems: stacked ? 'flex-start' : 'center',
+        alignItems: stacked ? FLEX_ALIGN[align] : 'center',
         justifyContent: 'center',
         paddingLeft: metrics.margin,
         paddingRight: metrics.margin,
@@ -704,7 +786,14 @@ export function ContactBar({
             flexDirection: 'row',
             alignItems: 'center',
             ...(stacked
-              ? { width: '100%', marginTop: index > 0 ? metrics.s(14) : 0 }
+              ? {
+                  width: '100%',
+                  marginTop: index > 0 ? metrics.s(14) : 0,
+                  // The cell spans the bar, so the parent's `alignItems` has
+                  // nothing to move — the badge and its text are positioned on the
+                  // cell's own main axis instead.
+                  justifyContent: FLEX_ALIGN[align],
+                }
               : { flex: 1 }),
           }}
         >

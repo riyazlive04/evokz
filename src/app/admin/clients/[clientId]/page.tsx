@@ -8,6 +8,7 @@ import {
   CalendarClock,
   CheckCircle2,
   Clock,
+  Eye,
   FolderOpen,
   Palette,
   ShieldAlert,
@@ -102,6 +103,7 @@ export default async function ClientDetailPage({
 
   const [
     statusGroups,
+    awaitingApproval,
     failureRecords,
     upcomingRecords,
     seededRows,
@@ -112,6 +114,16 @@ export default async function ClientDetailPage({
       by: ['deliveryStatus'],
       where: { clientId: client.id },
       _count: { _all: true },
+    }),
+    // Not derivable from the status groups: approval is a separate axis, and a
+    // GENERATED row is either mid-send-delay or waiting on a human with no way to
+    // tell the two apart from the status alone.
+    prisma.contentCalendar.count({
+      where: {
+        clientId: client.id,
+        deliveryStatus: DeliveryStatus.GENERATED,
+        approvedAt: null,
+      },
     }),
     prisma.contentCalendar.findMany({
       where: { clientId: client.id, deliveryStatus: DeliveryStatus.FAILED },
@@ -221,6 +233,16 @@ export default async function ClientDetailPage({
           companyName={client.companyName}
           whatsappNumber={client.whatsappNumber}
         />
+        <Button
+          asChild
+          variant={awaitingApproval > 0 ? 'default' : 'outline'}
+          size="sm"
+        >
+          <Link href={`/admin/clients/${client.id}/approvals`}>
+            <Eye className="h-4 w-4" />
+            {awaitingApproval > 0 ? `Approve ${awaitingApproval}` : 'Approvals'}
+          </Link>
+        </Button>
         <Button asChild variant="outline" size="sm">
           <Link href={`/admin/clients/${client.id}/brand`}>
             <Palette className="h-4 w-4" />
@@ -257,7 +279,13 @@ export default async function ClientDetailPage({
           icon={Sparkles}
           label="Generated"
           value={statusCounts[DeliveryStatus.GENERATED]}
-          hint="Asset in Drive, send incomplete"
+          hint={
+            awaitingApproval > 0
+              ? `${awaitingApproval} waiting on approval`
+              : 'Asset in Drive, approved and scheduled'
+          }
+          tone={awaitingApproval > 0 ? 'amber' : 'brand'}
+          href={`/admin/clients/${client.id}/approvals`}
         />
         <StatTile
           icon={AlertTriangle}

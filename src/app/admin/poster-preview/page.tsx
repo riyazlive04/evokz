@@ -22,7 +22,7 @@ import { resolveCanvasMode, droppedSlots } from '@/lib/poster/metrics';
 import { auditTheme, resolvePosterTheme } from '@/lib/poster/theme';
 import { prisma } from '@/lib/prisma';
 import { parseBrandGuideline, EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
-import { POSTER_ARCHETYPES } from '@/lib/types/poster';
+import { describeArchetype, POSTER_ARCHETYPES } from '@/lib/types/poster';
 
 /**
  * Visual regression surface for the poster renderer.
@@ -34,17 +34,6 @@ import { POSTER_ARCHETYPES } from '@/lib/types/poster';
  */
 
 export const dynamic = 'force-dynamic';
-
-const ARCHETYPE_NOTES: Record<string, string> = {
-  scrim: 'A · Full-bleed photo under a directional scrim. Refs 1, 6, 9, 10.',
-  diagonal: 'B · Dark panel left, photo right, straight diagonal. Refs 2, 13.',
-  bands: 'C · Three stacked bands with hard horizontal edges. Refs 3, 5, 7.',
-  curve: 'D · Light field with a dark curved sweep. Ref 4.',
-  editorial: 'E · High-key light field, photo dissolving in. Refs 8, 11, 12.',
-  spotlight: 'F · Full-bleed photo under an even wash, copy centred.',
-  corner: 'G · Light field, photo inset upper-right, stacked contact bar.',
-  inverted: 'H · Photo band on top, copy below on the dark ground.',
-};
 
 export default async function PosterPreviewPage({
   searchParams,
@@ -243,7 +232,7 @@ export default async function PosterPreviewPage({
                 {archetype}
               </CardTitle>
               <CardDescription className="text-[11px]">
-                {ARCHETYPE_NOTES[archetype]}
+                {describeArchetype(archetype).description}
               </CardDescription>
             </CardHeader>
             <CardContent>

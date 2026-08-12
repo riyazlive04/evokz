@@ -312,6 +312,16 @@ function planWrites(
         // `deleteCalendarEntry` already does.
         gDriveFileId: null,
         gDriveViewUrl: null,
+        // Approval belonged to the copy being replaced, not to the day. Carrying
+        // it over would let a sheet rewrite an already-reviewed day and have the
+        // new wording generated and delivered without anyone reading it — which
+        // is precisely the review this import is bypassing.
+        approvedAt: null,
+        sendAfter: null,
+        // A row that was mid-pre-generation is now describing different content,
+        // so the queued render would produce a poster for copy that no longer
+        // exists. Dropping the mark leaves it to be re-queued deliberately.
+        generationQueuedAt: null,
       },
     });
     plan.writtenDays.push(dayNumber);

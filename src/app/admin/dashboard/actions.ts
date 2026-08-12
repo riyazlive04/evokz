@@ -18,7 +18,11 @@ import {
   WebsiteColorError,
   type ExtractionReport,
 } from '@/lib/brand/website-colors';
-import { parseBrandGuideline, type BrandGuideline } from '@/lib/types/brand';
+import {
+  BRAND_COLOR_ROLES,
+  parseBrandGuideline,
+  type BrandGuideline,
+} from '@/lib/types/brand';
 import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
 import type { CalendarImportInput } from '@/lib/calendar-parse';
 import {
@@ -28,6 +32,14 @@ import {
 } from '@/lib/google-drive';
 import { readImageDimensions } from '@/lib/poster/image-info';
 import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key';
+import { BODY_FONT_OPTIONS, HEADING_FONT_OPTIONS } from '@/lib/poster/theme';
+import { prepareTemplateImage, templateFileName } from '@/lib/template-image';
+import {
+  MAX_TEMPLATE_BYTES,
+  MAX_TEMPLATES_PER_CATEGORY,
+  TEMPLATE_MIME_TYPES,
+} from '@/lib/template-limits';
+import { posterArchetypeSchema } from '@/lib/types/poster';
 import { isImageSizePresetId } from '@/lib/image-sizes';
 import {
   clientProvisionSchema,
@@ -53,6 +65,7 @@ import {
   secretLast4,
   SecretDecryptionError,
 } from '@/lib/secret-box';
+import { nextSendDelay } from '@/lib/send-jitter';
 import { recordImageUsage } from '@/lib/usage';
 import {
   describeDeliveryDays,
@@ -61,6 +74,8 @@ import {
   HH_MM_PATTERN,
   normalizeDeliveryDays,
   nthDeliveryDate,
+  toTimeString,
+  zonedDayRange,
 } from '@/lib/time';
 
 /**
@@ -229,6 +244,9 @@ export async function updateCategory(
   }
 }
 
+/** Drive deletions issued at once when a vertical's whole library goes. */
+const TRASH_CHUNK = 8;
+
 export async function deleteCategory(id: string): Promise<ActionResult> {
   try {
     const categoryId = z.string().uuid().parse(id);
@@ -252,8 +270,20 @@ export async function deleteCategory(id: string): Promise<ActionResult> {
 
     // After the delete: `trashDriveFile` never throws, and a leftover file is a
     // tidiness problem, whereas failing here would leave the vertical undeleted.
-    for (const template of templates) {
-      await trashDriveFile(template.gDriveFileId);
+    //
+    // Chunked rather than sequential, because the cap is a hundred templates per
+    // vertical and a hundred serial Drive round-trips would run past the action's
+    // ceiling — and this runs *after* the cascade, so a timeout here orphans files
+    // with nothing left recording which they were.
+    //
+    // `Promise.all` is safe here only because `trashDriveFile` never throws; a
+    // rejecting worker would abandon the rest of its chunk.
+    for (let offset = 0; offset < templates.length; offset += TRASH_CHUNK) {
+      await Promise.all(
+        templates
+          .slice(offset, offset + TRASH_CHUNK)
+          .map((template) => trashDriveFile(template.gDriveFileId)),
+      );
     }
 
     revalidateAdmin();
@@ -776,6 +806,11 @@ export async function repairDriveFolder(
  * `reuseExistingAsset` keeps this cheap: an entry that already reached
  * GENERATED/DELIVERED re-sends its stored Drive asset instead of re-billing
  * fal.ai. A PENDING entry generates first, exactly as the scheduler would.
+ *
+ * The only caller that sets `ignoreApproval`. An operator pressing "Send now" on
+ * a poster they are looking at has approved it in every sense that matters, and
+ * refusing here would leave them approving a row purely to satisfy a check —
+ * which teaches the habit of approving without looking.
  */
 export async function forceResendCreative(
   calendarId: string,
@@ -786,6 +821,7 @@ export async function forceResendCreative(
     const outcome = await runCreativePipeline(id, {
       reuseExistingAsset: true,
       allowRedelivery: true,
+      ignoreApproval: true,
     });
 
     revalidateAdmin();
@@ -797,6 +833,252 @@ export async function forceResendCreative(
     return success({ status: outcome.status, reusedAsset: outcome.reusedAsset });
   } catch (error) {
     return toFailure(error, 'Force re-send');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pre-generation and approval
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks a client's remaining campaign for pre-generation.
+ *
+ * Returns as soon as the rows are marked. It does not render anything, and that
+ * is the point: a 30-day campaign is roughly ten minutes of fal.ai and satori
+ * work, and a server action has nowhere near that long before the platform cuts
+ * it off. The sweep's backlog phase drains the mark a few rows a minute, so the
+ * work survives a restart, a deploy, or the operator closing the tab.
+ *
+ * The Drive folder is checked up front because its absence fails every single
+ * render at the upload stage — thirty identical failures an hour after the click,
+ * rather than one refusal at the moment of it.
+ */
+export async function queueCampaignGeneration(
+  clientId: string,
+): Promise<ActionResult<{ queued: number; alreadyQueued: number }>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: { companyName: true, gDriveFolderId: true },
+    });
+    if (!client) return failure('That client no longer exists.');
+    if (!client.gDriveFolderId) {
+      return failure(
+        `${client.companyName} has no Drive vault yet. Repair the Drive folder first — without it every render fails at upload.`,
+      );
+    }
+
+    const pending = { clientId: id, deliveryStatus: DeliveryStatus.PENDING };
+
+    const alreadyQueued = await prisma.contentCalendar.count({
+      where: { ...pending, generationQueuedAt: { not: null } },
+    });
+
+    const queued = await prisma.contentCalendar.updateMany({
+      where: { ...pending, generationQueuedAt: null },
+      data: { generationQueuedAt: new Date() },
+    });
+
+    if (queued.count === 0 && alreadyQueued === 0) {
+      return failure(
+        `Nothing to generate for ${client.companyName} — seed the calendar first, or every day already has a poster.`,
+      );
+    }
+
+    revalidateAdmin();
+    return success({ queued: queued.count, alreadyQueued });
+  } catch (error) {
+    return toFailure(error, 'Queueing campaign generation');
+  }
+}
+
+/**
+ * Whether a poster's delivery window has already gone by.
+ *
+ * The sweep releases approved posters only during the minute matching their
+ * client's `cronTime`, on their scheduled day. A poster approved after that
+ * minute has no second chance today, and one approved for a day already past has
+ * none at all — so both need their send booked here or they wait forever.
+ */
+function hasMissedItsWindow(
+  scheduledDate: Date,
+  cronTime: string,
+  now: Date,
+  timeZone: string,
+): boolean {
+  const { start, end } = zonedDayRange(now, timeZone);
+  if (scheduledDate < start) return true;
+  if (scheduledDate >= end) return false;
+  // Both sides are zero-padded "HH:MM", so a lexicographic compare is a
+  // chronological one.
+  return toTimeString(now, timeZone) >= cronTime;
+}
+
+/**
+ * Books a send for an approved poster the sweep will not pick up on its own.
+ *
+ * Conditional on `sendAfter: null` for the same reason the sweep's own release is:
+ * if a sweep booked this row between the read and the write, overwriting its
+ * timestamp would move the delivery for no reason and lose the jitter spread.
+ */
+async function bookSendNow(calendarId: string): Promise<boolean> {
+  const claimed = await prisma.contentCalendar.updateMany({
+    where: {
+      id: calendarId,
+      deliveryStatus: DeliveryStatus.GENERATED,
+      approvedAt: { not: null },
+      sendAfter: null,
+    },
+    data: { sendAfter: nextSendDelay().sendAfter },
+  });
+
+  return claimed.count === 1;
+}
+
+/**
+ * Approves one poster for delivery.
+ *
+ * Approval alone does not send anything. On a future day the row simply becomes
+ * eligible, and the sweep releases it at the client's delivery minute — which is
+ * what keeps `cronTime` meaning the time a client hears from us, rather than the
+ * time an operator happened to finish reviewing.
+ *
+ * The exception is a poster whose window has already passed, which nothing would
+ * ever pick up. That one is booked immediately, and the caller is told so it can
+ * say which of the two happened.
+ */
+export async function approveCreative(
+  calendarId: string,
+): Promise<ActionResult<{ sendsNow: boolean }>> {
+  try {
+    const id = z.string().uuid().parse(calendarId);
+
+    const entry = await prisma.contentCalendar.findUnique({
+      where: { id },
+      select: {
+        deliveryStatus: true,
+        scheduledDate: true,
+        approvedAt: true,
+        client: { select: { cronTime: true } },
+      },
+    });
+
+    if (!entry) return failure('That calendar entry no longer exists.');
+    if (entry.approvedAt) return failure('That poster is already approved.');
+    if (entry.deliveryStatus !== DeliveryStatus.GENERATED) {
+      return failure(
+        entry.deliveryStatus === DeliveryStatus.PENDING
+          ? 'That poster has not been generated yet — there is nothing to look at.'
+          : `A ${entry.deliveryStatus.toLowerCase()} poster cannot be approved.`,
+      );
+    }
+
+    // Conditional on the status re-read, so a row generated-then-delivered by a
+    // sweep in the intervening milliseconds is not retroactively approved.
+    const approved = await prisma.contentCalendar.updateMany({
+      where: { id, deliveryStatus: DeliveryStatus.GENERATED, approvedAt: null },
+      data: { approvedAt: new Date() },
+    });
+    if (approved.count === 0) {
+      return failure('That poster changed while you were looking at it. Refresh and retry.');
+    }
+
+    const now = new Date();
+    const sendsNow =
+      hasMissedItsWindow(
+        entry.scheduledDate,
+        entry.client.cronTime,
+        now,
+        getAppTimeZone(),
+      ) && (await bookSendNow(id));
+
+    revalidateAdmin();
+    return success({ sendsNow });
+  } catch (error) {
+    return toFailure(error, 'Approving poster');
+  }
+}
+
+/**
+ * Approves every reviewed-and-waiting poster for one client.
+ *
+ * Deliberately does *not* book the overdue ones the way `approveCreative` does.
+ * Approving a campaign whose first days have already gone by would otherwise put
+ * a queue of back-dated posters on the wire at once — several messages to one
+ * number in a few minutes, which is what the send jitter exists to avoid and what
+ * a recipient reads as a malfunction. Those rows are counted and handed back, so
+ * the operator releases them one at a time with "Send now" if that is what they
+ * actually want.
+ */
+export async function approveAllCreatives(
+  clientId: string,
+): Promise<ActionResult<{ approved: number; overdue: number }>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+
+    const rows = await prisma.contentCalendar.findMany({
+      where: {
+        clientId: id,
+        deliveryStatus: DeliveryStatus.GENERATED,
+        approvedAt: null,
+      },
+      select: {
+        scheduledDate: true,
+        client: { select: { cronTime: true } },
+      },
+    });
+
+    if (rows.length === 0) return failure('Nothing is waiting for approval.');
+
+    const now = new Date();
+    const timeZone = getAppTimeZone();
+    const overdue = rows.filter((row) =>
+      hasMissedItsWindow(row.scheduledDate, row.client.cronTime, now, timeZone),
+    ).length;
+
+    const approved = await prisma.contentCalendar.updateMany({
+      where: {
+        clientId: id,
+        deliveryStatus: DeliveryStatus.GENERATED,
+        approvedAt: null,
+      },
+      data: { approvedAt: now },
+    });
+
+    revalidateAdmin();
+    return success({ approved: approved.count, overdue });
+  } catch (error) {
+    return toFailure(error, 'Approving posters');
+  }
+}
+
+/**
+ * Withdraws approval from a poster that has not gone out yet.
+ *
+ * Refused once a send is booked rather than racing it: `sendAfter` is non-null
+ * from the moment a sweep may claim the row, and clearing approval after that
+ * point would leave the operator believing they had stopped a delivery that was
+ * already on its way to WhatsApp.
+ */
+export async function unapproveCreative(calendarId: string): Promise<ActionResult> {
+  try {
+    const id = z.string().uuid().parse(calendarId);
+
+    const cleared = await prisma.contentCalendar.updateMany({
+      where: { id, deliveryStatus: DeliveryStatus.GENERATED, sendAfter: null },
+      data: { approvedAt: null },
+    });
+
+    if (cleared.count === 0) {
+      return failure('Too late to withdraw — that poster is already booked to send or has gone out.');
+    }
+
+    revalidateAdmin();
+    return success();
+  } catch (error) {
+    return toFailure(error, 'Withdrawing approval');
   }
 }
 
@@ -1012,6 +1294,15 @@ export async function runDemoCreativeNow(
         caption: data.caption,
         hashtags: data.hashtags,
         imagePrompt: data.imagePrompt,
+        // Approved at creation, because on this surface the two are one act: an
+        // operator typed this copy and pressed send while a prospect watched.
+        // Without it the pipeline would hold the row for a review that has, in
+        // every meaningful sense, already happened — and the demo would render a
+        // poster and quietly send nothing.
+        //
+        // Stamped rather than passing `ignoreApproval`, so the row does not read
+        // as delivered-but-never-approved in the ledger afterwards.
+        approvedAt: new Date(),
       },
       select: { id: true, dayNumber: true },
     });
@@ -1145,6 +1436,122 @@ export async function applyWebsiteColors(
   }
 }
 
+/** Mirrors `brandColorSchema.hex`; restated so the failure names a format. */
+const HEX_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+/**
+ * Layout directives ride in every calendar and poster-copy prompt, so an
+ * unbounded list is recurring spend rather than a one-off.
+ */
+const MAX_LAYOUT_DIRECTIVES = 8;
+
+const manualBrandSchema = z.object({
+  colors: z
+    .array(
+      z.object({
+        role: z.enum(BRAND_COLOR_ROLES),
+        hex: z.string().trim().regex(HEX_PATTERN, 'Use a hex value like #1F6FEB'),
+      }),
+    )
+    .min(1, 'Pick at least one colour')
+    .max(BRAND_COLOR_ROLES.length)
+    .refine(
+      (colors) => new Set(colors.map((color) => color.role)).size === colors.length,
+      'Each role may only be set once',
+    ),
+  // Rejected rather than coerced. `resolveFace` substitutes the default for a
+  // family it has no bytes for and reports nothing, so accepting an arbitrary
+  // name here would store a choice the renderer silently ignores — the operator
+  // would see their font on the brand canvas and never on a poster.
+  headingFont: z
+    .string()
+    .refine((value) => HEADING_FONT_OPTIONS.includes(value), 'Unsupported heading font'),
+  bodyFont: z
+    .string()
+    .refine((value) => BODY_FONT_OPTIONS.includes(value), 'Unsupported body font'),
+  vibeClassification: z
+    .string()
+    .trim()
+    .max(48, 'Keep the vibe to a few words')
+    .optional()
+    .transform((value) => value || undefined),
+  layoutDirectives: z
+    .array(z.string().trim().min(1).max(200))
+    .max(MAX_LAYOUT_DIRECTIVES, `At most ${MAX_LAYOUT_DIRECTIVES} directives`)
+    .default([]),
+});
+
+export type ManualBrandInput = z.input<typeof manualBrandSchema>;
+
+/**
+ * Writes an operator-chosen palette and typography to `Client.brandGuideline`.
+ *
+ * This is the route for a client with no website: `extractWebsiteColors` has no
+ * stylesheet to read, and the tokenizer can only infer hexes from prose. A
+ * tokenizer guess is stored with no `source`, which `resolvePosterTheme` treats
+ * as untrusted — it re-ranks the palette by measurement and commonly discards the
+ * role labels, which is how a client whose brand is green receives an amber
+ * poster.
+ *
+ * So stamping `source: 'manual'` is not bookkeeping. It is what flips the
+ * `measured` branch in the theme engine: the operator's `primary` is then taken
+ * as the accent, and the dark ground stays neutral instead of inheriting house
+ * navy. A near-black or near-white pick still falls through to ranking, because
+ * `pickMeasuredAccent` holds a minimum accent score — the panel warns about that
+ * before saving rather than letting it surprise anyone.
+ *
+ * Colours, typography and directives are replaced together: they are one decision
+ * made in one form, and a partial write would leave a half-manual palette whose
+ * provenance no longer describes it. `assets` is carried through untouched.
+ */
+export async function applyManualBrandTokens(
+  clientId: string,
+  input: ManualBrandInput,
+): Promise<ActionResult<{ colors: number }>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+    const data = manualBrandSchema.parse(input);
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: { brandGuideline: true },
+    });
+    if (!client) return failure('That client no longer exists.');
+
+    const guideline: BrandGuideline = {
+      ...parseBrandGuideline(client.brandGuideline),
+      colors: data.colors.map((color) => ({
+        hex: color.hex.toLowerCase(),
+        role: color.role,
+        source: 'manual' as const,
+        // The operator looked at the brand and chose this. Nothing downstream
+        // holds better evidence to weigh it against.
+        confidence: 1,
+      })),
+      typography: {
+        headingFont: data.headingFont,
+        bodyFont: data.bodyFont,
+        ...(data.vibeClassification
+          ? { vibeClassification: data.vibeClassification }
+          : {}),
+      },
+      layoutDirectives: data.layoutDirectives,
+    };
+
+    await prisma.client.update({
+      where: { id },
+      // Cast: Prisma types Json input as InputJsonValue, which a structural
+      // interface does not satisfy without a widening step.
+      data: { brandGuideline: guideline as unknown as object },
+    });
+
+    revalidateAdmin();
+    return success({ colors: guideline.colors.length });
+  } catch (error) {
+    return toFailure(error, 'Saving brand tokens');
+  }
+}
+
 /**
  * Seeds `ContentCalendar` rows for a client. Runs the LLM copy stage in
  * sequential batches, so this is deliberately slow — it is the expensive call
@@ -1185,12 +1592,31 @@ export async function seedContentCalendar(
   }
 }
 
-/** Re-runs generation from scratch, ignoring any previously uploaded asset. */
+/**
+ * Re-runs generation from scratch, ignoring any previously uploaded asset.
+ *
+ * This is the reject button. Withdrawing approval before the render — rather than
+ * after, or not at all — is what makes it one: the pipeline reads `approvedAt`
+ * when deciding whether to broadcast, so a row cleared here produces a
+ * replacement poster and holds it for another look. Left approved, a reject would
+ * WhatsApp the client the very poster the operator had just turned down.
+ *
+ * `allowRedelivery` still passes, and now does only one job: lifting the
+ * already-delivered short-circuit so a delivered day can be re-rendered at all.
+ * Withholding the send is the approval guard's responsibility, not its.
+ */
 export async function regenerateCreative(
   calendarId: string,
 ): Promise<ActionResult<{ status: string }>> {
   try {
     const id = z.string().uuid().parse(calendarId);
+
+    const cleared = await prisma.contentCalendar.updateMany({
+      where: { id },
+      data: { approvedAt: null, sendAfter: null },
+    });
+    if (cleared.count === 0) return failure('That calendar entry no longer exists.');
+
     const outcome = await runCreativePipeline(id, {
       reuseExistingAsset: false,
       allowRedelivery: true,
@@ -1317,28 +1743,14 @@ export interface LogoOutcome {
 // ---------------------------------------------------------------------------
 
 /**
- * Raster only. These are reference *posters* — photographs of finished
- * creatives — and an SVG here would almost certainly be a logo filed in the
- * wrong place.
- */
-const TEMPLATE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
-
-/** Comfortably under the 8 MB Server Action body limit set in next.config.mjs. */
-const MAX_TEMPLATE_BYTES = 6 * 1024 * 1024;
-
-/**
- * Per-vertical cap. Not a database constraint — the limit exists to keep the
- * gallery navigable and the eventual extraction pass bounded, which is an
- * application judgement, not an invariant of the data.
- */
-const MAX_TEMPLATES_PER_CATEGORY = 20;
-
-/**
  * Stores one reference poster against a vertical.
  *
- * Nothing in the render pipeline reads these yet. They are a library for the
- * layout work that follows, so this action deliberately does no interpretation —
- * it stores the bytes, the dimensions and where they came from.
+ * Deliberately does no interpretation: it stores the bytes, the dimensions and
+ * where they came from, and leaves `archetype` null. Which layout a reference
+ * represents is a judgement made by an operator looking at it, recorded later
+ * through `setTemplateArchetype` — a bulk upload has no opportunity to say which
+ * file is which, and guessing from a filename would put layouts into a client's
+ * rotation that nobody chose.
  */
 export async function uploadVerticalTemplate(
   categoryId: string,
@@ -1376,16 +1788,22 @@ export async function uploadVerticalTemplate(
     }
 
     const bytes = Buffer.from(await file.arrayBuffer());
-    // Best-effort: a header we cannot parse costs a size badge in the gallery,
-    // never the upload.
-    const dimensions = readImageDimensions(bytes);
+    // Dimensions come back measured from whatever is actually stored, so the
+    // gallery's size badge describes the file in Drive rather than the upload.
+    const stored = await prepareTemplateImage(bytes, file.type);
 
     const folderId = await ensureVerticalTemplateFolder(category.name);
     const uploaded = await uploadClientAsset({
       folderId,
-      fileName: file.name,
-      body: bytes,
-      mimeType: file.type,
+      fileName: templateFileName(file.name, stored.mimeType),
+      body: stored.body,
+      mimeType: stored.mimeType,
+      // Unpublished. A poster has to be link-readable because Evolution API
+      // fetches it with no Google credentials; a reference template never
+      // leaves the console, so publishing it would only mean that anyone who
+      // ever saw its Drive id could read the client's library.
+      // `/api/templates/[templateId]/thumbnail` serves it instead.
+      publish: false,
     });
 
     const created = await prisma.categoryTemplate.create({
@@ -1394,9 +1812,9 @@ export async function uploadVerticalTemplate(
         label: file.name.replace(/\.[^.]+$/, '').slice(0, 120) || 'Untitled',
         gDriveFileId: uploaded.fileId,
         gDriveViewUrl: uploaded.viewUrl,
-        mimeType: file.type,
-        width: dimensions?.width ?? null,
-        height: dimensions?.height ?? null,
+        mimeType: stored.mimeType,
+        width: stored.width,
+        height: stored.height,
       },
       select: { id: true, label: true },
     });
@@ -1405,6 +1823,45 @@ export async function uploadVerticalTemplate(
     return success(created);
   } catch (error) {
     return toFailure(error, 'Uploading template');
+  }
+}
+
+/**
+ * Records which layout a reference template represents, or clears it.
+ *
+ * This is what turns the template library from storage into a renderer input: a
+ * mapped template puts its layout into the vertical's rotation, and the count of
+ * templates sharing a layout is what weights it. Ten diagonal references and two
+ * curved ones produce a campaign in roughly that proportion.
+ *
+ * Passing null unmaps, which removes that vote without deleting the image.
+ *
+ * Validated against `posterArchetypeSchema` rather than trusted, because the
+ * value reaches the renderer's layout switch. A string that is not a known
+ * archetype would fall through `resolvePosterArchetype` to the day-number
+ * default, which looks like the mapping being quietly ignored.
+ */
+export async function setTemplateArchetype(
+  templateId: string,
+  archetype: string | null,
+): Promise<ActionResult<{ archetype: string | null }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+    const value = archetype === null ? null : posterArchetypeSchema.parse(archetype);
+
+    const updated = await prisma.categoryTemplate.updateMany({
+      where: { id },
+      data: { archetype: value },
+    });
+    if (updated.count === 0) return failure('That template no longer exists.');
+
+    revalidateAdmin();
+    return success({ archetype: value });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return failure('That is not a layout this renderer knows about.');
+    }
+    return toFailure(error, 'Setting template layout');
   }
 }
 

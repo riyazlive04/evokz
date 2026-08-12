@@ -22,6 +22,7 @@ import { Readable } from 'node:stream';
 
 import { PrismaClient } from '@prisma/client';
 import { google } from 'googleapis';
+import sharp from 'sharp';
 
 // Mirrors the server action's constants. Kept as literals rather than imported
 // because that module is TypeScript behind a `@/` alias and this is a plain
@@ -33,7 +34,10 @@ const TEMPLATE_MIME_TYPES = new Map([
   ['.webp', 'image/webp'],
 ]);
 const MAX_TEMPLATE_BYTES = 6 * 1024 * 1024;
-const MAX_TEMPLATES_PER_CATEGORY = 20;
+const MAX_TEMPLATES_PER_CATEGORY = 100;
+// Mirrors src/lib/template-image.ts.
+const TEMPLATE_LONG_EDGE = 1600;
+const TEMPLATE_QUALITY = 80;
 
 const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
 const DRIVE_SCOPES = ['https://www.googleapis.com/auth/drive'];
@@ -134,11 +138,9 @@ async function uploadClientAsset({ folderId, fileName, body, mimeType }) {
   const fileId = created.data.id;
   if (!fileId) throw new Error(`Drive returned no file id for "${fileName}"`);
 
-  await drive.permissions.create({
-    fileId,
-    requestBody: { role: 'reader', type: 'anyone' },
-    supportsAllDrives: true,
-  });
+  // No anyone-with-the-link permission, matching the server action: reference
+  // templates are served to the console through /api/templates/[id]/thumbnail
+  // and must not be readable by anyone holding a Drive id.
 
   const metadata = await drive.files.get({
     fileId,
@@ -150,6 +152,39 @@ async function uploadClientAsset({ folderId, fileName, body, mimeType }) {
     fileId,
     viewUrl: metadata.data.webContentLink ?? buildDirectDownloadUrl(fileId),
   };
+}
+
+/**
+ * Downscales before storing, mirroring src/lib/template-image.ts.
+ *
+ * Best-effort in the same way: a file sharp cannot decode is uploaded exactly
+ * as it was read, because a bulk import of two hundred references should not
+ * stop on one malformed-but-viewable PNG.
+ */
+async function prepareTemplateImage(bytes, mimeType) {
+  try {
+    const body = await sharp(bytes)
+      .rotate()
+      .resize({
+        width: TEMPLATE_LONG_EDGE,
+        height: TEMPLATE_LONG_EDGE,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .webp({ quality: TEMPLATE_QUALITY })
+      .toBuffer();
+    return { body, mimeType: 'image/webp' };
+  } catch (error) {
+    console.warn(`  ! could not downscale, storing the original: ${error.message}`);
+    return { body: bytes, mimeType };
+  }
+}
+
+/** Swaps an uploaded filename's extension for the stored format's. */
+function templateFileName(original, mimeType) {
+  const base = original.replace(/\.[^.]+$/, '') || 'template';
+  const extension = mimeType === 'image/webp' ? 'webp' : (mimeType.split('/')[1] ?? 'png');
+  return `${base}.${extension}`;
 }
 
 /**
@@ -293,8 +328,16 @@ async function main() {
       }
 
       const bytes = await readFile(filePath);
-      const dimensions = readImageDimensions(bytes);
-      const uploaded = await uploadClientAsset({ folderId, fileName, body: bytes, mimeType });
+      const stored = await prepareTemplateImage(bytes, mimeType);
+      // Measured from what is stored, not what was read off disk, so the
+      // gallery's size badge describes the file in Drive.
+      const dimensions = readImageDimensions(stored.body);
+      const uploaded = await uploadClientAsset({
+        folderId,
+        fileName: templateFileName(fileName, stored.mimeType),
+        body: stored.body,
+        mimeType: stored.mimeType,
+      });
 
       await prisma.categoryTemplate.create({
         data: {
@@ -302,7 +345,7 @@ async function main() {
           label,
           gDriveFileId: uploaded.fileId,
           gDriveViewUrl: uploaded.viewUrl,
-          mimeType,
+          mimeType: stored.mimeType,
           width: dimensions?.width ?? null,
           height: dimensions?.height ?? null,
         },

@@ -2,22 +2,38 @@
 
 import * as React from 'react';
 
-import { ImagePlus, Loader2, Trash2, Upload } from 'lucide-react';
+import { ExternalLink, ImagePlus, Loader2, Trash2, Upload } from 'lucide-react';
 
 import {
   deleteVerticalTemplate,
+  setTemplateArchetype,
   uploadVerticalTemplate,
 } from '@/app/admin/dashboard/actions';
 import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useAction } from '@/hooks/use-action';
+import { MAX_TEMPLATES_PER_CATEGORY } from '@/lib/template-limits';
+import { ARCHETYPE_CATALOGUE, POSTER_ARCHETYPES } from '@/lib/types/poster';
 
 /**
- * Reference-poster library for one vertical.
+ * Reference-poster library for one vertical, and the layout each one represents.
  *
- * These are stored, not interpreted: no part of the render pipeline reads them
- * yet. They are the source material for the layout work that follows, so the
- * panel's whole job is to make a set of posters easy to collect, look at and
- * throw away again.
+ * The mapping is the point. An uploaded image on its own tells the renderer
+ * nothing — satori composes from code and cannot replay a raster. What it can do
+ * is use the layout an operator says a reference represents, which is what the
+ * picker on each card records. Generation then draws that vertical's layouts from
+ * this set, duplicates and all, so uploading eight diagonal references and two
+ * curved ones produces campaigns in roughly that mix.
+ *
+ * Mapping happens here rather than during upload: a bulk selection gives no
+ * opportunity to say which file is which, and the choice needs the image in front
+ * of you.
  *
  * Uploads run one file per action call rather than one call carrying the whole
  * selection. Server Actions have a body limit, a batch of full-size posters
@@ -28,22 +44,29 @@ import { useAction } from '@/hooks/use-action';
 export interface VerticalTemplateRow {
   id: string;
   label: string;
+  /** Gallery-sized, through the console's own authenticated proxy. */
   thumbnailUrl: string;
+  /** The stored file at full size, through the same proxy. */
   viewUrl: string;
   width: number | null;
   height: number | null;
+  /** The layout this reference represents, or null while unmapped. */
+  archetype: string | null;
 }
 
-const MAX_TEMPLATES = 20;
 
 export function VerticalTemplatePanel({
   categoryId,
   categoryName,
   templates,
+  totalCount,
 }: {
   categoryId: string;
   categoryName: string;
+  /** The current page of the library, not all of it. */
   templates: VerticalTemplateRow[];
+  /** Every template in the vertical, across all pages. */
+  totalCount: number;
 }) {
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [progress, setProgress] = React.useState<string | null>(null);
@@ -51,7 +74,10 @@ export function VerticalTemplatePanel({
 
   const upload = useAction(uploadVerticalTemplate);
 
-  const remaining = MAX_TEMPLATES - templates.length;
+  // Against the whole library, never the page. Sizing this to `templates.length`
+  // would offer room for another twenty-four uploads on every page of a vertical
+  // that is already full, and the action would refuse every one of them.
+  const remaining = MAX_TEMPLATES_PER_CATEGORY - totalCount;
   const full = remaining <= 0;
 
   async function handleFiles(event: React.ChangeEvent<HTMLInputElement>) {
@@ -66,7 +92,7 @@ export function VerticalTemplatePanel({
 
     if (chosen.length > queue.length) {
       failures.push(
-        `Only ${queue.length} of ${chosen.length} uploaded — ${categoryName} holds at most ${MAX_TEMPLATES}.`,
+        `Only ${queue.length} of ${chosen.length} uploaded — ${categoryName} holds at most ${MAX_TEMPLATES_PER_CATEGORY}.`,
       );
     }
 
@@ -110,7 +136,7 @@ export function VerticalTemplatePanel({
         </Button>
 
         <span className="font-mono text-[11px] text-muted-foreground">
-          {templates.length} / {MAX_TEMPLATES}
+          {totalCount} / {MAX_TEMPLATES_PER_CATEGORY}
         </span>
 
         {progress && (
@@ -125,7 +151,7 @@ export function VerticalTemplatePanel({
 
       {full && (
         <p className="text-[11px] text-warning-ink">
-          {categoryName} is at the {MAX_TEMPLATES}-template limit. Delete one to add
+          {categoryName} is at the {MAX_TEMPLATES_PER_CATEGORY}-template limit. Delete one to add
           another.
         </p>
       )}
@@ -156,9 +182,24 @@ export function VerticalTemplatePanel({
   );
 }
 
+/** Sentinel for the "not mapped" option — Radix Select rejects an empty value. */
+const UNMAPPED = '__unmapped__';
+
 function TemplateCard({ template }: { template: VerticalTemplateRow }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const remove = useAction(deleteVerticalTemplate);
+  const map = useAction(setTemplateArchetype);
+  // Held locally so the select reflects the choice immediately; the server
+  // revalidation that follows confirms it a moment later.
+  const [archetype, setArchetype] = React.useState(template.archetype);
+
+  async function handleArchetype(next: string) {
+    const value = next === UNMAPPED ? null : next;
+    const previous = archetype;
+    setArchetype(value);
+    const result = await map.run(template.id, value);
+    if (!result.ok) setArchetype(previous);
+  }
 
   // Click twice to delete, matching the vertical list itself. A dialog for a
   // thumbnail an operator can re-upload in seconds is heavier than the risk.
@@ -170,21 +211,25 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
 
   return (
     <article className="overflow-hidden rounded-lg border border-border bg-background">
-      <div className="flex aspect-[3/4] items-center justify-center overflow-hidden bg-muted">
-        {/* Arbitrary remote host, and the route is uncached by design — a plain
-            img avoids allowlisting Drive in next.config. `no-referrer` is load
-            bearing: Google's content host rejects a request carrying a localhost
-            referrer and the thumbnail silently fails in dev. */}
+      <a
+        href={template.viewUrl}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="flex aspect-[3/4] items-center justify-center overflow-hidden bg-muted"
+        aria-label={`Open ${template.label} full size`}
+      >
+        {/* A plain img: next/image would want to optimise a route that already
+            returns a sized WebP, and it cannot help with a response that is
+            private to this operator's session anyway. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={template.thumbnailUrl}
           alt={template.label}
           loading="lazy"
           decoding="async"
-          referrerPolicy="no-referrer"
           className="h-full w-full object-cover"
         />
-      </div>
+      </a>
 
       <div className="flex items-center gap-2 px-3 py-2">
         <span className="min-w-0 flex-1">
@@ -215,6 +260,51 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
             />
           )}
         </Button>
+      </div>
+
+      <div className="space-y-1.5 border-t border-border px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            Layout
+          </span>
+          {map.pending && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+        </div>
+
+        <Select value={archetype ?? UNMAPPED} onValueChange={handleArchetype}>
+          <SelectTrigger className="h-8 text-xs" aria-label={`Layout for ${template.label}`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="max-h-80">
+            <SelectItem value={UNMAPPED}>Not mapped — excluded</SelectItem>
+            {POSTER_ARCHETYPES.map((id) => (
+              <SelectItem key={id} value={id}>
+                {ARCHETYPE_CATALOGUE[id].label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        {archetype ? (
+          <a
+            href={`/admin/poster-preview?archetype=${encodeURIComponent(archetype)}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="inline-flex items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ExternalLink className="h-3 w-3" />
+            See this layout rendered
+          </a>
+        ) : (
+          <p className="text-[10px] text-muted-foreground/70">
+            Unmapped templates are stored but never used for generation.
+          </p>
+        )}
+
+        {map.error && (
+          <p role="alert" className="text-[10px] text-danger-ink">
+            {map.error}
+          </p>
+        )}
       </div>
 
       {confirmDelete && !remove.pending && (

@@ -19,11 +19,28 @@ export interface DriveUploadInput {
   fileName: string;
   body: Buffer;
   mimeType: string;
+  /**
+   * Grant anyone-with-the-link reader access. Defaults to true.
+   *
+   * True is required for anything Evolution API has to fetch — it pulls poster
+   * media server-side carrying no Google credentials, so an unpublished file
+   * comes back as a login page and the send fails. It is *wrong* for anything
+   * that never leaves the console: a published file is readable by anyone who
+   * ever sees its id, and Drive ids leak through screenshots, logs and browser
+   * history. Pass false there and serve the bytes through an authenticated
+   * route instead.
+   */
+  publish?: boolean;
 }
 
 export interface DriveUploadResult {
   fileId: string;
-  /** Direct-download link, suitable for handing to Evolution API as media. */
+  /**
+   * Direct-download link, suitable for handing to Evolution API as media —
+   * but only when the file was published. On an unpublished upload the URL is
+   * still well-formed and still resolves for a signed-in vault member; an
+   * anonymous fetch gets Google's login page.
+   */
   viewUrl: string;
   webViewLink: string | null;
   thumbnailLink: string | null;
@@ -68,14 +85,41 @@ export async function ensureClientFolder(companyName: string): Promise<string> {
  * vertical folders into it makes that list harder to read every time somebody
  * opens Drive looking for a client.
  */
+const verticalFolderCache = new Map<string, Promise<string>>();
+
 export async function ensureVerticalTemplateFolder(
   categoryName: string,
 ): Promise<string> {
-  const root = await ensureFolder(
-    'Vertical Templates',
-    requireEnv('GOOGLE_DRIVE_PARENT_FOLDER_ID'),
-  );
-  return ensureFolder(categoryName, root);
+  /*
+   * Memoised per process, because this is on the per-file upload path and each
+   * call costs two Drive `files.list` round-trips — one for the parent node, one
+   * for the vertical. The console uploads one file per Server Action invocation
+   * (the body limit forces that), so a hundred-file batch was two hundred lookups
+   * for two folder ids that cannot change between them.
+   *
+   * The promise is cached rather than the resolved id, so a burst of concurrent
+   * uploads shares one in-flight lookup instead of racing to create the same
+   * folder. A rejection is evicted so a transient Drive failure is not remembered
+   * as permanent.
+   *
+   * Staleness is bounded and benign: folder ids are stable for the life of the
+   * folder, and one deleted out from under us costs a restart, not corruption.
+   */
+  const cached = verticalFolderCache.get(categoryName);
+  if (cached) return cached;
+
+  const pending = (async () => {
+    const root = await ensureFolder(
+      'Vertical Templates',
+      requireEnv('GOOGLE_DRIVE_PARENT_FOLDER_ID'),
+    );
+    return ensureFolder(categoryName, root);
+  })();
+
+  verticalFolderCache.set(categoryName, pending);
+  pending.catch(() => verticalFolderCache.delete(categoryName));
+
+  return pending;
 }
 
 /**
@@ -123,8 +167,10 @@ async function ensureFolder(name: string, parentFolderId: string): Promise<strin
 }
 
 /**
- * Streams a binary asset into a client folder, publishes it link-readable, and
- * returns the identifiers persisted on `ContentCalendar`.
+ * Streams a binary asset into a client folder and returns the identifiers
+ * persisted on `ContentCalendar`.
+ *
+ * Published link-readable unless `publish: false` — see `DriveUploadInput`.
  */
 export async function uploadClientAsset(
   input: DriveUploadInput,
@@ -149,13 +195,15 @@ export async function uploadClientAsset(
     throw new Error(`Google Drive returned no file id for "${input.fileName}"`);
   }
 
-  // Anyone-with-the-link reader access: Evolution API fetches the media
-  // server-side and carries no Google credentials.
-  await drive.permissions.create({
-    fileId,
-    requestBody: { role: 'reader', type: 'anyone' },
-    supportsAllDrives: true,
-  });
+  if (input.publish !== false) {
+    // Anyone-with-the-link reader access: Evolution API fetches the media
+    // server-side and carries no Google credentials.
+    await drive.permissions.create({
+      fileId,
+      requestBody: { role: 'reader', type: 'anyone' },
+      supportsAllDrives: true,
+    });
+  }
 
   const metadata = await drive.files.get({
     fileId,
@@ -208,7 +256,31 @@ export async function trashDriveFile(fileId: string): Promise<boolean> {
 }
 
 /**
+ * Reads a file's bytes back out of the vault through the service account.
+ *
+ * The way an unpublished file is displayed: nothing on Google's content hosts
+ * will serve it to a browser, so the console proxies it through a route of its
+ * own that is already behind the admin session.
+ *
+ * Buffered rather than streamed. These are reference posters capped at a
+ * 1600px long edge by `prepareTemplateImage` — a few hundred kilobytes — and a
+ * Buffer is what the resize on the other side needs anyway.
+ */
+export async function downloadDriveFile(fileId: string): Promise<Buffer> {
+  const response = await getDriveClient().files.get(
+    { fileId, alt: 'media', supportsAllDrives: true },
+    { responseType: 'arraybuffer' },
+  );
+
+  return Buffer.from(response.data as ArrayBuffer);
+}
+
+/**
  * Bandwidth-cheap thumbnail URL used by the dashboard grid.
+ *
+ * Only works for files uploaded with `publish` left on — this host serves
+ * link-readable files and nothing else. An unpublished file needs the proxy
+ * route instead.
  *
  * Points at the content host rather than `drive.google.com/thumbnail?id=`.
  * That endpoint only 302s here anyway, but the hop is served from the signed-in

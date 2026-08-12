@@ -4,7 +4,7 @@ import {
   FAL_MIN_EDGE,
   type ImageSizePreset,
 } from '@/lib/image-sizes';
-import { ARCHETYPE_PHOTO_SHAPE, type PosterArchetype } from '@/lib/types/poster';
+import { describeArchetype, type PosterArchetype } from '@/lib/types/poster';
 
 /**
  * What size to ask fal.ai for — the *background photo*, not the delivered canvas.
@@ -18,7 +18,8 @@ import { ARCHETYPE_PHOTO_SHAPE, type PosterArchetype } from '@/lib/types/poster'
  * ("stacked bands") places the photo in a wide horizontal band; feeding it a 9:16
  * portrait render means cover-fitting a tall image into a short wide box, which
  * throws away roughly two thirds of the frame and usually decapitates the subject.
- * So the aspect comes from `ARCHETYPE_PHOTO_SHAPE`, never from the output preset.
+ * So the aspect comes from the archetype's catalogue entry, never from the output
+ * preset.
  */
 
 export interface PhotoRequest {
@@ -44,7 +45,7 @@ export function resolvePhotoRequest(
   archetype: PosterArchetype,
   preset: ImageSizePreset,
 ): PhotoRequest {
-  const shape = ARCHETYPE_PHOTO_SHAPE[archetype];
+  const shape = describeArchetype(archetype).photoShape;
 
   if (shape === 'landscape') {
     // Long edge follows the canvas width, since the band spans it.

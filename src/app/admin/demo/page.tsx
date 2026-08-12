@@ -28,6 +28,7 @@ import { StatTile } from '@/components/admin/StatTile';
 import { DatabaseErrorState } from '@/components/admin/SystemNotices';
 import BrandCanvasView from '@/components/brand/BrandCanvasView';
 import { BrandTokenizerPanel } from '@/components/brand/BrandTokenizerPanel';
+import { ManualBrandPanel } from '@/components/brand/ManualBrandPanel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -381,6 +382,11 @@ async function TenantWorkspace({
             clientId={tenant.id}
             companyName={tenant.companyName}
             hasTokens={brand.colors.length > 0}
+          />
+          <ManualBrandPanel
+            clientId={tenant.id}
+            companyName={tenant.companyName}
+            guideline={brand}
           />
         </CardContent>
       </Card>

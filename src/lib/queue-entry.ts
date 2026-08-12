@@ -19,6 +19,7 @@ export const queueSelect = {
   hashtags: true,
   deliveryStatus: true,
   sendAfter: true,
+  approvedAt: true,
   gDriveFileId: true,
   gDriveViewUrl: true,
   errorMessage: true,
@@ -34,13 +35,23 @@ export interface QueueRecord {
   hashtags: string;
   deliveryStatus: DeliveryStatus;
   sendAfter: Date | null;
+  approvedAt: Date | null;
   gDriveFileId: string | null;
   gDriveViewUrl: string | null;
   errorMessage: string | null;
   client: { companyName: string; whatsappNumber: string; cronTime: string };
 }
 
-export function toQueueEntry(entry: QueueRecord, timeZone: string): QueueEntry {
+/**
+ * @param thumbnailWidth Drive thumbnail width in pixels. The default suits the
+ *   scanning grid; the approval surface asks for more, because deciding whether a
+ *   headline sits badly is not a judgement anyone can make at 512px.
+ */
+export function toQueueEntry(
+  entry: QueueRecord,
+  timeZone: string,
+  thumbnailWidth?: number,
+): QueueEntry {
   return {
     id: entry.id,
     companyName: entry.client.companyName,
@@ -59,9 +70,21 @@ export function toQueueEntry(entry: QueueRecord, timeZone: string): QueueEntry {
       entry.sendAfter && entry.deliveryStatus === 'GENERATED'
         ? formatDisplayDateTime(entry.sendAfter, timeZone)
         : null,
+    // The other reason a poster can exist without going out, and the one an
+    // operator can do something about. Mutually exclusive with `sendAfterLabel`
+    // by construction: booking a send is what approval leads to.
+    awaitingApproval: entry.approvedAt === null && entry.deliveryStatus === 'GENERATED',
+    // Approved, but no send booked yet — normally a poster waiting for a day that
+    // has not arrived. Once `sendAfter` is set a sweep may already have claimed
+    // the row, so offering an undo past that point would promise something this
+    // console cannot deliver.
+    canWithdrawApproval:
+      entry.approvedAt !== null &&
+      entry.sendAfter === null &&
+      entry.deliveryStatus === 'GENERATED',
     // Prefer the cheap Drive thumbnail endpoint over the full-size download.
     thumbnailUrl: entry.gDriveFileId
-      ? buildThumbnailUrl(entry.gDriveFileId)
+      ? buildThumbnailUrl(entry.gDriveFileId, thumbnailWidth)
       : entry.gDriveViewUrl,
     viewUrl: entry.gDriveViewUrl,
     errorMessage: entry.errorMessage,

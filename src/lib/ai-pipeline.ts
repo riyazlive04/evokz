@@ -5,6 +5,7 @@ import { resolveFalCredentials, type FalCredentials } from '@/lib/fal-credential
 import { uploadClientAsset } from '@/lib/google-drive';
 import { ensurePosterCopy } from '@/lib/ai/poster-copy';
 import { resolveImageSizePreset } from '@/lib/image-sizes';
+import { loadCategoryArchetypes } from '@/lib/poster/archetype-library';
 import { resolvePhotoRequest, type PhotoRequest } from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
 import { prisma } from '@/lib/prisma';
@@ -12,6 +13,7 @@ import { describeDelay, nextSendDelay } from '@/lib/send-jitter';
 import { parseBrandGuideline } from '@/lib/types/brand';
 import {
   archetypeForDay,
+  pickForDay,
   posterArchetypeSchema,
   type PosterArchetype,
 } from '@/lib/types/poster';
@@ -47,6 +49,14 @@ export interface PipelineOptions {
    * does not want a randomised delay. See `src/lib/send-jitter.ts`.
    */
   deferBroadcast?: boolean;
+  /**
+   * Broadcast even though nobody has approved the poster.
+   *
+   * The operator's explicit "Send now" and nothing else. Every other path — the
+   * sweep, a retry, a regenerate — must respect the approval gate, or the gate is
+   * decorative.
+   */
+  ignoreApproval?: boolean;
 }
 
 export type PipelineStage =
@@ -74,6 +84,12 @@ export type PipelineOutcome =
        * `skipped`, which means no work was needed at all.
        */
       scheduledSendAt?: Date;
+      /**
+       * Set when the run stopped at GENERATED because the poster is unapproved.
+       * Distinct from `scheduledSendAt`, which means a send is already booked:
+       * this means no send will be booked until a human approves the row.
+       */
+      heldForApproval?: true;
       gDriveFileId: string | null;
       gDriveViewUrl: string | null;
       reusedAsset: boolean;
@@ -173,6 +189,19 @@ export async function runCreativePipeline(
       Boolean(entry.gDriveFileId) &&
       Boolean(entry.gDriveViewUrl);
 
+    /**
+     * An unapproved poster may be produced, but never broadcast.
+     *
+     * Settled once here rather than at each exit, because `canReuse` skips the
+     * entire generate/upload block below — checkpoint included — and lands
+     * straight on the broadcast. A guard placed only at that checkpoint would
+     * leave every reuse path (a retry, the sweep's own send phase) free to
+     * deliver a poster nobody has looked at, which is the whole thing this
+     * prevents.
+     */
+    const awaitingApproval =
+      entry.approvedAt === null && options.ignoreApproval !== true;
+
     let gDriveFileId = entry.gDriveFileId;
     let gDriveViewUrl = entry.gDriveViewUrl;
     let assetFileName: string | null = null;
@@ -185,7 +214,17 @@ export async function runCreativePipeline(
 
       // The archetype is settled before the render because it dictates the photo's
       // aspect ratio — see resolvePhotoRequest.
-      const archetype = resolvePosterArchetype(entry.posterArchetype, entry.dayNumber);
+      //
+      // One indexed query per render, skipped entirely when the row already has a
+      // stored archetype, which is every re-render of a day that has run before.
+      const library = entry.posterArchetype
+        ? []
+        : await loadCategoryArchetypes(client.categoryId);
+      const archetype = resolvePosterArchetype(
+        entry.posterArchetype,
+        entry.dayNumber,
+        library,
+      );
       const photoRequest = resolvePhotoRequest(archetype, sizePreset);
 
       // ---- Step 1: Flux.1 via fal.ai --------------------------------------
@@ -270,7 +309,12 @@ export async function runCreativePipeline(
       // synchronised burst. The wait is persisted rather than slept — the sweep is
       // an HTTP request with a 300s ceiling, and a sleeping worker would also hold
       // one of its concurrency slots against every other client due this minute.
-      const scheduled = options.deferBroadcast ? nextSendDelay() : null;
+      //
+      // An unapproved row books nothing at all. `sendAfter` stays null, which is
+      // precisely what makes it invisible to the send phase's index — so the
+      // poster sits here indefinitely until the approval action stamps one.
+      const scheduled =
+        awaitingApproval || !options.deferBroadcast ? null : nextSendDelay();
 
       await prisma.contentCalendar.update({
         where: { id: calendarId },
@@ -281,6 +325,23 @@ export async function runCreativePipeline(
           sendAfter: scheduled?.sendAfter ?? null,
         },
       });
+
+      if (awaitingApproval) {
+        console.info(
+          `[ace:pipeline] day ${entry.dayNumber} generated for ${client.companyName} — ` +
+            `held for approval`,
+        );
+
+        return {
+          ok: true,
+          calendarId,
+          status: DeliveryStatus.GENERATED,
+          heldForApproval: true,
+          gDriveFileId,
+          gDriveViewUrl,
+          reusedAsset: false,
+        };
+      }
 
       if (scheduled) {
         console.info(
@@ -298,6 +359,26 @@ export async function runCreativePipeline(
           reusedAsset: false,
         };
       }
+    }
+
+    // Only the reuse path arrives here unapproved — the block above returns
+    // before this whenever it produced the asset itself. Reached in practice by a
+    // bulk retry over FAILED rows, where the asset survived but the broadcast did
+    // not.
+    //
+    // The row is left exactly as found. Stamping `sendAfter` here would book the
+    // send this guard exists to withhold, and rewriting the status would erase the
+    // FAILED marker an operator is still working through.
+    if (awaitingApproval) {
+      return {
+        ok: true,
+        calendarId,
+        status: entry.deliveryStatus,
+        heldForApproval: true,
+        gDriveFileId,
+        gDriveViewUrl,
+        reusedAsset: canReuse,
+      };
     }
 
     if (!gDriveViewUrl) {
@@ -391,18 +472,26 @@ export function getFalEndpoint(): string {
 }
 
 /**
- * The archetype for a row: its stored choice, else derived from the day number.
+ * The archetype for a row, in order of authority:
  *
- * Derivation is deterministic rather than random so a retry reproduces the layout
- * the first attempt would have produced — an operator comparing a re-render
- * against the original must not see a spurious difference.
+ *   1. Its stored choice — an operator's pin, or what a previous render settled
+ *      on. This is what makes a retry reproduce the poster the client received.
+ *   2. The layouts mapped to the vertical's reference templates, walked by day
+ *      number. Duplicates in that list are the whole point: they weight a layout
+ *      by how many references were mapped to it.
+ *   3. The eight base compositions, for a vertical with nothing mapped.
+ *
+ * Every step is deterministic rather than random, so an operator comparing a
+ * re-render against the original never sees a spurious difference.
  */
-function resolvePosterArchetype(
+export function resolvePosterArchetype(
   stored: string | null,
   dayNumber: number,
+  library: readonly PosterArchetype[] = [],
 ): PosterArchetype {
   const parsed = posterArchetypeSchema.safeParse(stored);
-  return parsed.success ? parsed.data : archetypeForDay(dayNumber);
+  if (parsed.success) return parsed.data;
+  return pickForDay(dayNumber, library) ?? archetypeForDay(dayNumber);
 }
 
 /**

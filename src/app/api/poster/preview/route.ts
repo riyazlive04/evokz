@@ -5,6 +5,8 @@ import {
   getImageSizePreset,
   resolveImageSizePreset,
 } from '@/lib/image-sizes';
+import { resolvePosterArchetype } from '@/lib/ai-pipeline';
+import { loadCategoryArchetypes } from '@/lib/poster/archetype-library';
 import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
 import { resolvePhotoRequest } from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
@@ -43,9 +45,6 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
 
   const archetypeParam = posterArchetypeSchema.safeParse(params.get('archetype'));
-  const archetype: PosterArchetype = archetypeParam.success
-    ? archetypeParam.data
-    : 'scrim';
 
   const preset =
     getImageSizePreset(params.get('preset')) ??
@@ -63,6 +62,26 @@ export async function GET(request: NextRequest) {
     if (clientId && !context) {
       return NextResponse.json({ error: 'Client not found' }, { status: 404 });
     }
+
+    /*
+     * An explicit `archetype` wins — the preview grid names one per tile, which is
+     * what makes it a catalogue.
+     *
+     * Without one, and given a real client, this resolves exactly as the pipeline
+     * would: the row's stored pin, else the layouts mapped to that client's
+     * vertical, else the day-number rotation. That is what lets an operator check
+     * "what will this client actually receive on day 4" rather than only "what does
+     * layout X look like".
+     */
+    const archetype: PosterArchetype = archetypeParam.success
+      ? archetypeParam.data
+      : context
+        ? resolvePosterArchetype(
+            context.storedArchetype,
+            Number.isFinite(day) ? day : 1,
+            await loadCategoryArchetypes(context.categoryId),
+          )
+        : 'scrim';
 
     // Shaped exactly as the pipeline would shape it, so a cropping problem shows up
     // in the preview rather than only in production — but capped in absolute size.
@@ -142,24 +161,30 @@ async function loadClientContext(clientId: string, day: number | null) {
     select: {
       companyName: true,
       whatsappNumber: true,
+      categoryId: true,
       brandGuideline: true,
       logoUrl: true,
       brandTagline: true,
       websiteUrl: true,
       displayPhone: true,
       calendarDays: day
-        ? { where: { dayNumber: day }, select: { posterCopy: true }, take: 1 }
+        ? {
+            where: { dayNumber: day },
+            select: { posterCopy: true, posterArchetype: true },
+            take: 1,
+          }
         : false,
     },
   });
 
   if (!client) return null;
 
-  const stored = day
-    ? parsePosterCopy(client.calendarDays?.[0]?.posterCopy ?? null)
-    : null;
+  const entry = client.calendarDays?.[0] ?? null;
+  const stored = day ? parsePosterCopy(entry?.posterCopy ?? null) : null;
 
   return {
+    categoryId: client.categoryId,
+    storedArchetype: entry?.posterArchetype ?? null,
     guideline: parseBrandGuideline(client.brandGuideline),
     // Falls back to the sample rather than 404ing: an operator previewing a client
     // that has not been seeded yet still wants to see their palette and logo

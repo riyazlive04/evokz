@@ -16,13 +16,19 @@ import {
   Eyebrow,
   FeatureList,
   FeatureStrip,
+  FLEX_ALIGN,
   Headline,
   LogoLock,
   groundFor,
   groundForFill,
   type Ground,
 } from '@/lib/poster/slots';
-import type { PosterArchetype, PosterPhoto, PosterSpec } from '@/lib/types/poster';
+import {
+  describeArchetype,
+  type PosterArchetype,
+  type PosterPhoto,
+  type PosterSpec,
+} from '@/lib/types/poster';
 
 /**
  * The layout archetypes from §5 of docs/creative-style-spec.md, plus the two
@@ -51,43 +57,39 @@ export interface ArchetypeProps {
   logoInkLuminance: number | null;
 }
 
-/**
- * Where each archetype needs the photo's subject, in source-space 0–1
- * coordinates. Straight from the "photo requirement" note on each archetype
- * in §5 — a centre crop would discard the negative space the copy occupies.
- */
-const PHOTO_FOCUS: Record<PosterArchetype, { x: number; y: number }> = {
-  scrim: { x: 0.72, y: 0.58 }, // subject right/lower, sky upper-left
-  diagonal: { x: 0.68, y: 0.5 }, // subject right of centre
-  bands: { x: 0.5, y: 0.5 }, // wide establishing shot, subject centred
-  curve: { x: 0.72, y: 0.34 }, // subject upper-right, clean lower-left
-  editorial: { x: 0.7, y: 0.46 }, // subject right, high-key
-  spotlight: { x: 0.5, y: 0.42 }, // full-bleed, subject slightly above centre
-  corner: { x: 0.55, y: 0.45 }, // inset panel, subject near its own centre
-  inverted: { x: 0.5, y: 0.42 }, // wide establishing band, horizon high
-};
-
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 /**
- * Fails the build when an archetype is added without a `case` below.
+ * Fails the build when a base is added without a `case` below.
  *
  * Worth the two lines: `noImplicitReturns` is off and `renderArchetype` infers
  * its return type, so a missing branch used to compile cleanly and hand satori an
  * `undefined` tree — a blank poster at runtime, on a delivery path with no tests.
  */
-function unreachableArchetype(archetype: never): never {
-  throw new Error(`No layout is wired for archetype "${String(archetype)}"`);
+function unreachableBase(base: never): never {
+  throw new Error(`No layout is wired for base "${String(base)}"`);
 }
 
-/** Composes the poster tree for `spec.archetype` at `metrics.mode`. */
+/**
+ * Composes the poster tree for `spec.archetype` at `metrics.mode`.
+ *
+ * Switches on the archetype's *base* rather than its id, so a variant costs a
+ * catalogue entry rather than a ninth branch: a mirrored composition is the same
+ * geometry read the other way round, and each component reads its own descriptor
+ * to find out which way that is.
+ */
 export function renderArchetype(props: ArchetypeProps): React.ReactElement {
   if (props.metrics.mode === 'letterbox') return <LetterboxLayout {...props} />;
   if (props.metrics.mode === 'wide') return <WideLayout {...props} />;
 
-  switch (props.spec.archetype) {
+  // Bound to a local so the `default` branch narrows to `never`. Re-reading the
+  // catalogue inside the switch would hand `unreachableBase` the full union and
+  // defeat the check.
+  const { base } = describeArchetype(props.spec.archetype);
+
+  switch (base) {
     case 'scrim':
       return <ScrimOverlay {...props} />;
     case 'diagonal':
@@ -105,18 +107,22 @@ export function renderArchetype(props: ArchetypeProps): React.ReactElement {
     case 'inverted':
       return <InvertedBand {...props} />;
     default:
-      return unreachableArchetype(props.spec.archetype);
+      return unreachableBase(base);
   }
 }
 
-/** Whether an archetype's copy sits on the dark ground or the light one. */
+/**
+ * Whether an archetype's copy sits on the dark ground or the light one.
+ *
+ * Reads the catalogue rather than restating the answer. This used to be an `||`
+ * chain listing four ids, which the compiler could not check: adding a dark
+ * layout and forgetting to extend it produced a correct poster in `tall` mode and
+ * a silently inverted one on square and landscape presets only, since this is
+ * consulted by `WideLayout` alone while the tall archetypes each state their own
+ * ground inline.
+ */
 export function archetypeGroundIsDark(archetype: PosterArchetype): boolean {
-  return (
-    archetype === 'scrim' ||
-    archetype === 'diagonal' ||
-    archetype === 'spotlight' ||
-    archetype === 'inverted'
-  );
+  return describeArchetype(archetype).groundIsDark;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +140,7 @@ interface Region {
  * The photo, cover-fitted into a region and clipped to it.
  *
  * The inner `<img>` is absolutely positioned at a computed offset instead of
- * using `objectFit: 'cover'`, so the focal bias in `PHOTO_FOCUS` is honoured —
+ * using `objectFit: 'cover'`, so the archetype's `photoFocus` bias is honoured —
  * `cover` always centres.
  */
 function PhotoLayer({
@@ -198,26 +204,43 @@ function CopyStack({
   columnWidth,
 }: ArchetypeProps & { ground: Ground; columnWidth: number }) {
   const { copy, theme, identity } = spec;
+  const { align } = describeArchetype(spec.archetype);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', width: columnWidth }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: columnWidth,
+        alignItems: FLEX_ALIGN[align],
+      }}
+    >
       <LogoLock
         metrics={metrics}
         theme={theme}
         ground={ground}
+        align={align}
         identity={identity}
         logoDimensions={logoDimensions}
         logoInkLuminance={logoInkLuminance}
         availableWidth={columnWidth}
       />
 
-      <div style={{ display: 'flex', flexDirection: 'column', marginTop: metrics.s(34) }}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          marginTop: metrics.s(34),
+          alignItems: FLEX_ALIGN[align],
+        }}
+      >
         {copy.eyebrow ? (
           <div style={{ display: 'flex', marginBottom: metrics.s(12) }}>
             <Eyebrow
               metrics={metrics}
               theme={theme}
               ground={ground}
+              align={align}
               text={copy.eyebrow}
             />
           </div>
@@ -227,18 +250,20 @@ function CopyStack({
           metrics={metrics}
           theme={theme}
           ground={ground}
+          align={align}
           lines={copy.headlineLines}
           accentLineIndex={copy.accentLineIndex}
           trailingPeriod={copy.headlinePeriod}
           availableWidth={columnWidth}
         />
 
-        <AccentRule metrics={metrics} theme={theme} ground={ground} />
+        <AccentRule metrics={metrics} theme={theme} ground={ground} align={align} />
 
         <BodyCopy
           metrics={metrics}
           theme={theme}
           ground={ground}
+          align={align}
           text={copy.body}
           maxWidth={Math.min(metrics.body.maxWidth, columnWidth)}
         />
@@ -291,7 +316,7 @@ function ScrimOverlay({ spec, metrics, logoDimensions, logoInkLuminance }: Arche
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, true);
   const columnWidth = Math.min(metrics.copyWidth, metrics.width * 0.68);
-  const focus = PHOTO_FOCUS.scrim;
+  const { photoFocus: focus, flipped, align } = describeArchetype(spec.archetype);
 
   return (
     <Canvas metrics={metrics} background={theme.darkNeutral}>
@@ -315,7 +340,9 @@ function ScrimOverlay({ spec, metrics, logoDimensions, logoInkLuminance }: Arche
           top: 0,
           width: metrics.width,
           height: metrics.height,
-          backgroundImage: `linear-gradient(145deg, ${withAlpha(
+          // Mirroring a CSS gradient about the vertical axis is `360 - angle`, so
+          // the stops keep their distances and only the side they fall on moves.
+          backgroundImage: `linear-gradient(${flipped ? 215 : 145}deg, ${withAlpha(
             theme.darkNeutral,
             0.97,
           )} 0%, ${withAlpha(theme.darkNeutral, 0.94)} 36%, ${withAlpha(
@@ -355,7 +382,15 @@ function ScrimOverlay({ spec, metrics, logoDimensions, logoInkLuminance }: Arche
           justifyContent: 'space-between',
         }}
       >
-        <div style={{ display: 'flex', padding: metrics.margin }}>
+        {/* `justifyContent` rather than `alignItems`: this is a flex row, and the
+            copy column carries an explicit width so it will not stretch. */}
+        <div
+          style={{
+            display: 'flex',
+            padding: metrics.margin,
+            justifyContent: FLEX_ALIGN[align],
+          }}
+        >
           <CopyStack
             spec={spec}
             metrics={metrics}
@@ -421,13 +456,28 @@ function DiagonalSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Arch
   const panelWidth = W * 0.56;
   const panelHeight = H * 0.34;
 
+  const { photoFocus: focus, flipped, align } = describeArchetype(spec.archetype);
+
+  /*
+   * The most coupled of the mirrors: the panel is anchored to a side four ways at
+   * once — the path's origin, the rounded corner, the asymmetric padding, and
+   * which edge it hangs from.
+   *
+   * `mx` does the reflection arithmetic inside the path template rather than
+   * relying on an SVG or CSS `transform`. Neither is used anywhere in this
+   * codebase and neither is proven against satori, whereas the arithmetic is the
+   * route every existing path already takes. Non-flipped, `mx` is the identity, so
+   * the original geometry is reproduced exactly rather than recomputed.
+   */
+  const mx = (x: number) => (flipped ? W - x : x);
+
   return (
     <Canvas metrics={metrics} background={theme.darkNeutral}>
       <PhotoLayer
         photo={spec.photo}
-        region={{ left: W * 0.4, top: 0, width: W * 0.6, height: H }}
-        focusX={PHOTO_FOCUS.diagonal.x}
-        focusY={PHOTO_FOCUS.diagonal.y}
+        region={{ left: flipped ? 0 : W * 0.4, top: 0, width: W * 0.6, height: H }}
+        focusX={focus.x}
+        focusY={focus.y}
       />
 
       <svg
@@ -437,7 +487,7 @@ function DiagonalSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Arch
         style={{ position: 'absolute', left: 0, top: 0 }}
       >
         <path
-          d={`M0 0 L${topEdge} 0 L${bottomEdge} ${H} L0 ${H} Z`}
+          d={`M${mx(0)} 0 L${mx(topEdge)} 0 L${mx(bottomEdge)} ${H} L${mx(0)} ${H} Z`}
           fill={theme.darkNeutral}
         />
       </svg>
@@ -452,7 +502,13 @@ function DiagonalSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Arch
           justifyContent: 'space-between',
         }}
       >
-        <div style={{ display: 'flex', padding: metrics.margin }}>
+        <div
+          style={{
+            display: 'flex',
+            padding: metrics.margin,
+            justifyContent: FLEX_ALIGN[align],
+          }}
+        >
           <CopyStack
             spec={spec}
             metrics={metrics}
@@ -463,17 +519,30 @@ function DiagonalSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Arch
           />
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {/* Accent panel overlapping the diagonal, rounded on its outer corner. */}
+        {/* The panel carries an explicit width, so `alignItems` is what moves it to
+            the other edge — `stretch` would leave it pinned left. */}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: FLEX_ALIGN[align],
+          }}
+        >
+          {/* Accent panel overlapping the diagonal, rounded on its outer corner —
+              which is the corner facing the canvas centre, so it swaps with the
+              panel. The padding is asymmetric for the same reason: the margin side
+              is whichever one meets the canvas edge. */}
           <div
             style={{
               display: 'flex',
               width: panelWidth,
               minHeight: panelHeight,
               backgroundColor: theme.accent,
-              borderTopRightRadius: metrics.s(70),
-              paddingLeft: metrics.margin,
-              paddingRight: metrics.s(28),
+              ...(flipped
+                ? { borderTopLeftRadius: metrics.s(70) }
+                : { borderTopRightRadius: metrics.s(70) }),
+              paddingLeft: flipped ? metrics.s(28) : metrics.margin,
+              paddingRight: flipped ? metrics.margin : metrics.s(28),
               paddingTop: metrics.s(30),
               paddingBottom: metrics.s(30),
               alignItems: 'center',
@@ -483,6 +552,7 @@ function DiagonalSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Arch
               metrics={metrics}
               theme={theme}
               ground={panelGround}
+              align={align}
               features={copy.features}
               width={panelWidth - metrics.margin - metrics.s(28)}
             />
@@ -514,8 +584,56 @@ function StackedBands({ spec, metrics, logoDimensions, logoInkLuminance }: Arche
   const ground = groundFor(theme, false);
   const darkGround = groundFor(theme, true);
   const columnWidth = metrics.copyWidth;
+  const { photoFocus: focus, flipped } = describeArchetype(spec.archetype);
 
   const photoHeight = metrics.height * 0.3;
+
+  /*
+   * The two swappable bands.
+   *
+   * `flipped` here is a vertical swap, not the horizontal mirror it means
+   * elsewhere: this composition is three full-width horizontal bands with no
+   * left/right asymmetry to reflect, so its only other arrangement is leading
+   * with the photograph instead of the copy. Both keep the dark feature band and
+   * the contact bar pinned to the bottom, which is what makes the hard lower edge
+   * this archetype is built around.
+   */
+  const photoBand = (
+    <div
+      style={{
+        display: 'flex',
+        position: 'relative',
+        width: metrics.width,
+        height: photoHeight,
+        overflow: 'hidden',
+      }}
+    >
+      <PhotoLayer
+        photo={spec.photo}
+        region={{
+          left: 0,
+          top: 0,
+          width: metrics.width,
+          height: photoHeight,
+        }}
+        focusX={focus.x}
+        focusY={focus.y}
+      />
+    </div>
+  );
+
+  const copyBand = (
+    <div style={{ display: 'flex', padding: metrics.margin }}>
+      <CopyStack
+        spec={spec}
+        metrics={metrics}
+        logoDimensions={logoDimensions}
+        logoInkLuminance={logoInkLuminance}
+        ground={ground}
+        columnWidth={columnWidth}
+      />
+    </div>
+  );
 
   return (
     <Canvas metrics={metrics} background={theme.lightNeutral}>
@@ -528,39 +646,10 @@ function StackedBands({ spec, metrics, logoDimensions, logoInkLuminance }: Arche
           justifyContent: 'space-between',
         }}
       >
-        <div style={{ display: 'flex', padding: metrics.margin }}>
-          <CopyStack
-            spec={spec}
-            metrics={metrics}
-            logoDimensions={logoDimensions}
-            logoInkLuminance={logoInkLuminance}
-            ground={ground}
-            columnWidth={columnWidth}
-          />
-        </div>
+        {flipped ? photoBand : copyBand}
 
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <div
-            style={{
-              display: 'flex',
-              position: 'relative',
-              width: metrics.width,
-              height: photoHeight,
-              overflow: 'hidden',
-            }}
-          >
-            <PhotoLayer
-              photo={spec.photo}
-              region={{
-                left: 0,
-                top: 0,
-                width: metrics.width,
-                height: photoHeight,
-              }}
-              focusX={PHOTO_FOCUS.bands.x}
-              focusY={PHOTO_FOCUS.bands.y}
-            />
-          </div>
+          {flipped ? copyBand : photoBand}
 
           <div
             style={{
@@ -629,34 +718,49 @@ function CurvedSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
   const sweepRight = H * 0.86;
   const sweepControl = H * 0.75;
 
+  const { photoFocus: focus, flipped, align } = describeArchetype(spec.archetype);
+
+  /*
+   * Mirroring this composition costs less than any of the others: the quadratic's
+   * control point already sits at `W * 0.5`, so reflecting the curve about the
+   * vertical axis is just swapping which end sits higher. Nothing is recomputed.
+   *
+   * The photo moves to the left half, and the fade that dissolved its left edge
+   * has to dissolve its right one instead — same band, other side of the seam,
+   * and the gradient runs the other way (`270deg` rather than `90deg`).
+   */
+  const photoLeftEdge = flipped ? 0 : photoLeft;
+  const edgeFadeLeft = flipped ? photoLeft - W * 0.12 : photoLeft;
+  const sweepStart = flipped ? sweepRight : sweepLeft;
+  const sweepEnd = flipped ? sweepLeft : sweepRight;
+
   return (
     <Canvas metrics={metrics} background={theme.lightNeutral}>
       <PhotoLayer
         photo={spec.photo}
-        region={{ left: photoLeft, top: 0, width: W - photoLeft, height: H * 0.6 }}
-        focusX={PHOTO_FOCUS.curve.x}
-        focusY={PHOTO_FOCUS.curve.y}
+        region={{ left: photoLeftEdge, top: 0, width: W - photoLeft, height: H * 0.6 }}
+        focusX={focus.x}
+        focusY={focus.y}
       />
 
-      {/* Soft left fade so the photo's hard left edge dissolves into the field. */}
+      {/* Soft fade so the photo's hard vertical edge dissolves into the field. */}
       <div
         style={{
           position: 'absolute',
-          left: photoLeft,
+          left: edgeFadeLeft,
           top: 0,
           width: W * 0.12,
           height: H * 0.6,
-          backgroundImage: `linear-gradient(90deg, ${theme.lightNeutral} 0%, ${withAlpha(
-            theme.lightNeutral,
-            0,
-          )} 100%)`,
+          backgroundImage: `linear-gradient(${flipped ? 270 : 90}deg, ${
+            theme.lightNeutral
+          } 0%, ${withAlpha(theme.lightNeutral, 0)} 100%)`,
         }}
       />
       {/* Bottom fade into the field above the sweep. */}
       <div
         style={{
           position: 'absolute',
-          left: photoLeft,
+          left: photoLeftEdge,
           top: H * 0.48,
           width: W - photoLeft,
           height: H * 0.12,
@@ -674,12 +778,12 @@ function CurvedSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
         style={{ position: 'absolute', left: 0, top: 0 }}
       >
         <path
-          d={`M0 ${sweepLeft} Q ${W * 0.5} ${sweepControl} ${W} ${sweepRight} L${W} ${H} L0 ${H} Z`}
+          d={`M0 ${sweepStart} Q ${W * 0.5} ${sweepControl} ${W} ${sweepEnd} L${W} ${H} L0 ${H} Z`}
           fill={theme.darkNeutral}
         />
         {/* Accent hairline tracing the crest, as in ref 4. */}
         <path
-          d={`M0 ${sweepLeft} Q ${W * 0.5} ${sweepControl} ${W} ${sweepRight}`}
+          d={`M0 ${sweepStart} Q ${W * 0.5} ${sweepControl} ${W} ${sweepEnd}`}
           fill="none"
           stroke={theme.accent}
           strokeWidth={Math.max(2, metrics.s(5))}
@@ -696,7 +800,14 @@ function CurvedSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
           justifyContent: 'space-between',
         }}
       >
-        <div style={{ display: 'flex', flexDirection: 'column', padding: metrics.margin }}>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            padding: metrics.margin,
+            alignItems: FLEX_ALIGN[align],
+          }}
+        >
           <CopyStack
             spec={spec}
             metrics={metrics}
@@ -711,6 +822,7 @@ function CurvedSplit({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
               metrics={metrics}
               theme={theme}
               ground={ground}
+              align={align}
               features={copy.features}
               width={columnWidth}
             />
@@ -753,34 +865,45 @@ function LightEditorial({ spec, metrics, logoDimensions, logoInkLuminance }: Arc
   const photoLeft = W * 0.48;
   const columnWidth = Math.min(metrics.copyWidth, photoLeft - metrics.margin * 1.3);
 
+  const { photoFocus: focus, flipped, align } = describeArchetype(spec.archetype);
+
+  /*
+   * Everything here already derives from `photoRegion`, so mirroring is a single
+   * change of origin: the region moves to the left half and the three dissolves
+   * follow it. Only the seam dissolve needs its direction reversed — the top and
+   * bottom ones run on the vertical axis, which a horizontal mirror leaves alone.
+   */
   const photoRegion: Region = {
-    left: photoLeft,
+    left: flipped ? 0 : photoLeft,
     top: H * 0.12,
     width: W - photoLeft,
     height: H * 0.6,
   };
+
+  const seamFadeLeft = flipped
+    ? photoRegion.left + photoRegion.width - W * 0.14
+    : photoRegion.left;
 
   return (
     <Canvas metrics={metrics} background={theme.lightNeutral}>
       <PhotoLayer
         photo={spec.photo}
         region={photoRegion}
-        focusX={PHOTO_FOCUS.editorial.x}
-        focusY={PHOTO_FOCUS.editorial.y}
+        focusX={focus.x}
+        focusY={focus.y}
       />
 
-      {/* Left dissolve — carries the boundary against the copy column. */}
+      {/* Seam dissolve — carries the boundary against the copy column. */}
       <div
         style={{
           position: 'absolute',
-          left: photoRegion.left,
+          left: seamFadeLeft,
           top: photoRegion.top,
           width: W * 0.14,
           height: photoRegion.height,
-          backgroundImage: `linear-gradient(90deg, ${theme.lightNeutral} 0%, ${withAlpha(
-            theme.lightNeutral,
-            0,
-          )} 100%)`,
+          backgroundImage: `linear-gradient(${flipped ? 270 : 90}deg, ${
+            theme.lightNeutral
+          } 0%, ${withAlpha(theme.lightNeutral, 0)} 100%)`,
         }}
       />
       {/* Top and bottom dissolves. */}
@@ -821,7 +944,13 @@ function LightEditorial({ spec, metrics, logoDimensions, logoInkLuminance }: Arc
           justifyContent: 'space-between',
         }}
       >
-        <div style={{ display: 'flex', padding: metrics.margin }}>
+        <div
+          style={{
+            display: 'flex',
+            padding: metrics.margin,
+            justifyContent: FLEX_ALIGN[align],
+          }}
+        >
           <CopyStack
             spec={spec}
             metrics={metrics}
@@ -885,7 +1014,11 @@ function SpotlightCentre({ spec, metrics, logoDimensions, logoInkLuminance }: Ar
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, true);
   const columnWidth = Math.min(metrics.copyWidth, metrics.width * 0.78);
-  const focus = PHOTO_FOCUS.spotlight;
+  // No `flipped` branch: the photo is full-bleed and the wash is symmetric about
+  // the vertical axis, so a mirror of this composition is indistinguishable from
+  // the original. Alignment is its only variant axis, which is what
+  // `spotlight-centred` uses.
+  const { photoFocus: focus, align } = describeArchetype(spec.archetype);
 
   return (
     <Canvas metrics={metrics} background={theme.darkNeutral}>
@@ -933,6 +1066,7 @@ function SpotlightCentre({ spec, metrics, logoDimensions, logoInkLuminance }: Ar
             flex: 1,
             flexDirection: 'column',
             justifyContent: 'center',
+            alignItems: FLEX_ALIGN[align],
             paddingLeft: metrics.margin,
             paddingRight: metrics.margin,
             paddingTop: metrics.margin,
@@ -952,6 +1086,7 @@ function SpotlightCentre({ spec, metrics, logoDimensions, logoInkLuminance }: Ar
               metrics={metrics}
               theme={theme}
               ground={ground}
+              align={align}
               features={copy.features}
               width={Math.min(metrics.width - metrics.margin * 2, metrics.width * 0.74)}
             />
@@ -989,7 +1124,7 @@ function SpotlightCentre({ spec, metrics, logoDimensions, logoInkLuminance }: Ar
 function CornerInset({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, false);
-  const focus = PHOTO_FOCUS.corner;
+  const { photoFocus: focus, flipped, align } = describeArchetype(spec.archetype);
 
   const W = metrics.width;
   const H = metrics.height;
@@ -1007,12 +1142,16 @@ function CornerInset({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
 
   const columnWidth = Math.min(metrics.copyWidth, photoLeft - metrics.margin * 1.6);
 
+  // Rectangles only, so mirroring is one change of origin shared by the inset and
+  // the hairline beneath it. The panel bleeds off whichever edge it now sits on.
+  const insetLeft = flipped ? 0 : photoLeft;
+
   return (
     <Canvas metrics={metrics} background={theme.lightNeutral}>
       <PhotoLayer
         photo={spec.photo}
         region={{
-          left: photoLeft,
+          left: insetLeft,
           top: photoTop,
           width: W - photoLeft,
           height: photoHeight,
@@ -1026,7 +1165,7 @@ function CornerInset({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
       <div
         style={{
           position: 'absolute',
-          left: photoLeft,
+          left: insetLeft,
           top: photoTop + photoHeight,
           width: W - photoLeft,
           height: Math.max(2, metrics.s(5)),
@@ -1054,6 +1193,7 @@ function CornerInset({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
             flex: 1,
             flexDirection: 'column',
             justifyContent: 'center',
+            alignItems: FLEX_ALIGN[align],
             paddingLeft: metrics.margin,
             paddingRight: metrics.margin,
             paddingTop: metrics.margin,
@@ -1073,12 +1213,15 @@ function CornerInset({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
               metrics={metrics}
               theme={theme}
               ground={ground}
+              align={align}
               features={copy.features}
               width={columnWidth}
             />
           </div>
         </div>
 
+        {/* The stacked bar is the only one with a ragged edge of its own, so it
+            follows the copy rather than staying pinned left under it. */}
         <ContactBar
           metrics={metrics}
           theme={theme}
@@ -1086,6 +1229,7 @@ function CornerInset({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
           copy={copy}
           variant="dark"
           stacked
+          align={align}
         />
       </div>
     </Canvas>
@@ -1112,7 +1256,7 @@ function CornerInset({ spec, metrics, logoDimensions, logoInkLuminance }: Archet
 function InvertedBand({ spec, metrics, logoDimensions, logoInkLuminance }: ArchetypeProps) {
   const { theme, copy, identity } = spec;
   const ground = groundFor(theme, true);
-  const focus = PHOTO_FOCUS.inverted;
+  const focus = describeArchetype(spec.archetype).photoFocus;
 
   const photoHeight = metrics.height * 0.3;
 
@@ -1239,8 +1383,8 @@ function WideLayout({ spec, metrics, logoDimensions, logoInkLuminance }: Archety
       <PhotoLayer
         photo={spec.photo}
         region={{ left: photoLeft, top: 0, width: W - photoLeft, height: H }}
-        focusX={PHOTO_FOCUS[spec.archetype].x}
-        focusY={PHOTO_FOCUS[spec.archetype].y}
+        focusX={describeArchetype(spec.archetype).photoFocus.x}
+        focusY={describeArchetype(spec.archetype).photoFocus.y}
       />
 
       {/* Dissolve the photo's left edge into the copy field. */}
@@ -1349,8 +1493,8 @@ function LetterboxLayout({ spec, metrics, logoDimensions, logoInkLuminance }: Ar
       <PhotoLayer
         photo={spec.photo}
         region={{ left: 0, top: 0, width: W, height: H }}
-        focusX={PHOTO_FOCUS[spec.archetype].x}
-        focusY={PHOTO_FOCUS[spec.archetype].y}
+        focusX={describeArchetype(spec.archetype).photoFocus.x}
+        focusY={describeArchetype(spec.archetype).photoFocus.y}
       />
       <div
         style={{

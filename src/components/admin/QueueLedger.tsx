@@ -1,5 +1,5 @@
 import { DeliveryStatus } from '@prisma/client';
-import { AlertTriangle, Clock, ExternalLink, ImageOff, Send } from 'lucide-react';
+import { AlertTriangle, Clock, ExternalLink, EyeOff, ImageOff, Send } from 'lucide-react';
 
 import { QueueCardActions } from '@/components/admin/QueueCardActions';
 import { StatusBadge } from '@/components/admin/StatusBadge';
@@ -17,19 +17,36 @@ export interface QueueEntry {
   status: DeliveryStatus;
   /** When a generated-but-unsent poster is due to go out, if it is waiting. */
   sendAfterLabel: string | null;
+  /** A generated poster nobody has approved. Nothing will send it until they do. */
+  awaitingApproval: boolean;
+  /** Approved but not yet booked to send, so the approval can still be taken back. */
+  canWithdrawApproval: boolean;
   /** Lightweight Drive thumbnail; falls back to the raw view URL. */
   thumbnailUrl: string | null;
   viewUrl: string | null;
   errorMessage: string | null;
 }
 
+/**
+ * How the creative is framed.
+ *
+ * `scan` crops to a square, which packs a long feed and is fine when the question
+ * is "which of these failed". `review` shows the whole poster on a portrait card,
+ * because approving one means signing off on the parts a square crop removes —
+ * the logo lockup at the top and the contact bar at the bottom, which is exactly
+ * where a wrong phone number would be.
+ */
+export type QueueLedgerVariant = 'scan' | 'review';
+
 export function QueueLedger({
   entries,
   emptyMessage = 'No calendar entries queued. Seed a client’s ContentCalendar to populate this feed.',
+  variant = 'scan',
 }: {
   entries: QueueEntry[];
   /** Overrides the empty copy on filtered views, where "seed a calendar" is the wrong advice. */
   emptyMessage?: string;
+  variant?: QueueLedgerVariant;
 }) {
   if (entries.length === 0) {
     return (
@@ -40,21 +57,38 @@ export function QueueLedger({
   }
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+    <div
+      className={
+        variant === 'review'
+          ? 'grid gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'
+          : 'grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4'
+      }
+    >
       {entries.map((entry) => (
-        <QueueCard key={entry.id} entry={entry} />
+        <QueueCard key={entry.id} entry={entry} variant={variant} />
       ))}
     </div>
   );
 }
 
-function QueueCard({ entry }: { entry: QueueEntry }) {
+function QueueCard({
+  entry,
+  variant,
+}: {
+  entry: QueueEntry;
+  variant: QueueLedgerVariant;
+}) {
   const hasAsset = Boolean(entry.viewUrl);
+  const review = variant === 'review';
 
   return (
     <article className="flex flex-col overflow-hidden rounded-xl border border-border bg-card transition-all duration-300 hover:border-primary/40 hover:shadow-brand-glow-sm">
       {/* Creative preview, pulled from the recorded Drive asset. */}
-      <div className="relative aspect-square w-full overflow-hidden border-b border-border bg-muted">
+      <div
+        className={`relative w-full overflow-hidden border-b border-border bg-muted ${
+          review ? 'aspect-[3/4]' : 'aspect-square'
+        }`}
+      >
         {entry.thumbnailUrl ? (
           /* Drive serves these; a plain img avoids per-host remotePatterns
              config and keeps the optimizer out of a high-density grid. */
@@ -67,7 +101,11 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
             // Google's content host can reject a request that carries a
             // localhost referrer; it needs none to serve a link-readable file.
             referrerPolicy="no-referrer"
-            className="h-full w-full object-cover transition-transform duration-500 hover:scale-105"
+            className={
+              review
+                ? 'h-full w-full object-contain'
+                : 'h-full w-full object-cover transition-transform duration-500 hover:scale-105'
+            }
           />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground/50">
@@ -105,6 +143,15 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
               Sending {entry.sendAfterLabel}
             </p>
           )}
+          {/* The other, more common reason a generated poster is sitting still.
+              Without this the card looks identical to one mid-delay, and an
+              operator waits for a send that is never coming. */}
+          {entry.awaitingApproval && (
+            <p className="flex items-center gap-1.5 font-mono text-[10px] text-warning-ink">
+              <EyeOff className="h-3 w-3" />
+              Awaiting approval
+            </p>
+          )}
         </header>
 
         <p className="line-clamp-3 flex-1 text-[11px] leading-relaxed text-muted-foreground">
@@ -128,6 +175,8 @@ function QueueCard({ entry }: { entry: QueueEntry }) {
           calendarId={entry.id}
           hasAsset={hasAsset}
           deletable={entry.status === DeliveryStatus.FAILED}
+          awaitingApproval={entry.awaitingApproval}
+          canWithdrawApproval={entry.canWithdrawApproval}
         />
 
         {entry.viewUrl && (
