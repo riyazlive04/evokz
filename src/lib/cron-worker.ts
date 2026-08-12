@@ -31,8 +31,9 @@ import { buildMinuteWindow, getAppTimeZone, zonedDayRange } from '@/lib/time';
  * never released, on any phase. Posters are normally rendered days ahead by the
  * backlog phase and reviewed in the console, so by the time a delivery day
  * arrives the usual work is not generation at all — it is booking a send for a
- * poster that already exists. The on-the-day generation path remains for rows that
- * were approved without being pre-generated.
+ * poster that already exists. A row approved without ever being pre-generated is
+ * marked for the backlog and rendered by it in the same sweep, so there is exactly
+ * one path that calls the pipeline and exactly one claim guarding it.
  */
 
 export interface DispatchQueueItem {
@@ -62,7 +63,13 @@ export interface DispatchSummary {
    * which were booked for a send without any fal.ai spend.
    */
   released: number;
-  /** Rows rendered this sweep from the operator's pre-generation backlog. */
+  /**
+   * Rows rendered this sweep and left waiting on a human.
+   *
+   * Counts the generation queue's unapproved output specifically. An approved row
+   * rendered by the same phase lands in `scheduled` instead, because it left with
+   * a send booked rather than held.
+   */
   preGenerated: number;
   /**
    * Rows scheduled for today across the active fleet that nobody has approved.
@@ -80,7 +87,6 @@ export async function executeIntervalDispatch(
 ): Promise<DispatchSummary> {
   const timeZone = getAppTimeZone();
   const windowMinutes = intEnv('CRON_WINDOW_MINUTES', 5);
-  const concurrency = Math.max(1, intEnv('CRON_MAX_CONCURRENCY', 4));
 
   const minuteWindow = buildMinuteWindow(now, timeZone, windowMinutes);
   const { start, end } = zonedDayRange(now, timeZone);
@@ -232,34 +238,6 @@ export async function executeIntervalDispatch(
     },
   });
 
-  // ---- Phase 3: drain the operator's pre-generation backlog ----------------
-  //
-  // Ordered by scheduled date so the days closest to needing review are rendered
-  // first, and bounded per sweep because each row is a fal.ai render plus a
-  // satori composite — a 365-day campaign queued in one click must not try to
-  // become 365 renders inside one HTTP request.
-  const backlog = await prisma.contentCalendar.findMany({
-    where: {
-      deliveryStatus: DeliveryStatus.PENDING,
-      generationQueuedAt: { not: null },
-      client: { isActive: true, isDemo: false },
-    },
-    orderBy: { scheduledDate: 'asc' },
-    take: Math.max(1, intEnv('CRON_BATCH_GENERATE_LIMIT', 6)),
-    select: {
-      id: true,
-      dayNumber: true,
-      clientId: true,
-      client: { select: { companyName: true, cronTime: true } },
-    },
-  });
-
-  console.info(
-    `[ace:cron] window=${minuteWindow.join(',')} tz=${timeZone} clients=${dueClients.length} ` +
-      `releasing=${toRelease.length} queued=${toGenerate.length} sending=${dueSends.length} ` +
-      `backlog=${backlog.length} unapproved=${awaitingApproval}`,
-  );
-
   // Booking a send is a database write, so these run at the send fan-out rather
   // than the generation one — there is no provider call to pace here.
   const releasedItems = await mapWithConcurrency(
@@ -278,23 +256,77 @@ export async function executeIntervalDispatch(
     }),
   );
 
-  // Items run concurrently up to `concurrency` — no item waits on the item
-  // before it. The sweep is still awaited as a whole, because a serverless
-  // invocation is torn down the moment its handler resolves; detaching the work
-  // would silently kill in-flight generations.
-  const generatedItems = await mapWithConcurrency(toGenerate, concurrency, async (item) => ({
-    calendarId: item.calendarId,
-    clientId: item.clientId,
-    companyName: item.companyName,
-    dayNumber: item.dayNumber,
-    cronTime: item.cronTime,
-    // Stops at GENERATED and stamps `sendAfter`. Phase 1 of a later sweep sends it.
-    outcome: await runCreativePipeline(item.calendarId, { deferBroadcast: true }),
-  }));
+  /*
+   * An approved row that was never pre-generated is *marked* here, not rendered
+   * here, and the backlog phase below picks it up in this same sweep.
+   *
+   * It used to call the pipeline inline, and that was the one generation path in
+   * the sweep with no claim in front of it. Sweeps genuinely overlap — a client
+   * matches every minute of `CRON_WINDOW_MINUTES`, and a render takes longer than
+   * the crontab interval — so two of them would select the same PENDING row and
+   * both pay fal.ai for it. The row only leaves the selection when it reaches
+   * GENERATED, which is precisely the thing that had not happened yet.
+   *
+   * Marking cannot fix that on its own: a claim that stamps `generationQueuedAt`
+   * and a claim that clears it are guarded on opposite states, so a phase-2 stamp
+   * racing a phase-3 claim lets both proceed. Routing through the backlog leaves
+   * exactly one claim on the row — `claimAndPreGenerate`'s — which is already
+   * proven and already atomic.
+   *
+   * `updateMany` rather than a per-row loop: it is one statement, and two sweeps
+   * running it concurrently converge on the same state rather than conflicting.
+   */
+  const marked =
+    toGenerate.length === 0
+      ? 0
+      : (
+          await prisma.contentCalendar.updateMany({
+            where: {
+              id: { in: toGenerate.map((item) => item.calendarId) },
+              deliveryStatus: DeliveryStatus.PENDING,
+              generationQueuedAt: null,
+            },
+            data: { generationQueuedAt: now },
+          })
+        ).count;
 
-  // Last, and at a lower fan-out than today's work: this is speculative rendering
-  // for days that have not arrived, and it must not compete with a client whose
-  // delivery minute is now.
+  // ---- Phase 3: drain the operator's pre-generation backlog ----------------
+  //
+  // Queried *after* the marking above so today's newly-marked rows are rendered
+  // in this sweep rather than the next one, which is what keeps a client's
+  // delivery on their own minute.
+  //
+  // Ordered by scheduled date so the days closest to needing review are rendered
+  // first — which also puts today's work ahead of speculative future days — and
+  // bounded per sweep because each row is a fal.ai render plus a satori
+  // composite: a 365-day campaign queued in one click must not try to become 365
+  // renders inside one HTTP request.
+  const backlog = await prisma.contentCalendar.findMany({
+    where: {
+      deliveryStatus: DeliveryStatus.PENDING,
+      generationQueuedAt: { not: null },
+      client: { isActive: true, isDemo: false },
+    },
+    orderBy: { scheduledDate: 'asc' },
+    take: Math.max(1, intEnv('CRON_BATCH_GENERATE_LIMIT', 6)),
+    select: {
+      id: true,
+      dayNumber: true,
+      clientId: true,
+      client: { select: { companyName: true, cronTime: true } },
+    },
+  });
+
+  console.info(
+    `[ace:cron] window=${minuteWindow.join(',')} tz=${timeZone} clients=${dueClients.length} ` +
+      `releasing=${toRelease.length} marked=${marked} sending=${dueSends.length} ` +
+      `backlog=${backlog.length} unapproved=${awaitingApproval}`,
+  );
+
+  // Today's marked rows and the speculative backlog are the same work now, so
+  // they share one fan-out — and `CRON_BATCH_GENERATE_LIMIT` bounds the pair of
+  // them per sweep. The ordering above is what protects a due client: their row
+  // carries today's date and sorts ahead of every speculative future day.
   const preGeneratedItems = await mapWithConcurrency(
     backlog,
     Math.max(1, intEnv('CRON_BATCH_GENERATE_CONCURRENCY', 2)),
@@ -308,7 +340,7 @@ export async function executeIntervalDispatch(
     }),
   );
 
-  const items = [...sentItems, ...releasedItems, ...generatedItems, ...preGeneratedItems];
+  const items = [...sentItems, ...releasedItems, ...preGeneratedItems];
 
   const delivered = items.filter(
     (item) => item.outcome.ok && item.outcome.status === DeliveryStatus.DELIVERED,
@@ -407,9 +439,17 @@ async function releaseApproved(
  * queue marker, which the operator re-queues in one click. A duplicate render is
  * money; a dropped mark is a button press.
  *
- * No `deferBroadcast` and no approval override, so the pipeline stops at
- * GENERATED of its own accord — the row is unapproved by definition, since
- * approving it is what this whole pass exists to make possible.
+ * No approval override, so an unapproved row stops at GENERATED of its own
+ * accord — which is the common case, since approving it is what this pass exists
+ * to make possible.
+ *
+ * `deferBroadcast` covers the other case. This is now also the path for a row
+ * that was approved before it was ever pre-generated, and for that one the
+ * pipeline would otherwise reach the broadcast and message the client the instant
+ * the render finished — losing the jitter that stops a fleet hitting WhatsApp in
+ * one burst. With it, the render stamps `sendAfter` and phase 1 of a later sweep
+ * delivers. It is inert for an unapproved row, whose `sendAfter` stays null
+ * either way.
  */
 async function claimAndPreGenerate(calendarId: string): Promise<PipelineOutcome> {
   const claimed = await prisma.contentCalendar.updateMany({
@@ -433,7 +473,7 @@ async function claimAndPreGenerate(calendarId: string): Promise<PipelineOutcome>
     };
   }
 
-  return runCreativePipeline(calendarId, {});
+  return runCreativePipeline(calendarId, { deferBroadcast: true });
 }
 
 /**
