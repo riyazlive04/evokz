@@ -11,7 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { prisma } from '@/lib/prisma';
-import { parseLayoutSpec } from '@/lib/types/layout-spec';
+import { parseLayoutDraft } from '@/lib/types/layout-spec';
 
 /**
  * Reference-template library for one vertical.
@@ -91,13 +91,21 @@ export default async function VerticalDetailPage({
     width: template.width,
     height: template.height,
     archetype: template.archetype,
-    // Serialised here rather than in the client component: the column is
-    // free-form Json, and the editor needs the exact text an operator will edit
-    // and post back. `parseLayoutSpec` normalises on the way through, so what is
-    // shown is what the renderer would actually use — not the raw draft.
-    layoutSpec: (() => {
-      const spec = parseLayoutSpec(template.layoutSpec);
-      return spec ? JSON.stringify(spec, null, 2) : null;
+    // `parseLayoutDraft`, not `parseLayoutSpec`. The strict parse answers "may
+    // this draw a poster?" and returns null for anything it refuses, which would
+    // show an operator "no layout read from this template yet" for a draft that
+    // was read fine and is one edit away from correct — hiding both the mistake
+    // and the fix. The console needs the geometry *and* the reasons.
+    ...(() => {
+      const draft = parseLayoutDraft(template.layoutSpec);
+      return {
+        // Serialised here rather than in the client component: the column is
+        // free-form Json and the editor needs the exact text it will post back.
+        layoutSpec: draft.spec ? JSON.stringify(draft.spec, null, 2) : null,
+        layoutProblems: draft.problems.map(
+          (problem) => `${problem.path} ${problem.message}`,
+        ),
+      };
     })(),
     layoutReading: template.layoutReading,
     layoutApproved: template.layoutApprovedAt !== null,

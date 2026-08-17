@@ -15,7 +15,7 @@ import {
 import { renderPoster } from '@/lib/poster/render';
 import { prisma } from '@/lib/prisma';
 import { parseBrandGuideline, EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
-import { parseLayoutSpec } from '@/lib/types/layout-spec';
+import { parseLayoutDraft } from '@/lib/types/layout-spec';
 import {
   parsePosterCopy,
   posterArchetypeSchema,
@@ -82,14 +82,31 @@ export async function GET(request: NextRequest) {
      * until something renders it — gating this endpoint on the flag it exists to
      * inform would make the review step impossible to perform.
      */
-    const layoutSpec = templateId ? await loadTemplateLayout(templateId) : null;
+    const draft = templateId ? await loadTemplateLayout(templateId) : null;
+    const layoutSpec = draft && draft.problems.length === 0 ? draft.spec : null;
 
     if (templateId && !layoutSpec) {
+      /*
+       * Names the actual fault. The first version of this said "run extraction
+       * first" for every null, which is wrong and expensive: the common case is
+       * a draft that extracted perfectly well and was then refused for a
+       * structural reason — two headlines, a photo cell holding text — and an
+       * operator told to re-run extraction will re-run it, get the same draft,
+       * and have no idea what to do next.
+       */
       return NextResponse.json(
         {
           error:
-            'That template has no readable layout spec. Run extraction on it first, ' +
-            'or check the console for the problems reported against the draft.',
+            draft && draft.problems.length > 0
+              ? 'This template’s layout was read but cannot render yet.'
+              : 'No layout has been read from this template yet. Open the vertical ' +
+                'in the console and use “Read layout” on its card.',
+          ...(draft && draft.problems.length > 0
+            ? {
+                problems: draft.problems.map((p) => `${p.path} ${p.message}`),
+                fix: 'Open the vertical in the console; the template card has the draft loaded in its editor.',
+              }
+            : {}),
         },
         { status: 404 },
       );
@@ -202,7 +219,8 @@ async function loadTemplateLayout(templateId: string) {
     where: { id: templateId },
     select: { layoutSpec: true },
   });
-  return parseLayoutSpec(template?.layoutSpec ?? null);
+  if (!template) return null;
+  return parseLayoutDraft(template.layoutSpec);
 }
 
 async function loadClientContext(clientId: string, day: number | null) {

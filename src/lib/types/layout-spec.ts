@@ -376,6 +376,45 @@ export function parseLayoutSpec(value: unknown): PosterLayoutSpec | null {
   return normalized;
 }
 
+export interface LayoutDraft {
+  /** Normalised, but NOT known to be structurally valid. Null if the shape is unreadable. */
+  spec: PosterLayoutSpec | null;
+  /** Empty when the draft is good enough to render. */
+  problems: LayoutSpecProblem[];
+}
+
+/**
+ * Parses a stored spec for *editing* rather than for rendering.
+ *
+ * The difference from `parseLayoutSpec` is the whole point. That one answers
+ * "may this draw a poster?" and returns null for anything it will not draw,
+ * which is correct for the render path and useless for the console: a draft
+ * rejected for having two headlines is one edit away from being right, and
+ * telling an operator "no layout read from this template yet" hides both the
+ * mistake and the fix.
+ *
+ * This returns the draft plus the reasons it is not usable, so the console can
+ * show the geometry, name the fault, and let it be corrected. A shape this build
+ * cannot read at all still comes back null — there is nothing to edit.
+ */
+export function parseLayoutDraft(value: unknown): LayoutDraft {
+  if (value === null || value === undefined) return { spec: null, problems: [] };
+
+  const parsed = posterLayoutSpecSchema.safeParse(value);
+  if (!parsed.success) {
+    return {
+      spec: null,
+      problems: parsed.error.issues.slice(0, 4).map((issue) => ({
+        path: issue.path.join('.') || 'spec',
+        message: issue.message,
+      })),
+    };
+  }
+
+  const spec = normalizeLayoutSpec(parsed.data);
+  return { spec, problems: validateLayoutSpec(spec) };
+}
+
 /** Every photo slot in the spec, in render order. Drives the diffusion requests. */
 export function countPhotoSlots(spec: PosterLayoutSpec): number {
   return spec.rows.reduce(

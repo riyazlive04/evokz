@@ -73,10 +73,11 @@ const LAYOUT_SCHEMA = {
       type: 'string',
       description:
         'Before answering: first count the photographic regions on this poster and ' +
-        'state the number. Then list its horizontal bands from top to bottom, one ' +
-        'short line each, saying what is in the band and — only where content truly ' +
-        'sits side by side — how it splits. Say "plain ground" for an empty side. ' +
-        'Most posters have three to six bands.',
+        'state the number. Then name the single largest block of type — that one is ' +
+        'the headline, and no other block is, however large. Then list the ' +
+        'horizontal bands from top to bottom, one short line each, saying what is in ' +
+        'the band and — only where content truly sits side by side — how it splits. ' +
+        'Say "plain ground" for an empty side. Most posters have three to six bands.',
     },
     version: { type: 'integer', enum: [1] },
     name: {
@@ -181,7 +182,7 @@ Read the poster as horizontal bands stacked top to bottom. Split a band into cel
 
 Rules that matter more than fidelity to the reference:
 
-1. Exactly one headline slot. The biggest type on the poster is the headline even if the reference repeats it.
+1. Exactly one headline slot, on the whole poster. Posters routinely set a second block of large type further down — an offer, a price, a date, often in a different face — and it is NOT a second headline. Compare every large block against the largest: only the winner is the headline, and a runner-up belongs to "features" or "body" however big it looks on its own. Two headline slots makes the whole layout unusable.
 2. A cell holds either a photo or text, never both. Where the reference sets copy on top of an image, give the photo its own cell beside the copy.
 3. Mark the largest photo row "flex". Text cannot reflow to fit a canvas, so one row must be able to give up space when the copy runs long. If there is no photo, mark the tallest row.
 4. Copy rows are "hug". A bar whose proportion is the point of it — a slim footer, a full-bleed contact strip — is "fixed" with its heightFraction.

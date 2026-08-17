@@ -58,8 +58,14 @@ export interface VerticalTemplateRow {
   /**
    * The template's own extracted geometry, pretty-printed, or null when
    * extraction has not run or produced nothing this build can read.
+   *
+   * Present even when the draft is structurally invalid — see `layoutProblems`.
+   * A draft with two headlines is one edit away from correct, and hiding it
+   * would hide the fix along with the fault.
    */
   layoutSpec: string | null;
+  /** Why the draft cannot render yet. Empty when it is good to approve. */
+  layoutProblems: string[];
   /** The model's band-by-band reading, or why there isn't one. */
   layoutReading: string | null;
   /** True once an operator has confirmed the spec against the template. */
@@ -365,6 +371,13 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
 
   const busy = reread.pending || approve.pending || save.pending;
   const error = reread.error ?? approve.error ?? save.error;
+  const broken = template.layoutProblems.length > 0;
+
+  // A draft that needs fixing should open its editor without a second click —
+  // the problems list above it is only actionable next to the thing it describes.
+  React.useEffect(() => {
+    if (broken) setEditing(true);
+  }, [broken]);
 
   return (
     <div className="space-y-1.5 border-t border-border px-3 py-2.5">
@@ -379,30 +392,52 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
         <>
           <p
             className={`text-[10px] ${
-              template.layoutApproved ? 'text-success-ink' : 'text-warning-ink'
+              broken
+                ? 'text-danger-ink'
+                : template.layoutApproved
+                  ? 'text-success-ink'
+                  : 'text-warning-ink'
             }`}
           >
-            {template.layoutApproved
-              ? 'Approved — this template’s own layout is in the rotation.'
-              : 'Draft — not used for generation until you approve it.'}
+            {broken
+              ? 'Needs a correction before it can render:'
+              : template.layoutApproved
+                ? 'Approved — this template’s own layout is in the rotation.'
+                : 'Draft — not used for generation until you approve it.'}
           </p>
 
-          <a
-            href={`/admin/poster-preview?templateId=${encodeURIComponent(template.id)}`}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="inline-flex items-center gap-1 text-[10px] font-medium text-foreground underline-offset-2 hover:underline"
-          >
-            <ExternalLink className="h-3 w-3" />
-            See this template rendered
-          </a>
+          {broken && (
+            <ul className="list-disc space-y-0.5 pl-3.5 text-[10px] text-danger-ink">
+              {template.layoutProblems.map((problem) => (
+                <li key={problem}>{problem}</li>
+              ))}
+            </ul>
+          )}
+
+          {/* Straight to the render route, which returns the PNG.
+              /admin/poster-preview is the archetype gallery and has no notion of
+              a template — pointing here at that page opened it and silently
+              ignored the id, which reads as the button doing nothing. */}
+          {!broken && (
+            <a
+              href={`/api/poster/preview?templateId=${encodeURIComponent(template.id)}`}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="inline-flex items-center gap-1 text-[10px] font-medium text-foreground underline-offset-2 hover:underline"
+            >
+              <ExternalLink className="h-3 w-3" />
+              See this template rendered
+            </a>
+          )}
 
           <div className="flex flex-wrap gap-1.5 pt-0.5">
             <Button
               size="sm"
               variant={template.layoutApproved ? 'ghost' : 'default'}
               className="h-7 px-2 text-[10px]"
-              disabled={busy}
+              // A broken draft cannot be approved. The server refuses it too;
+              // this only saves the round trip and the error message.
+              disabled={busy || (broken && !template.layoutApproved)}
               onClick={() =>
                 void approve.run(template.id, !template.layoutApproved)
               }

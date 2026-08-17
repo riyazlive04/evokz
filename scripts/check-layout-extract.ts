@@ -53,9 +53,12 @@ async function main() {
   const argv = process.argv.slice(2);
   const outFlag = argv.indexOf('--out');
   const outDir = outFlag >= 0 ? argv[outFlag + 1] : null;
-  const paths = argv.filter(
-    (value, index) => index !== outFlag && index !== outFlag + 1,
-  );
+  // Guarded on `outFlag >= 0`: without it the `outFlag + 1` term is 0 when the
+  // flag is absent, which silently ate the first image path.
+  const paths =
+    outFlag >= 0
+      ? argv.filter((_, index) => index !== outFlag && index !== outFlag + 1)
+      : argv;
 
   if (paths.length === 0) {
     throw new Error('usage: check-layout-extract.ts [--out <dir>] <image...>');
