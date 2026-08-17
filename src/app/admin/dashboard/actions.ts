@@ -1604,6 +1604,23 @@ export async function seedContentCalendar(
  * `allowRedelivery` still passes, and now does only one job: lifting the
  * already-delivered short-circuit so a delivered day can be re-rendered at all.
  * Withholding the send is the approval guard's responsibility, not its.
+ *
+ * **The layout is released too.** The pipeline pins `posterArchetype` on the
+ * first successful compose so a *retry* reproduces the poster the client
+ * received — but this is not a retry, it is a rejection, and holding the pin made
+ * the layout the one thing about a rejected poster an operator could not change.
+ * Nothing else could either: a sheet re-import only rewrites PENDING and FAILED
+ * rows, and there is no per-day picker in the console, so a GENERATED row was
+ * stuck with whichever composition the rotation first handed it.
+ *
+ * Clearing it sends the row back through `resolvePosterArchetype`, which is what
+ * lets a changed rotation, or a newly mapped set of vertical templates, reach a
+ * day that has already been rendered once.
+ *
+ * The cost is that rejecting a poster purely for its photograph may also move its
+ * layout. That is the right trade while every layout the rotation can return is
+ * one that holds up — see `FALLBACK_ARCHETYPES` — and an operator who wants a
+ * specific composition back can pin it in the sheet.
  */
 export async function regenerateCreative(
   calendarId: string,
@@ -1613,7 +1630,7 @@ export async function regenerateCreative(
 
     const cleared = await prisma.contentCalendar.updateMany({
       where: { id },
-      data: { approvedAt: null, sendAfter: null },
+      data: { approvedAt: null, sendAfter: null, posterArchetype: null },
     });
     if (cleared.count === 0) return failure('That calendar entry no longer exists.');
 

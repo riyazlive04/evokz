@@ -472,7 +472,7 @@ Renders one poster as `image/png`. Costs nothing: the background photo is genera
 
 | Query param | Values | Default |
 | --- | --- | --- |
-| `archetype` | `scrim` \| `diagonal` \| `bands` \| `curve` \| `editorial` \| `spotlight` \| `corner` \| `inverted` | `scrim` |
+| `archetype` | Any of the 15 ids in `POSTER_ARCHETYPES` — the eight bases (`scrim`, `diagonal`, `bands`, `curve`, `editorial`, `spotlight`, `corner`, `inverted`) plus `scrim-mirror`, `diagonal-mirror`, `curve-mirror`, `editorial-mirror`, `corner-mirror`, `spotlight-centred`, `bands-photo-top`. Note the day-number rotation only ever picks `scrim`, `bands`, `spotlight`, `inverted` — the rest need a sheet pin or a template mapping. | `scrim` |
 | `preset` | Any `IMAGE_SIZE_PRESETS` id | `whatsapp-status` |
 | `clientId` | UUID — renders with a real client's brand, logo, contact details | none (sample) |
 | `day` | Calendar day whose stored `posterCopy` to use (with `clientId`) | sample copy |

@@ -169,7 +169,17 @@ export const ARCHETYPE_CATALOGUE: Record<PosterArchetype, ArchetypeDescriptor> =
     align: 'start',
     label: 'D · Curved sweep, copy left',
     description: 'Light field with a dark curved sweep rising from the left. Ref 4.',
-    photoShape: 'landscape',
+    /*
+     * Portrait, despite the layout reading as a wide sweep. The photo region is
+     * the right half down to 60% of the height — 540×1152 at the production
+     * canvas, an aspect of 0.47. Declaring `landscape` asked fal.ai for a 1.5:1
+     * frame and then cover-fitted it into that tall box, discarding roughly two
+     * thirds of the width; with `photoFocus.x` at 0.72 the surviving crop was
+     * pulled hard right, so the subject the brief had placed upper-right was
+     * routinely cut. Exactly the failure `photo-request.ts` warns about for the
+     * band archetypes, in the opposite direction.
+     */
+    photoShape: 'portrait',
     photoFocus: { x: 0.72, y: 0.34 }, // subject upper-right, clean lower-left
     groundIsDark: false,
   },
@@ -339,19 +349,49 @@ export function pickForDay<T>(dayNumber: number, items: readonly T[]): T | null 
 }
 
 /**
- * The rotation used when nothing has chosen a layout: the eight base
- * compositions, never the variants.
+ * The rotation used when nothing has chosen a layout.
  *
- * Deliberately narrower than `POSTER_ARCHETYPES`. A variant is a considered
- * choice — it exists because an operator looked at a reference template and said
- * "this one" — so it is reachable by mapping a template to it or by pinning it on
- * a row, but not by a client happening to land on day 11. That also keeps the
- * automatic path on the compositions the style spec was written against.
+ * Deliberately narrower than `POSTER_ARCHETYPES`, on two counts.
+ *
+ * **No variants.** A variant is a considered choice — it exists because an
+ * operator looked at a reference template and said "this one" — so it is
+ * reachable by mapping a template to it or by pinning it on a row, but not by a
+ * client happening to land on day 11.
+ *
+ * **Only the wide-column bases.** This is the load-bearing one, and it is an
+ * explicit list rather than a filter over `ARCHETYPE_CATALOGUE` because no
+ * property on the descriptor expresses the reason.
+ *
+ * `fittedHeadlineSize` shrinks a headline to its copy column but floors at 55%
+ * of the intended size, past which the headline stops dominating. At that floor
+ * a twelve-character line still sets around 488px, and `PosterCopy` permits
+ * lines up to 24 characters. The four excluded bases have copy columns narrower
+ * than that floor needs, so their headlines set past the column and over the
+ * photograph:
+ *
+ *     diagonal   387px    editorial  447px
+ *     corner     452px    curve      463px
+ *
+ * against the four kept here:
+ *
+ *     scrim      734px    spotlight  842px
+ *     bands      970px    inverted   970px
+ *
+ * The excluded four are not broken and are not going away — they are still
+ * rendered, still in the preview grid, and still selectable by template mapping
+ * or a sheet pin, which is a deliberate act by someone who can see the result.
+ * They are only withheld from the path nobody reviews.
+ *
+ * Widening a narrow archetype's column, or lowering the floor, is what would
+ * earn one of them a place back in this list. Adding it here without doing that
+ * reintroduces the overflow.
  */
-const FALLBACK_ARCHETYPES: readonly PosterArchetype[] = POSTER_ARCHETYPES.filter(
-  (archetype) => !ARCHETYPE_CATALOGUE[archetype].flipped &&
-    ARCHETYPE_CATALOGUE[archetype].align === 'start',
-);
+const FALLBACK_ARCHETYPES: readonly PosterArchetype[] = [
+  'scrim',
+  'bands',
+  'spotlight',
+  'inverted',
+];
 
 /**
  * Deterministic archetype for a campaign day, when nothing else has chosen one.

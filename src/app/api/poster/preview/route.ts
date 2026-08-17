@@ -29,7 +29,9 @@ import {
  * what a client would receive.
  *
  * Query parameters:
- *   archetype  one of the five (default `scrim`)
+ *   archetype  any id in `POSTER_ARCHETYPES` — the eight bases or their
+ *              variants, not only the subset the day-number rotation uses
+ *              (default `scrim`)
  *   preset     an `IMAGE_SIZE_PRESETS` id (default WhatsApp Status)
  *   clientId   render with a real client's brand, logo and contact details
  *   day        calendar day whose stored copy to use, with `clientId`

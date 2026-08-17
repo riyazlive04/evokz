@@ -44,7 +44,7 @@ import {
   type ConflictMode,
   type ParsedImportRow,
 } from '@/lib/calendar-parse';
-import { POSTER_ICONS } from '@/lib/types/poster';
+import { POSTER_ARCHETYPES, POSTER_ICONS } from '@/lib/types/poster';
 
 /**
  * Bulk import of operator-authored calendar days.
@@ -301,8 +301,9 @@ export function CalendarImportPanel({
               <span className="font-mono">accent line</span> is which of those lines takes the
               brand colour, counting from 1.{' '}
               <span className="font-mono">headline period</span> is yes/no.{' '}
-              <span className="font-mono">archetype</span> pins the layout; blank rotates
-              through all five by day number.
+              <span className="font-mono">archetype</span> pins the layout to any of the{' '}
+              {POSTER_ARCHETYPES.length}; blank rotates by day number through the
+              subset chosen for unattended use.
             </p>
             <p>
               Each feature needs all three of icon, label, and body. Valid icons:{' '}

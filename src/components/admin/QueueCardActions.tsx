@@ -28,8 +28,9 @@ import { useAction } from '@/hooks/use-action';
  *
  * "Approve" releases a reviewed poster to deliver on its scheduled day; "Send
  * now" pushes it immediately regardless, reusing the stored Drive asset when one
- * exists (no fal.ai spend); "Regenerate" discards the asset, re-renders, and
- * withdraws approval so the replacement is reviewed too.
+ * exists (no fal.ai spend); "Regenerate" discards the asset, re-renders with a
+ * newly resolved layout, and withdraws approval so the replacement is reviewed
+ * too.
  *
  * Approve leads on unapproved rows because it is the one that belongs to the
  * normal daily loop. "Send now" sits beside it as the override it is — it bypasses
@@ -163,7 +164,7 @@ export function QueueCardActions({
           onClick={handleRegenerate}
           disabled={busy}
           aria-label="Regenerate creative"
-          title="Discard the stored asset, re-render with Flux.1, and hold the result for approval"
+          title="Discard the stored asset, re-render with a new photo and a freshly chosen layout, and hold the result for approval"
         >
           {regenerate.pending ? (
             <Loader2 className="h-4 w-4 animate-spin" />
