@@ -166,6 +166,7 @@ async function loadClientContext(clientId: string, day: number | null) {
       categoryId: true,
       brandGuideline: true,
       logoUrl: true,
+      logoIncludesName: true,
       brandTagline: true,
       websiteUrl: true,
       displayPhone: true,
@@ -195,6 +196,7 @@ async function loadClientContext(clientId: string, day: number | null) {
     identity: {
       companyName: client.companyName,
       logoUrl: client.logoUrl,
+      logoIncludesName: client.logoIncludesName,
       brandTagline: client.brandTagline,
       websiteUrl: client.websiteUrl,
       displayPhone: client.displayPhone,

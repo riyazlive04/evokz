@@ -1944,6 +1944,14 @@ const posterIdentitySchema = z.object({
     )
     .transform((value) => value || null)
     .nullable(),
+  /*
+   * Whether the uploaded logo already reads as the company name.
+   *
+   * Defaults rather than being required so an older caller that omits it keeps
+   * the printed name, which is the safe direction: an absent company name is
+   * invisible until somebody notices it missing, a doubled one is obvious.
+   */
+  logoIncludesName: z.boolean().default(false),
 });
 
 export type PosterIdentityInput = z.input<typeof posterIdentitySchema>;

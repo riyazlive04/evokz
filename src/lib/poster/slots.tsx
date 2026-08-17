@@ -164,12 +164,33 @@ function logoReadsOn(inkLuminance: number | null, background: string): boolean {
 }
 
 /**
+ * Largest size at which `name` still fits `room`, down to a floor.
+ *
+ * Sized to fit rather than truncated. An ellipsised company name ("EVOKZ PR…")
+ * is a visible defect on a creative going to that company, whereas a wordmark set
+ * a few points smaller reads as a deliberate lockup. Below 55% it stops holding
+ * its place in the lockup; a name that long is better served by a logo.
+ */
+function fitCompanyName(name: string, room: number, base: number): number {
+  const length = Math.max(1, name.length);
+  const predicted = length * base * AVERAGE_CAP_ADVANCE;
+  if (predicted <= room) return base;
+  return Math.max(room / (length * AVERAGE_CAP_ADVANCE), base * 0.55);
+}
+
+/**
  * The client's logo, or a generated wordmark lockup when none is on file.
  *
  * The boxed "LOGO HERE" placeholder in 7 of the 12 references is a stock-template
  * artifact, not a design element — reproducing it would ship a placeholder to a
  * paying client. The fallback is the *other* form the references use: a monoline
  * skyline mark beside the company name.
+ *
+ * With a logo on file the name is set beneath it, because a logo is not reliably
+ * a wordmark: an icon-only mark used to replace the name outright and left the
+ * creative with the company named nowhere on it — not here, not in the contact
+ * bar. `identity.logoIncludesName` is how a client whose logo genuinely does
+ * spell out the name suppresses the second reading.
  */
 export function LogoLock({
   metrics,
@@ -182,6 +203,36 @@ export function LogoLock({
   availableWidth,
 }: LogoLockProps) {
   const tagline = identity.brandTagline?.trim();
+
+  /*
+   * Sits between the logo and the tagline, at roughly three quarters the size the
+   * standalone wordmark would use: it is identifying the mark above it rather than
+   * being the mark, and set at full wordmark size it competes with the logo it is
+   * supposed to caption.
+   */
+  const nameSize = fitCompanyName(
+    identity.companyName,
+    availableWidth,
+    metrics.logo.wordmark * 0.72,
+  );
+
+  const nameNode = identity.logoIncludesName ? null : (
+    <div
+      style={{
+        marginTop: metrics.s(12),
+        fontFamily: theme.headingFont.family,
+        fontSize: nameSize,
+        fontWeight: heaviestWeight(theme.headingFont),
+        letterSpacing: nameSize * 0.02,
+        textTransform: 'uppercase',
+        color: ground.text,
+        textAlign: TEXT_ALIGN[align],
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {identity.companyName}
+    </div>
+  );
 
   const taglineNode = tagline ? (
     <div
@@ -257,27 +308,19 @@ export function LogoLock({
             style={{ width: box.width, height: box.height, objectFit: 'contain' }}
           />
         </div>
+        {nameNode}
         {taglineNode}
       </div>
     );
   }
 
-  // Sized to fit rather than truncated. An ellipsised company name ("EVOKZ PR…")
-  // is a visible defect on a creative going to that company, whereas a wordmark set
-  // a few points smaller reads as a deliberate lockup.
   const iconSize = metrics.logo.wordmark * 1.5;
   const textRoom = availableWidth - iconSize - metrics.s(14);
-  const nameLength = Math.max(1, identity.companyName.length);
-  const predicted = nameLength * metrics.logo.wordmark * AVERAGE_CAP_ADVANCE;
-  const wordmarkSize =
-    predicted <= textRoom
-      ? metrics.logo.wordmark
-      : Math.max(
-          textRoom / (nameLength * AVERAGE_CAP_ADVANCE),
-          // Below 55% the wordmark stops holding the top of the poster; a name that
-          // long is better handled by uploading a logo.
-          metrics.logo.wordmark * 0.55,
-        );
+  const wordmarkSize = fitCompanyName(
+    identity.companyName,
+    textRoom,
+    metrics.logo.wordmark,
+  );
 
   return (
     <div

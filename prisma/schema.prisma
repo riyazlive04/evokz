@@ -183,6 +183,18 @@ model Client {
   logoBackgroundRemoved   Boolean @default(false)
   // Letterspaced caps line under the logo, e.g. "BUILDING TRUST SINCE 1998".
   brandTagline            String?
+  /// Whether the uploaded logo already spells out the company name.
+  ///
+  /// The poster prints the name under the logo so a client with an icon-only
+  /// mark is still identifiable — before this, an uploaded logo replaced the
+  /// name entirely and a symbol-only logo left the name nowhere on the creative.
+  /// A wordmark logo does carry it, and there the name would read twice, so this
+  /// suppresses it.
+  ///
+  /// Defaults to false, i.e. print the name: a missing company name is invisible
+  /// until someone notices it is gone, whereas a doubled one is obvious on the
+  /// brand page's own preview and takes one tick to fix.
+  logoIncludesName        Boolean @default(false)
   // Contact bar, right cell. Stored as typed, e.g. "www.example.com".
   websiteUrl              String?
   // Contact bar, left cell. Display formatting is preserved verbatim, so

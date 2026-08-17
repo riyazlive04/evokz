@@ -1,0 +1,12 @@
+-- The poster's logo lockup replaced the company name with the uploaded logo,
+-- on the assumption that a logo is a wordmark. An icon-only mark left the name
+-- nowhere on the creative — not in the lockup, not in the contact bar.
+--
+-- The renderer now prints the name under the logo unless this says the logo
+-- already carries it.
+--
+-- Defaulting to false means every existing client starts printing their name.
+-- That is the deliberate direction: a missing name is invisible until somebody
+-- notices the absence, while a doubled one is obvious on the brand page preview
+-- and is one tick to correct.
+ALTER TABLE "Client" ADD COLUMN     "logoIncludesName" BOOLEAN NOT NULL DEFAULT false;

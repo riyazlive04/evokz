@@ -680,6 +680,13 @@ export interface PosterIdentity {
   companyName: string;
   /** Logo bytes as a data URI, or null to fall back to a wordmark lockup. */
   logoDataUri: string | null;
+  /**
+   * The logo is a wordmark that already spells out `companyName`, so the lockup
+   * must not print it a second time underneath.
+   *
+   * Only consulted when there is a logo — the no-logo lockup is the company name.
+   */
+  logoIncludesName: boolean;
   brandTagline: string | null;
   /** Display-formatted, e.g. "+91 98765 43210". */
   phone: string;

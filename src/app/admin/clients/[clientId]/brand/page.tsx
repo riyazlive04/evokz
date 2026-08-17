@@ -54,6 +54,7 @@ export default async function ClientBrandCanvasPage({
       logoDriveFileId: true,
       logoOriginalUrl: true,
       logoBackgroundRemoved: true,
+      logoIncludesName: true,
       brandTagline: true,
       websiteUrl: true,
       displayPhone: true,
@@ -111,6 +112,7 @@ export default async function ClientBrandCanvasPage({
         logoDriveFileId={client.logoDriveFileId}
         logoOriginalUrl={client.logoOriginalUrl}
         logoBackgroundRemoved={client.logoBackgroundRemoved}
+        logoIncludesName={client.logoIncludesName}
         brandTagline={client.brandTagline}
         websiteUrl={client.websiteUrl}
         displayPhone={client.displayPhone}

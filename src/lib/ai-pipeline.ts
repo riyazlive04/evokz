@@ -264,6 +264,7 @@ export async function runCreativePipeline(
         identity: {
           companyName: client.companyName,
           logoUrl: client.logoUrl,
+          logoIncludesName: client.logoIncludesName,
           brandTagline: client.brandTagline,
           websiteUrl: client.websiteUrl,
           displayPhone: client.displayPhone,

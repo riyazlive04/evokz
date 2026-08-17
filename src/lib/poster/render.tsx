@@ -61,6 +61,8 @@ export interface RenderPosterInput {
   identity: {
     companyName: string;
     logoUrl: string | null;
+    /** Suppresses the printed name for a wordmark logo. Defaults to false. */
+    logoIncludesName?: boolean;
     brandTagline: string | null;
     websiteUrl: string | null;
     displayPhone: string | null;
@@ -109,6 +111,7 @@ export async function renderPoster(
   const identity: PosterIdentity = {
     companyName: input.identity.companyName,
     logoDataUri: logo?.dataUri ?? null,
+    logoIncludesName: input.identity.logoIncludesName === true,
     brandTagline: normalizeTagline(input.identity.brandTagline),
     phone: formatPhone(input.identity.displayPhone, input.identity.whatsappNumber),
     website: normalizeWebsite(input.identity.websiteUrl),

@@ -70,6 +70,8 @@ export interface PosterIdentityPanelProps {
   /** The pre-removal file. Non-null exactly when `logoBackgroundRemoved` is true. */
   logoOriginalUrl: string | null;
   logoBackgroundRemoved: boolean;
+  /** True when the logo is a wordmark, so the poster must not print the name. */
+  logoIncludesName: boolean;
   brandTagline: string | null;
   websiteUrl: string | null;
   displayPhone: string | null;
@@ -85,6 +87,7 @@ export function PosterIdentityPanel({
   logoDriveFileId,
   logoOriginalUrl,
   logoBackgroundRemoved,
+  logoIncludesName,
   brandTagline,
   websiteUrl,
   displayPhone,
@@ -112,6 +115,7 @@ export function PosterIdentityPanel({
     brandTagline: brandTagline ?? '',
     websiteUrl: websiteUrl ?? '',
     displayPhone: displayPhone ?? '',
+    logoIncludesName,
   });
 
   // Re-syncs when the server component re-renders with fresh values after a
@@ -121,8 +125,9 @@ export function PosterIdentityPanel({
       brandTagline: brandTagline ?? '',
       websiteUrl: websiteUrl ?? '',
       displayPhone: displayPhone ?? '',
+      logoIncludesName,
     });
-  }, [brandTagline, websiteUrl, displayPhone]);
+  }, [brandTagline, websiteUrl, displayPhone, logoIncludesName]);
 
   const flashSaved = React.useCallback(() => {
     setSaved(true);
@@ -188,6 +193,7 @@ export function PosterIdentityPanel({
       brandTagline: form.brandTagline,
       websiteUrl: form.websiteUrl,
       displayPhone: form.displayPhone,
+      logoIncludesName: form.logoIncludesName,
     });
     if (result.ok) flashSaved();
   }
@@ -444,6 +450,35 @@ export function PosterIdentityPanel({
             disabled={busy}
             onChange={(value) => setForm((prev) => ({ ...prev, websiteUrl: value }))}
           />
+
+          {/*
+            Only offered once a logo exists. With no logo the lockup *is* the
+            company name, so the choice has nothing to act on and showing it
+            would imply the name could be suppressed altogether.
+          */}
+          {logoUrl && (
+            <div className="sm:col-span-3">
+              <label className="flex items-start gap-2.5 text-xs text-foreground">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-3.5 w-3.5 accent-brand-to"
+                  checked={form.logoIncludesName}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, logoIncludesName: event.target.checked }))
+                  }
+                />
+                <span>
+                  My logo already spells out the company name
+                  <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                    Ticked, the poster shows the logo alone. Unticked, it prints{' '}
+                    <span className="font-mono">{companyName}</span> under the logo — which
+                    an icon-only mark needs, or the client is named nowhere on the creative.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
 
           <div className="sm:col-span-3">
             <Button type="submit" size="sm" disabled={busy}>
