@@ -10,6 +10,15 @@ import { formatDisplayDate, formatDisplayDateTime } from '@/lib/time';
  * columns, so the select and its row mapper live together.
  */
 
+/**
+ * Width requested for the click-through view.
+ *
+ * Above every output preset in the catalogue, so the content host returns the
+ * stored file untouched rather than a downscale. It does not upscale, so asking
+ * for more than a poster has costs nothing.
+ */
+const FULL_SIZE_WIDTH = 2048;
+
 export const queueSelect = {
   id: true,
   dayNumber: true,
@@ -85,6 +94,15 @@ export function toQueueEntry(
     // Prefer the cheap Drive thumbnail endpoint over the full-size download.
     thumbnailUrl: entry.gDriveFileId
       ? buildThumbnailUrl(entry.gDriveFileId, thumbnailWidth)
+      : entry.gDriveViewUrl,
+    /*
+     * The same content host, asked for more pixels than any poster has. It
+     * serves the stored file rather than upscaling, so this is the creative at
+     * its native size — 1080 wide today — and stays correct if a client is moved
+     * to a larger output preset.
+     */
+    fullUrl: entry.gDriveFileId
+      ? buildThumbnailUrl(entry.gDriveFileId, FULL_SIZE_WIDTH)
       : entry.gDriveViewUrl,
     viewUrl: entry.gDriveViewUrl,
     errorMessage: entry.errorMessage,

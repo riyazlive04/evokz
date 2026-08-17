@@ -1,5 +1,13 @@
 import { DeliveryStatus } from '@prisma/client';
-import { AlertTriangle, Clock, ExternalLink, EyeOff, ImageOff, Send } from 'lucide-react';
+import {
+  AlertTriangle,
+  Clock,
+  ExternalLink,
+  EyeOff,
+  ImageOff,
+  Maximize2,
+  Send,
+} from 'lucide-react';
 
 import { QueueCardActions } from '@/components/admin/QueueCardActions';
 import { StatusBadge } from '@/components/admin/StatusBadge';
@@ -23,6 +31,14 @@ export interface QueueEntry {
   canWithdrawApproval: boolean;
   /** Lightweight Drive thumbnail; falls back to the raw view URL. */
   thumbnailUrl: string | null;
+  /**
+   * The same asset at its native resolution, for looking at properly.
+   *
+   * A separate URL rather than reusing `viewUrl`: that one is the direct-download
+   * form, so a browser saves the file instead of showing it — which is the wrong
+   * gesture for "let me see this poster before I approve it".
+   */
+  fullUrl: string | null;
   viewUrl: string | null;
   errorMessage: string | null;
 }
@@ -90,23 +106,50 @@ function QueueCard({
         }`}
       >
         {entry.thumbnailUrl ? (
-          /* Drive serves these; a plain img avoids per-host remotePatterns
-             config and keeps the optimizer out of a high-density grid. */
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={entry.thumbnailUrl}
-            alt={`Day ${entry.dayNumber} creative for ${entry.companyName}`}
-            loading="lazy"
-            decoding="async"
-            // Google's content host can reject a request that carries a
-            // localhost referrer; it needs none to serve a link-readable file.
-            referrerPolicy="no-referrer"
-            className={
-              review
-                ? 'h-full w-full object-contain'
-                : 'h-full w-full object-cover transition-transform duration-500 hover:scale-105'
-            }
-          />
+          /*
+           * The card's thumbnail is capped well below the poster's real size, so
+           * a detail an operator is signing off on — a phone number, a headline
+           * that ran long — can be too small to read here. Clicking opens the
+           * asset at full resolution, which is the gesture the grid otherwise
+           * invited and did not answer.
+           *
+           * A new tab rather than an in-page lightbox: the browser's own image
+           * viewer already zooms and pans, and it leaves the approvals grid
+           * exactly where it was.
+           */
+          <a
+            href={entry.fullUrl ?? entry.thumbnailUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="group/zoom block h-full w-full cursor-zoom-in"
+            aria-label={`View day ${entry.dayNumber} poster for ${entry.companyName} at full size`}
+          >
+            {/* Drive serves these; a plain img avoids per-host remotePatterns
+                config and keeps the optimizer out of a high-density grid. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={entry.thumbnailUrl}
+              alt={`Day ${entry.dayNumber} creative for ${entry.companyName}`}
+              loading="lazy"
+              decoding="async"
+              // Google's content host can reject a request that carries a
+              // localhost referrer; it needs none to serve a link-readable file.
+              referrerPolicy="no-referrer"
+              className={
+                review
+                  ? 'h-full w-full object-contain'
+                  : 'h-full w-full object-cover transition-transform duration-500 group-hover/zoom:scale-105'
+              }
+            />
+            {/* Hover-only, because the affordance is otherwise invisible: a
+                poster looks no different from a static image until you try. */}
+            <span className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition-opacity duration-200 group-hover/zoom:opacity-100">
+              <span className="flex items-center gap-1.5 rounded-full bg-background/85 px-2.5 py-1 text-[10px] font-medium text-foreground shadow-sm">
+                <Maximize2 className="h-3 w-3" />
+                Full size
+              </span>
+            </span>
+          </a>
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground/50">
             <ImageOff className="h-7 w-7" />
