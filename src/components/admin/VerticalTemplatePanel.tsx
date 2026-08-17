@@ -6,7 +6,10 @@ import { ExternalLink, ImagePlus, Loader2, Trash2, Upload } from 'lucide-react';
 
 import {
   deleteVerticalTemplate,
+  extractTemplateLayout,
   setTemplateArchetype,
+  setTemplateLayoutApproval,
+  setTemplateLayoutSpec,
   uploadVerticalTemplate,
 } from '@/app/admin/dashboard/actions';
 import { Button } from '@/components/ui/button';
@@ -52,6 +55,15 @@ export interface VerticalTemplateRow {
   height: number | null;
   /** The layout this reference represents, or null while unmapped. */
   archetype: string | null;
+  /**
+   * The template's own extracted geometry, pretty-printed, or null when
+   * extraction has not run or produced nothing this build can read.
+   */
+  layoutSpec: string | null;
+  /** The model's band-by-band reading, or why there isn't one. */
+  layoutReading: string | null;
+  /** True once an operator has confirmed the spec against the template. */
+  layoutApproved: boolean;
 }
 
 
@@ -307,6 +319,8 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
         )}
       </div>
 
+      <LayoutReview template={template} />
+
       {confirmDelete && !remove.pending && (
         <p className="px-3 pb-2 text-[10px] text-warning-ink">Click again to delete.</p>
       )}
@@ -317,5 +331,176 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
         </p>
       )}
     </article>
+  );
+}
+
+/**
+ * The review gate for a template's extracted layout.
+ *
+ * This is the step that makes template-driven generation safe to ship. The
+ * extractor is a vision model reading a JPEG: it is right most of the time and
+ * confidently wrong the rest, and its confident mistakes are indistinguishable
+ * from its correct answers on the database side. So a spec is inert until
+ * somebody has seen it *rendered as a poster* — not as JSON, and not as the
+ * model's own summary of what it saw, both of which read as plausible for a
+ * layout that is subtly wrong.
+ *
+ * Hence the ordering here: the render link comes first and the JSON is folded
+ * away. Approving without opening the render is possible, but the layout of this
+ * panel should make it feel like skipping a step, because it is.
+ */
+function LayoutReview({ template }: { template: VerticalTemplateRow }) {
+  const reread = useAction(extractTemplateLayout);
+  const approve = useAction(setTemplateLayoutApproval);
+  const save = useAction(setTemplateLayoutSpec);
+
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(template.layoutSpec ?? '');
+
+  // The server revalidation replaces the row; without this the textarea would
+  // keep showing the pre-save text after a successful re-extract.
+  React.useEffect(() => {
+    setDraft(template.layoutSpec ?? '');
+  }, [template.layoutSpec]);
+
+  const busy = reread.pending || approve.pending || save.pending;
+  const error = reread.error ?? approve.error ?? save.error;
+
+  return (
+    <div className="space-y-1.5 border-t border-border px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          Template layout
+        </span>
+        {busy && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+      </div>
+
+      {template.layoutSpec ? (
+        <>
+          <p
+            className={`text-[10px] ${
+              template.layoutApproved ? 'text-success-ink' : 'text-warning-ink'
+            }`}
+          >
+            {template.layoutApproved
+              ? 'Approved — this template’s own layout is in the rotation.'
+              : 'Draft — not used for generation until you approve it.'}
+          </p>
+
+          <a
+            href={`/admin/poster-preview?templateId=${encodeURIComponent(template.id)}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="inline-flex items-center gap-1 text-[10px] font-medium text-foreground underline-offset-2 hover:underline"
+          >
+            <ExternalLink className="h-3 w-3" />
+            See this template rendered
+          </a>
+
+          <div className="flex flex-wrap gap-1.5 pt-0.5">
+            <Button
+              size="sm"
+              variant={template.layoutApproved ? 'ghost' : 'default'}
+              className="h-7 px-2 text-[10px]"
+              disabled={busy}
+              onClick={() =>
+                void approve.run(template.id, !template.layoutApproved)
+              }
+            >
+              {template.layoutApproved ? 'Withdraw' : 'Approve layout'}
+            </Button>
+
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[10px]"
+              disabled={busy}
+              onClick={() => void reread.run(template.id)}
+            >
+              Re-read
+            </Button>
+
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[10px]"
+              disabled={busy}
+              onClick={() => setEditing((open) => !open)}
+            >
+              {editing ? 'Close' : 'Edit'}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-[10px] text-muted-foreground/70">
+            No layout read from this template yet. Until there is one, it falls back
+            to the mapped layout above.
+          </p>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-[10px]"
+            disabled={busy}
+            onClick={() => void reread.run(template.id)}
+          >
+            Read layout
+          </Button>
+        </>
+      )}
+
+      {template.layoutReading && (
+        <p className="text-[10px] leading-snug text-muted-foreground/80">
+          {template.layoutReading}
+        </p>
+      )}
+
+      {editing && (
+        <div className="space-y-1.5 pt-1">
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            spellCheck={false}
+            rows={14}
+            aria-label={`Layout spec for ${template.label}`}
+            className="w-full rounded border border-border bg-muted/40 p-2 font-mono text-[10px] leading-tight text-foreground"
+          />
+          <div className="flex gap-1.5">
+            <Button
+              size="sm"
+              className="h-7 px-2 text-[10px]"
+              disabled={busy || draft === template.layoutSpec}
+              onClick={async () => {
+                const result = await save.run(template.id, draft);
+                if (result.ok) setEditing(false);
+              }}
+            >
+              Save layout
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-[10px]"
+              disabled={busy}
+              onClick={() => {
+                setDraft(template.layoutSpec ?? '');
+                setEditing(false);
+              }}
+            >
+              Discard
+            </Button>
+          </div>
+          <p className="text-[10px] text-muted-foreground/70">
+            Saving clears the approval — the layout has to be reviewed again.
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <p role="alert" className="text-[10px] text-danger-ink">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }

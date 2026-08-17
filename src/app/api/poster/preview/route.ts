@@ -8,10 +8,14 @@ import {
 import { resolvePosterArchetype } from '@/lib/ai-pipeline';
 import { loadCategoryArchetypes } from '@/lib/poster/archetype-library';
 import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
-import { resolvePhotoRequest } from '@/lib/poster/photo-request';
+import {
+  resolvePhotoRequest,
+  resolveSpecPhotoRequests,
+} from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
 import { prisma } from '@/lib/prisma';
 import { parseBrandGuideline, EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
+import { parseLayoutSpec } from '@/lib/types/layout-spec';
 import {
   parsePosterCopy,
   posterArchetypeSchema,
@@ -32,6 +36,11 @@ import {
  *   archetype  any id in `POSTER_ARCHETYPES` — the eight bases or their
  *              variants, not only the subset the day-number rotation uses
  *              (default `scrim`)
+ *   templateId a `CategoryTemplate` whose extracted layout spec to render.
+ *              This is the review surface: it renders a spec that has NOT been
+ *              approved yet, which is the whole point — an operator has to see
+ *              the layout as a poster before `layoutApprovedAt` is set and it
+ *              starts reaching clients. Wins over `archetype`.
  *   preset     an `IMAGE_SIZE_PRESETS` id (default WhatsApp Status)
  *   clientId   render with a real client's brand, logo and contact details
  *   day        calendar day whose stored copy to use, with `clientId`
@@ -54,6 +63,7 @@ export async function GET(request: NextRequest) {
 
   const tone = params.get('tone') === 'daylight' ? 'daylight' : 'dusk';
   const clientId = params.get('clientId');
+  const templateId = params.get('templateId');
   const day = Number.parseInt(params.get('day') ?? '', 10);
 
   try {
@@ -63,6 +73,26 @@ export async function GET(request: NextRequest) {
 
     if (clientId && !context) {
       return NextResponse.json({ error: 'Client not found' }, { status: 404 });
+    }
+
+    /*
+     * Deliberately reads the spec whether or not it has been approved, and
+     * deliberately ignores `layoutApprovedAt`. Approval is a statement that an
+     * operator has seen the layout rendered, and they cannot see it rendered
+     * until something renders it — gating this endpoint on the flag it exists to
+     * inform would make the review step impossible to perform.
+     */
+    const layoutSpec = templateId ? await loadTemplateLayout(templateId) : null;
+
+    if (templateId && !layoutSpec) {
+      return NextResponse.json(
+        {
+          error:
+            'That template has no readable layout spec. Run extraction on it first, ' +
+            'or check the console for the problems reported against the draft.',
+        },
+        { status: 404 },
+      );
     }
 
     /*
@@ -95,17 +125,27 @@ export async function GET(request: NextRequest) {
     // heap and kill the process mid-request. Only the aspect ratio matters for
     // judging a layout, so the long edge is bounded and the production path — which
     // uses the real photo at full size — is untouched.
-    const photoRequest = resolvePhotoRequest(archetype, preset);
-    const placeholder = capLongEdge(photoRequest.width, photoRequest.height, 1280);
-    const photo = createPlaceholderPhoto(placeholder.width, placeholder.height, tone);
+    const requests = layoutSpec
+      ? resolveSpecPhotoRequests(layoutSpec, preset)
+      : [resolvePhotoRequest(archetype, preset)];
+
+    const photos = requests.map((request, index) => {
+      const placeholder = capLongEdge(request.width, request.height, 1280);
+      // Alternating tone across a multi-photo spec: two identical procedural
+      // frames make it impossible to tell which cell received which request,
+      // which is exactly what this preview exists to show.
+      const frameTone = index % 2 === 0 ? tone : tone === 'dusk' ? 'daylight' : 'dusk';
+      return createPlaceholderPhoto(placeholder.width, placeholder.height, frameTone);
+    });
 
     const poster = await renderPoster({
       archetype,
+      layoutSpec,
       dayNumber: Number.isFinite(day) ? day : 1,
       copy: context?.copy ?? SAMPLE_COPY,
       guideline: context?.guideline ?? EMPTY_BRAND_GUIDELINE,
       identity: context?.identity ?? SAMPLE_IDENTITY,
-      photo,
+      photos,
       width: preset.width,
       height: preset.height,
     });
@@ -155,6 +195,14 @@ function capLongEdge(
     width: Math.max(1, Math.round(width * ratio)),
     height: Math.max(1, Math.round(height * ratio)),
   };
+}
+
+async function loadTemplateLayout(templateId: string) {
+  const template = await prisma.categoryTemplate.findUnique({
+    where: { id: templateId },
+    select: { layoutSpec: true },
+  });
+  return parseLayoutSpec(template?.layoutSpec ?? null);
 }
 
 async function loadClientContext(clientId: string, day: number | null) {

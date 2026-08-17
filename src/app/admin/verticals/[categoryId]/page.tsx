@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { prisma } from '@/lib/prisma';
+import { parseLayoutSpec } from '@/lib/types/layout-spec';
 
 /**
  * Reference-template library for one vertical.
@@ -68,6 +69,9 @@ export default async function VerticalDetailPage({
           width: true,
           height: true,
           archetype: true,
+          layoutSpec: true,
+          layoutReading: true,
+          layoutApprovedAt: true,
         },
       },
     },
@@ -87,6 +91,16 @@ export default async function VerticalDetailPage({
     width: template.width,
     height: template.height,
     archetype: template.archetype,
+    // Serialised here rather than in the client component: the column is
+    // free-form Json, and the editor needs the exact text an operator will edit
+    // and post back. `parseLayoutSpec` normalises on the way through, so what is
+    // shown is what the renderer would actually use — not the raw draft.
+    layoutSpec: (() => {
+      const spec = parseLayoutSpec(template.layoutSpec);
+      return spec ? JSON.stringify(spec, null, 2) : null;
+    })(),
+    layoutReading: template.layoutReading,
+    layoutApproved: template.layoutApprovedAt !== null,
   }));
 
   const totalTemplates = category._count.templates;
@@ -97,9 +111,14 @@ export default async function VerticalDetailPage({
 
   // Counted in the database, not over `templates` — that array is now one page,
   // and a per-page figure would report "3 of 24 mapped" on a library of ninety.
-  const mapped = await prisma.categoryTemplate.count({
-    where: { categoryId: category.id, archetype: { not: null } },
-  });
+  const [mapped, approvedLayouts] = await Promise.all([
+    prisma.categoryTemplate.count({
+      where: { categoryId: category.id, archetype: { not: null } },
+    }),
+    prisma.categoryTemplate.count({
+      where: { categoryId: category.id, layoutApprovedAt: { not: null } },
+    }),
+  ]);
 
   return (
     <>
@@ -121,9 +140,11 @@ export default async function VerticalDetailPage({
         eyebrow="Configuration"
         title={category.name}
         description={
-          mapped > 0
-            ? `Reference posters for this vertical. ${mapped} of ${totalTemplates} are mapped to a layout, and those layouts are what this vertical's clients receive — in proportion, so mapping five references to one layout makes it five times as likely as a layout mapped once.`
-            : 'Reference posters for this vertical. Map each one to the layout it represents and generated creatives will follow them; unmapped templates are stored but never used.'
+          approvedLayouts > 0
+            ? `Reference posters for this vertical. ${approvedLayouts} of ${totalTemplates} have an approved layout, and this vertical's clients receive those layouts — in proportion, so two approved templates split the campaign between them. Templates without one fall back to the mapped archetype (${mapped} of ${totalTemplates}).`
+            : mapped > 0
+              ? `Reference posters for this vertical. None have an approved layout yet, so generation is still using the mapped archetypes (${mapped} of ${totalTemplates}) — the nearest built-in composition rather than the template's own. Approve a template's layout to have creatives follow it exactly.`
+              : "Reference posters for this vertical. Each upload's layout is read automatically; approve it and generated creatives follow that template's own geometry. Templates with neither an approved layout nor a mapped archetype are stored but never used."
         }
       />
 

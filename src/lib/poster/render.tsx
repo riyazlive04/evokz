@@ -7,6 +7,7 @@ import satori from 'satori';
 import { intEnv, optionalEnv } from '@/lib/env';
 import { renderArchetype } from '@/lib/poster/archetypes';
 import { loadFonts } from '@/lib/poster/fonts';
+import { renderLayoutSpec } from '@/lib/poster/layout-render';
 import {
   readImageDimensions,
   readSvgDimensions,
@@ -16,6 +17,7 @@ import { measureInkLuminance } from '@/lib/poster/logo-key';
 import { droppedSlots, resolveMetrics } from '@/lib/poster/metrics';
 import { requiredFaces, resolvePosterTheme } from '@/lib/poster/theme';
 import type { BrandGuideline } from '@/lib/types/brand';
+import type { PosterLayoutSpec } from '@/lib/types/layout-spec';
 import {
   archetypeForDay,
   posterArchetypeSchema,
@@ -55,6 +57,16 @@ import {
 export interface RenderPosterInput {
   /** Explicit choice, or null to derive deterministically from `dayNumber`. */
   archetype: string | null;
+  /**
+   * A template's own geometry, when the vertical has one mapped.
+   *
+   * Takes precedence over `archetype` — a spec is the layout an operator
+   * uploaded and approved, while an archetype is the nearest of fifteen
+   * built-in compositions somebody thought it resembled. `archetype` stays as
+   * the fallback for verticals with no specs yet, and as the landing place when
+   * a stored spec no longer parses.
+   */
+  layoutSpec: PosterLayoutSpec | null;
   dayNumber: number;
   copy: PosterCopy;
   guideline: BrandGuideline;
@@ -69,8 +81,15 @@ export interface RenderPosterInput {
     /** E.164 digits without `+`. Used when `displayPhone` is unset. */
     whatsappNumber: string;
   };
-  /** Background photo bytes from the image stage. */
-  photo: Buffer;
+  /**
+   * Background photo bytes from the image stage, in slot order.
+   *
+   * An array because a layout spec may declare two photo cells — the reference
+   * templates routinely pair a hero shot with a detail shot — while every
+   * archetype uses exactly one and reads `photos[0]`. A spec given fewer frames
+   * than it has slots repeats the last rather than leaving a hole.
+   */
+  photos: Buffer[];
   /** Output canvas, from the client's `imageSizePreset`. */
   width: number;
   height: number;
@@ -79,6 +98,14 @@ export interface RenderPosterInput {
 export interface RenderedPoster {
   body: Buffer;
   mimeType: 'image/png';
+  /**
+   * Which composition drew it. `archetype` is still reported on a spec render —
+   * it is what the row would have used — so a stored value stays meaningful if
+   * the spec is later unmapped.
+   */
+  layout: 'spec' | 'archetype';
+  /** The spec's operator-facing name, when one was used. */
+  layoutName: string | null;
   archetype: PosterArchetype;
   /** Slots the canvas mode could not carry. Empty for portrait presets. */
   dropped: string[];
@@ -92,19 +119,27 @@ export async function renderPoster(
   const metrics = resolveMetrics(input.width, input.height);
   assertRenderableCanvas(metrics, input.width, input.height);
 
-  const photoDimensions = readImageDimensions(input.photo);
-  if (!photoDimensions) {
-    throw new Error(
-      'Background photo is not a recognisable PNG, JPEG, WebP or GIF — the poster ' +
-        'layer cannot lay out an image of unknown size.',
-    );
+  if (input.photos.length === 0) {
+    throw new Error('The poster layer was given no background photo to compose.');
   }
 
-  const photo: PosterPhoto = {
-    dataUri: toDataUri(input.photo, photoDimensions.mimeType),
-    width: photoDimensions.width,
-    height: photoDimensions.height,
-  };
+  const photos: PosterPhoto[] = input.photos.map((bytes, index) => {
+    const dimensions = readImageDimensions(bytes);
+    if (!dimensions) {
+      throw new Error(
+        `Background photo ${index + 1} is not a recognisable PNG, JPEG, WebP or GIF — ` +
+          'the poster layer cannot lay out an image of unknown size.',
+      );
+    }
+    return {
+      dataUri: toDataUri(bytes, dimensions.mimeType),
+      width: dimensions.width,
+      height: dimensions.height,
+    };
+  });
+
+  // Non-null: the length check above guarantees at least one entry.
+  const photo = photos[0]!;
 
   const logo = await loadLogo(input.identity.logoUrl);
 
@@ -130,24 +165,39 @@ export async function renderPoster(
   const fonts = await loadFonts(requiredFaces(theme));
 
   // Stage 1 — lay out the tree and emit SVG.
-  const svg = await satori(
-    renderArchetype({
-      spec,
-      metrics,
-      logoDimensions: logo?.dimensions ?? null,
-      logoInkLuminance: logo?.inkLuminance ?? null,
-    }),
-    {
-      width: input.width,
-      height: input.height,
-      fonts: fonts.map((font) => ({
-        name: font.name,
-        data: font.data,
-        weight: font.weight,
-        style: font.style,
-      })),
-    },
-  );
+  //
+  // A layout spec wins where the vertical has one: it is the geometry an
+  // operator uploaded and signed off, against an archetype's "nearest of
+  // fifteen". The archetype path is untouched and still serves every vertical
+  // with no specs mapped yet.
+  const tree = input.layoutSpec
+    ? renderLayoutSpec({
+        spec: input.layoutSpec,
+        copy: input.copy,
+        theme,
+        identity,
+        photos,
+        metrics,
+        logoDimensions: logo?.dimensions ?? null,
+        logoInkLuminance: logo?.inkLuminance ?? null,
+      })
+    : renderArchetype({
+        spec,
+        metrics,
+        logoDimensions: logo?.dimensions ?? null,
+        logoInkLuminance: logo?.inkLuminance ?? null,
+      });
+
+  const svg = await satori(tree, {
+    width: input.width,
+    height: input.height,
+    fonts: fonts.map((font) => ({
+      name: font.name,
+      data: font.data,
+      weight: font.weight,
+      style: font.style,
+    })),
+  });
 
   // Diagnostic escape hatch. resvg is a native addon: impossible geometry makes
   // it panic in Rust and abort the entire process, so there is no post-mortem to
@@ -178,7 +228,11 @@ export async function renderPoster(
     throw new Error('The poster renderer produced an empty image');
   }
 
-  const dropped = droppedSlots(metrics.mode);
+  // Only the archetypes switch composition by canvas mode — `WideLayout` and
+  // `LetterboxLayout` genuinely drop slots to fit. A spec renders its own grid
+  // at whatever aspect it is given, so nothing is dropped and reporting the
+  // archetype answer here would be a lie an operator might act on.
+  const dropped = input.layoutSpec ? [] : droppedSlots(metrics.mode);
   if (dropped.length > 0) {
     console.warn(
       `[ace:poster] ${input.width}×${input.height} is a "${metrics.mode}" canvas — ` +
@@ -186,7 +240,14 @@ export async function renderPoster(
     );
   }
 
-  return { body, mimeType: 'image/png', archetype, dropped };
+  return {
+    body,
+    mimeType: 'image/png',
+    layout: input.layoutSpec ? 'spec' : 'archetype',
+    layoutName: input.layoutSpec?.name ?? null,
+    archetype,
+    dropped,
+  };
 }
 
 // ---------------------------------------------------------------------------

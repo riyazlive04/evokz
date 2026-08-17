@@ -254,3 +254,77 @@ Prompt it for:
 - **Never** request text, letters, numbers, logos, signage, or watermarks in the photo —
   that rule was correct all along. It is the *poster layer* that carries text, composited
   deterministically, not the diffusion render.
+
+---
+
+## 8. Layout specs — templates as geometry
+
+§5's eight archetypes are hand-written compositions: adding one means adding a
+component and a catalogue entry. That bounds the system at whatever somebody
+sat down and built, which is the wrong shape for a product whose operators
+upload their own reference posters per vertical.
+
+A **layout spec** (`src/lib/types/layout-spec.ts`) is the same idea as an
+archetype expressed as data, so the hundredth template costs what the first one
+did. One interpreter, `src/lib/poster/layout-render.tsx`, draws all of them, and
+it hands every actual mark to the same §2 slot components the archetypes use — a
+headline from a spec is measurably the same headline as one from `scrim`. A spec
+chooses *where* the eight slots go and *what ground* they sit on. It cannot
+invent a ninth slot or restyle one.
+
+### Shape
+
+A stack of rows; each row split into one or more cells; each cell holding an
+ordered run of slots. Deliberately a flexbox tree and not a list of rectangles,
+because absolute boxes break on the two things that always happen: copy length
+varies between clients, and `IMAGE_SIZE_PRESETS` spans 4:5 to 9:20.
+
+Rows claim height three ways — `hug` (its content), `fixed` (a share of the
+canvas, treated as a floor rather than a ceiling), and `flex` (whatever is left).
+
+**At least one row must be `flex`.** This is the invariant that makes overflow
+structurally impossible rather than merely unlikely. Type cannot reflow to fit a
+canvas, so if every row insisted on its content height, a headline one line
+longer than the reference would push the contact bar past the bottom edge, where
+the canvas clip would swallow it — a poster that still renders, still looks
+deliberate, and carries no phone number. That defect shipped in the hand-written
+`bands` archetype and is the reason this rule is enforced rather than advised.
+
+A photo cell is the natural flex row: a photograph losing a slice of its frame is
+the only way a composition can give that is not a defect.
+
+### Where specs come from
+
+Extracted from the uploaded image by a vision stage
+(`src/lib/ai/layout-extractor.ts`), once per upload, never per poster — so the
+render path stays a deterministic function of stored data.
+
+**The extraction is a draft.** It is right most of the time and confidently
+wrong the rest, and its confident mistakes are indistinguishable from its correct
+answers on the database side. `CategoryTemplate.layoutApprovedAt` is null until
+an operator has seen the spec *rendered as a poster*, and only approved specs
+enter a vertical's rotation. A template without one falls back to its mapped
+archetype, which is the behaviour that existed before specs.
+
+Two failure modes are worth knowing when reading a bad draft:
+
+- **Empty ground read as a photo.** A model shown a headline with plain
+  background beside it will fill the gap with an invented photo cell. The
+  `spacer` slot exists for this, and the extractor prompt guards it explicitly.
+- **Anchoring on the prompt's worked examples.** Two examples of deliberately
+  different shape are given for this reason; one produced parroted proportions.
+
+### Constraints
+
+- Exactly one `headline`; at most one each of `logo`, `body`, `features`,
+  `contact`.
+- At most two `photo` slots — the ceiling is economic, not technical. Each one is
+  a separate diffusion render billed per poster per day.
+- A cell holds either a photo or text, never both. Cells stack their slots; they
+  do not overlay them. Copy over an image needs two cells, which is also why
+  specs need no `photoFocus`: the negative-space machinery in §5 exists to
+  protect copy laid *over* a photo, and here nothing ever is.
+
+Run `npm run check:layouts -- <spec.json...>` after touching this layer. It
+covers the validation rules, renders all fifteen archetypes as a regression, and
+renders any supplied specs at portrait and off-brand canvases.

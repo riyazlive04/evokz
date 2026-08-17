@@ -4,6 +4,7 @@ import {
   FAL_MIN_EDGE,
   type ImageSizePreset,
 } from '@/lib/image-sizes';
+import type { PosterLayoutSpec } from '@/lib/types/layout-spec';
 import { describeArchetype, type PosterArchetype } from '@/lib/types/poster';
 
 /**
@@ -99,6 +100,84 @@ function portraitRequest(
         : `${archetype} needs a portrait photo; ${preset.ratio} canvas clamped to ${aspect.toFixed(2)}:1`,
   };
 }
+
+/**
+ * One request per photo slot in a layout spec, in render order.
+ *
+ * The archetype path asks its catalogue entry for a `photoShape` because its
+ * photo regions are fixed geometry known at authoring time. A spec's regions are
+ * not: a photo cell's width comes from its column weight, and its height is
+ * whatever the row settles at after the copy above it has been laid out. So the
+ * aspect is estimated from the spec rather than declared.
+ *
+ * An estimate is enough, and that is a property of the renderer rather than an
+ * excuse. `renderLayoutSpec` fills a photo cell with `object-fit: cover`, so a
+ * frame whose aspect is a little off is cropped, never stretched or letterboxed.
+ * What the estimate actually buys is not correctness but economy — asking fal
+ * for a 2:3 frame that lands in a 3:2 cell means paying to render pixels that
+ * are then cropped away.
+ *
+ * Row heights are approximated by mode:
+ *   fixed — its declared fraction, which is exact.
+ *   flex  — a third of the canvas. Flex rows take what the hug rows leave, and
+ *           across the reference set that lands near a third.
+ *   hug   — a quarter. A hug row holding a photo is sized by the copy beside it,
+ *           which is typically a headline block.
+ */
+export function resolveSpecPhotoRequests(
+  spec: PosterLayoutSpec,
+  preset: ImageSizePreset,
+): PhotoRequest[] {
+  const requests: PhotoRequest[] = [];
+
+  spec.rows.forEach((row, rowIndex) => {
+    const totalWeight = row.cells.reduce((sum, cell) => sum + cell.weight, 0);
+    const rowHeight =
+      preset.height *
+      (row.sizingMode === 'fixed' ? row.heightFraction : row.sizingMode === 'flex' ? 0.33 : 0.25);
+
+    for (const cell of row.cells) {
+      for (const slot of cell.slots) {
+        if (slot !== 'photo') continue;
+
+        const cellWidth = (preset.width * cell.weight) / totalWeight;
+        const aspect = clamp(
+          rowHeight > 0 ? cellWidth / rowHeight : 1,
+          SPEC_ASPECT_MIN,
+          SPEC_ASPECT_MAX,
+        );
+
+        // Fit the request inside fal's ceiling on whichever edge is longer, so a
+        // wide band and a tall inset both come back at usable resolution.
+        const long = Math.min(FAL_MAX_EDGE, Math.max(cellWidth, rowHeight, FAL_MIN_EDGE));
+        const width = clampEdge(aspect >= 1 ? long : long * aspect);
+        const height = clampEdge(aspect >= 1 ? long / aspect : long);
+
+        requests.push({
+          width,
+          height,
+          reason:
+            `spec "${spec.name}" row ${rowIndex + 1} photo cell is about ` +
+            `${aspect.toFixed(2)}:1`,
+        });
+      }
+    }
+  });
+
+  return requests;
+}
+
+/**
+ * Bounds on an estimated cell aspect.
+ *
+ * Wider than the portrait clamp above because a spec can legitimately ask for a
+ * letterbox hero band or a tall side inset, neither of which the archetypes
+ * have. Beyond these the estimate is more likely to be a misread spec than a
+ * real intention, and an extreme request wastes fal budget on pixels that
+ * `object-fit: cover` immediately crops.
+ */
+const SPEC_ASPECT_MIN = 0.4;
+const SPEC_ASPECT_MAX = 2.5;
 
 /** Rounds to a legal Flux dimension and keeps it inside the render limits. */
 function clampEdge(value: number): number {

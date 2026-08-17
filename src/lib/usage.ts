@@ -31,6 +31,10 @@ export type UsageOperation =
   // backfill spend distinctly — a client accruing these is one whose batch seeding
   // is returning unusable poster blocks, which is a prompt problem worth seeing.
   | 'poster-copy'
+  // Vision read of an uploaded reference template, once per upload. Distinct
+  // from the per-day operations because it is the only spend here that scales
+  // with the size of the template library rather than with the campaign.
+  | 'layout-extract'
   | 'whatsapp';
 
 async function record(data: {

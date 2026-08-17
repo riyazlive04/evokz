@@ -1,0 +1,12 @@
+{
+  // The repository tsconfig sets `jsx: "preserve"`, which is correct for Next —
+  // its compiler handles the transform. tsx does not, so a script that reaches
+  // any .tsx module (the poster renderer, every slot component) dies at runtime
+  // with "React is not defined" before a single poster is composed.
+  //
+  // Scripts are run with `--tsconfig scripts/tsconfig.json`; see package.json.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx"
+  }
+}

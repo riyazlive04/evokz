@@ -172,10 +172,24 @@ function logoReadsOn(inkLuminance: number | null, background: string): boolean {
  * its place in the lockup; a name that long is better served by a logo.
  */
 function fitCompanyName(name: string, room: number, base: number): number {
-  const length = Math.max(1, name.length);
-  const predicted = length * base * AVERAGE_CAP_ADVANCE;
+  return fitToRoom(name.length, room, base);
+}
+
+/**
+ * Largest size at which `length` characters still fit `room`, down to 55%.
+ *
+ * The shared form of the "set it smaller rather than clip it" rule that the
+ * wordmark, the headline (`fittedHeadlineSize`) and the contact bar all need.
+ * `AVERAGE_CAP_ADVANCE` is measured from real output — see its definition — and
+ * the 55% floor is where type stops holding its place in a lockup and starts
+ * looking like a different slot.
+ */
+function fitToRoom(length: number, room: number, base: number): number {
+  const characters = Math.max(1, length);
+  if (room <= 0) return base * 0.55;
+  const predicted = characters * base * AVERAGE_CAP_ADVANCE;
   if (predicted <= room) return base;
-  return Math.max(room / (length * AVERAGE_CAP_ADVANCE), base * 0.55);
+  return Math.max(room / (characters * AVERAGE_CAP_ADVANCE), base * 0.55);
 }
 
 /**
@@ -773,6 +787,16 @@ export interface ContactBarProps {
    * Colours still resolve as the `dark` variant, since the sweep is dark.
    */
   transparent?: boolean;
+  /**
+   * Overrides the full-canvas width.
+   *
+   * Defaults to `metrics.width` because every hand-written archetype puts this
+   * bar across the whole poster — it is the composition's hard bottom edge. A
+   * layout spec may instead place it in one column of a split row, and a bar
+   * that laid itself out at canvas width inside a half-width cell would run its
+   * second cell off the edge.
+   */
+  width?: number;
 }
 
 export function ContactBar({
@@ -784,6 +808,7 @@ export function ContactBar({
   stacked = false,
   transparent = false,
   align = 'start',
+  width,
 }: ContactBarProps) {
   const onAccent = variant === 'accent';
   const background = onAccent ? theme.accent : theme.darkNeutral;
@@ -796,6 +821,8 @@ export function ContactBar({
     ? withAlpha(theme.onAccent, 0.4)
     : withAlpha(theme.onDark, 0.3);
 
+  const barWidth = width ?? metrics.width;
+
   const cells = [
     { icon: 'phone' as const, label: copy.callLabel, value: identity.phone },
     identity.website
@@ -805,12 +832,39 @@ export function ContactBar({
     cell !== null,
   );
 
+  /*
+   * Type sized to the room each cell actually has.
+   *
+   * Both lines are `nowrap` — a wrapped phone number is unreadable and a wrapped
+   * URL invites a mis-dial — so the only way they can respond to a narrow cell
+   * is to set smaller. Without this, a long label beside a long domain simply
+   * ran off the right edge of the poster: `flex: 1` gave each cell half the bar
+   * and nothing stopped the text overflowing it. Visible on the 9:16 preset,
+   * which is the delivery default, and worse under a layout spec that puts the
+   * bar in a column rather than across the canvas.
+   *
+   * Measured against the widest cell content rather than per cell, so the two
+   * halves stay optically matched — a bar whose phone number is set two points
+   * larger than its website reads as a mistake.
+   */
+  const cellRoom =
+    barWidth / Math.max(1, cells.length) -
+    metrics.margin -
+    metrics.contact.badge -
+    metrics.s(46);
+
+  const longestLabel = cells.reduce((max, cell) => Math.max(max, cell.label.length), 1);
+  const longestValue = cells.reduce((max, cell) => Math.max(max, cell.value.length), 1);
+
+  const labelSize = fitToRoom(longestLabel, cellRoom, metrics.contact.label);
+  const valueSize = fitToRoom(longestValue, cellRoom, metrics.contact.value);
+
   return (
     <div
       style={{
         display: 'flex',
         flexDirection: stacked ? 'column' : 'row',
-        width: metrics.width,
+        width: width ?? metrics.width,
         minHeight: stacked ? metrics.contact.height * 1.15 : metrics.contact.height,
         ...(transparent ? {} : { backgroundColor: background }),
         alignItems: stacked ? FLEX_ALIGN[align] : 'center',
@@ -867,9 +921,10 @@ export function ContactBar({
             <div
               style={{
                 fontFamily: theme.bodyFont.family,
-                fontSize: metrics.contact.label,
+                fontSize: labelSize,
                 fontWeight: heaviestWeight(theme.bodyFont),
                 letterSpacing: metrics.contact.tracking,
+                whiteSpace: 'nowrap',
                 textTransform: 'uppercase',
                 color: labelColor,
               }}
@@ -879,7 +934,7 @@ export function ContactBar({
             <div
               style={{
                 fontFamily: theme.bodyFont.family,
-                fontSize: metrics.contact.value,
+                fontSize: valueSize,
                 fontWeight: heaviestWeight(theme.bodyFont),
                 lineHeight: 1.2,
                 color: valueColor,

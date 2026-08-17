@@ -28,6 +28,20 @@ export interface StructuredRequest {
   /** The varying part of the request. */
   userPrompt: string;
   /**
+   * An image to reason over, as a `data:` URI, attached alongside `userPrompt`.
+   *
+   * Used by the layout extractor, which reads an uploaded reference poster and
+   * describes its grid. A data URI rather than an http URL because the only
+   * images this system holds are private Drive objects the model could not fetch
+   * — the bytes have to travel in the request.
+   *
+   * `detail: 'high'` is not optional for that job. On `low` the image is
+   * downsampled to 512px before the model sees it, which is enough to say "a
+   * poster with an orange bar" and not enough to tell a 40/60 column split from
+   * a 50/50 one. The extra tokens are charged once per upload, never per poster.
+   */
+  imageDataUri?: string;
+  /**
    * JSON Schema the response is constrained to. Under `strict: true` every
    * object needs `additionalProperties: false` and must list *all* of its
    * properties in `required` — optional fields are not supported.
@@ -35,6 +49,16 @@ export interface StructuredRequest {
   schema: Record<string, unknown>;
   /** Schema name sent to the API: a-z, A-Z, 0-9, underscore, dash only. */
   schemaName: string;
+  /**
+   * Overrides the fleet model for this one call.
+   *
+   * The default exists because every other stage here is text-in/JSON-out and
+   * `gpt-4o-mini` does it well and cheaply. Layout extraction is neither: it is
+   * a vision task where a misread column split silently becomes every poster
+   * that vertical ever renders. Charging a stronger model once per uploaded
+   * template is the cheapest part of that decision.
+   */
+  model?: string;
   maxTokens?: number;
   /** 0–2. Higher values give more caption variance. */
   temperature?: number;
@@ -84,7 +108,7 @@ export function getModel(): string {
  */
 export async function generateStructured<T>(request: StructuredRequest): Promise<T> {
   const client = getClient();
-  const model = getModel();
+  const model = request.model ?? getModel();
   const maxAttempts = Math.max(1, intEnv('OPENAI_MAX_ATTEMPTS', 3));
   // gpt-4o-mini caps output at 16,384 tokens; clamp so an over-large env value
   // becomes a 400 at request time rather than a confusing truncation.
@@ -104,7 +128,18 @@ export async function generateStructured<T>(request: StructuredRequest): Promise
         temperature,
         messages: [
           { role: 'system', content: request.systemPrompt },
-          { role: 'user', content: request.userPrompt },
+          {
+            role: 'user',
+            content: request.imageDataUri
+              ? [
+                  { type: 'text', text: request.userPrompt },
+                  {
+                    type: 'image_url',
+                    image_url: { url: request.imageDataUri, detail: 'high' },
+                  },
+                ]
+              : request.userPrompt,
+          },
         ],
         response_format: {
           type: 'json_schema',

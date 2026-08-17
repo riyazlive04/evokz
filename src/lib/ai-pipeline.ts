@@ -5,8 +5,15 @@ import { resolveFalCredentials, type FalCredentials } from '@/lib/fal-credential
 import { uploadClientAsset } from '@/lib/google-drive';
 import { ensurePosterCopy } from '@/lib/ai/poster-copy';
 import { resolveImageSizePreset } from '@/lib/image-sizes';
-import { loadCategoryArchetypes } from '@/lib/poster/archetype-library';
-import { resolvePhotoRequest, type PhotoRequest } from '@/lib/poster/photo-request';
+import {
+  loadCategoryArchetypes,
+  loadCategoryLayouts,
+} from '@/lib/poster/archetype-library';
+import {
+  resolvePhotoRequest,
+  resolveSpecPhotoRequests,
+  type PhotoRequest,
+} from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
 import { prisma } from '@/lib/prisma';
 import { describeDelay, nextSendDelay } from '@/lib/send-jitter';
@@ -212,20 +219,35 @@ export async function runCreativePipeline(
         optionalEnv('FAL_IMAGE_SIZE', ''),
       );
 
-      // The archetype is settled before the render because it dictates the photo's
-      // aspect ratio — see resolvePhotoRequest.
-      //
-      // One indexed query per render, skipped entirely when the row already has a
-      // stored archetype, which is every re-render of a day that has run before.
-      const library = entry.posterArchetype
-        ? []
-        : await loadCategoryArchetypes(client.categoryId);
+      /*
+       * The layout is settled before the render because it dictates how many
+       * photographs to buy and at what aspect — see `resolveSpecPhotoRequests`.
+       *
+       * A stored `posterArchetype` still pins the *archetype* path for a row
+       * that has rendered before, but the spec ballot is consulted regardless:
+       * approving a vertical's templates should change what its clients receive
+       * from the next render on, and a day pinned to `bands` months ago is
+       * exactly the row that most needs to move onto its vertical's real layout.
+       *
+       * Two indexed queries per render, both narrow.
+       */
+      const layouts = await loadCategoryLayouts(client.categoryId);
+      const layoutSpec = pickForDay(entry.dayNumber, layouts);
+
+      const library =
+        layoutSpec || entry.posterArchetype
+          ? []
+          : await loadCategoryArchetypes(client.categoryId);
       const archetype = resolvePosterArchetype(
         entry.posterArchetype,
         entry.dayNumber,
         library,
       );
-      const photoRequest = resolvePhotoRequest(archetype, sizePreset);
+
+      // A spec declares its own photo cells; an archetype has exactly one region.
+      const photoRequests = layoutSpec
+        ? resolveSpecPhotoRequests(layoutSpec, sizePreset)
+        : [resolvePhotoRequest(archetype, sizePreset)];
 
       // ---- Step 1: Flux.1 via fal.ai --------------------------------------
       stage = 'generate';
@@ -234,21 +256,35 @@ export async function runCreativePipeline(
       // reading a generate failure goes and looks at the fal credentials, which is
       // exactly where the fault is.
       falCredentials = await resolveFalCredentials();
-      const photo = await generateCreativeAsset(
-        entry.imagePrompt,
-        photoRequest,
-        falCredentials,
-      );
 
-      // Billed the moment fal returns pixels — before the upload, which can
-      // still fail without making the render free. The source comes from the same
-      // credentials object that made the call, never re-resolved: a key saved
-      // mid-sweep must not re-attribute a render it did not pay for.
-      await recordImageUsage(
-        getFalEndpoint(),
-        { clientId: client.id, calendarId: entry.id },
-        falCredentials.source,
-      );
+      /*
+       * Sequential, not parallel. A two-photo spec doubles this client's image
+       * spend for the day, and fal's rate limits are per key across the whole
+       * dispatch sweep — firing both at once to save a few seconds on one row
+       * risks 429s on every other client in the same minute. Each frame is
+       * billed as it lands, so a failure on the second does not lose the first
+       * from the ledger.
+       */
+      const photos: Buffer[] = [];
+      for (const request of photoRequests) {
+        const frame = await generateCreativeAsset(
+          entry.imagePrompt,
+          request,
+          falCredentials,
+        );
+
+        // Billed the moment fal returns pixels — before the upload, which can
+        // still fail without making the render free. The source comes from the same
+        // credentials object that made the call, never re-resolved: a key saved
+        // mid-sweep must not re-attribute a render it did not pay for.
+        await recordImageUsage(
+          getFalEndpoint(),
+          { clientId: client.id, calendarId: entry.id },
+          falCredentials.source,
+        );
+
+        photos.push(frame.body);
+      }
 
       // ---- Step 2: Poster composition -------------------------------------
       stage = 'compose';
@@ -258,6 +294,7 @@ export async function runCreativePipeline(
 
       const poster = await renderPoster({
         archetype,
+        layoutSpec,
         dayNumber: entry.dayNumber,
         copy: posterCopy,
         guideline: parseBrandGuideline(client.brandGuideline),
@@ -270,7 +307,7 @@ export async function runCreativePipeline(
           displayPhone: client.displayPhone,
           whatsappNumber: client.whatsappNumber,
         },
-        photo: photo.body,
+        photos,
         width: sizePreset.width,
         height: sizePreset.height,
       });

@@ -98,6 +98,37 @@ model CategoryTemplate {
   /// action boundary.
   archetype String?
 
+  /// This template's own geometry, as a `PosterLayoutSpec` (src/lib/types/layout-spec.ts).
+  ///
+  /// The difference between this and `archetype` is the difference between the
+  /// layout the operator uploaded and the nearest of fifteen built-in ones. A
+  /// spec is extracted from the image at upload by the vision stage, corrected
+  /// by an operator, and only then published — see `layoutApprovedAt`.
+  ///
+  /// Json rather than columns because the shape is a nested tree, and free-form
+  /// because a spec written by an older build must degrade to the archetype
+  /// rather than break the vertical: `parseLayoutSpec` returns null for anything
+  /// it cannot read, exactly as `loadCategoryArchetypes` drops an unknown
+  /// archetype name.
+  layoutSpec Json?
+
+  /// The model's band-by-band reading of the poster, kept from extraction.
+  ///
+  /// Shown beside the draft in the console. Not part of the spec and never read
+  /// by the renderer — it exists so an operator looking at a wrong row can see
+  /// the reasoning that produced it, which is usually faster than re-deriving
+  /// what went wrong from the geometry alone.
+  layoutReading String?
+
+  /// When an operator confirmed the extracted spec matches the template.
+  ///
+  /// **Null means the spec never renders.** Extraction is a vision model reading
+  /// a JPEG: it returns a draft, and a draft that silently reached production
+  /// would put a misread layout on every poster the vertical ever sends. Null
+  /// here falls the template back to its `archetype`, which is the behaviour
+  /// that existed before specs.
+  layoutApprovedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -105,6 +136,8 @@ model CategoryTemplate {
   @@index([categoryId, createdAt])
   // Serves generation: the mapped layouts for one vertical, in upload order.
   @@index([categoryId, archetype])
+  // Serves generation's preferred path: approved specs for one vertical.
+  @@index([categoryId, layoutApprovedAt])
 }
 
 model Client {

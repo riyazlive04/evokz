@@ -25,11 +25,19 @@ import {
 } from '@/lib/types/brand';
 import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
 import type { CalendarImportInput } from '@/lib/calendar-parse';
+import { extractLayoutSpec } from '@/lib/ai/layout-extractor';
 import {
+  downloadDriveFile,
   ensureVerticalTemplateFolder,
   trashDriveFile,
   uploadClientAsset,
 } from '@/lib/google-drive';
+import {
+  normalizeLayoutSpec,
+  parseLayoutSpec,
+  posterLayoutSpecSchema,
+  validateLayoutSpec,
+} from '@/lib/types/layout-spec';
 import { readImageDimensions } from '@/lib/poster/image-info';
 import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key';
 import { BODY_FONT_OPTIONS, HEADING_FONT_OPTIONS } from '@/lib/poster/theme';
@@ -1760,14 +1768,23 @@ export interface LogoOutcome {
 // ---------------------------------------------------------------------------
 
 /**
- * Stores one reference poster against a vertical.
+ * Stores one reference poster against a vertical and reads its layout.
  *
- * Deliberately does no interpretation: it stores the bytes, the dimensions and
- * where they came from, and leaves `archetype` null. Which layout a reference
- * represents is a judgement made by an operator looking at it, recorded later
- * through `setTemplateArchetype` — a bulk upload has no opportunity to say which
- * file is which, and guessing from a filename would put layouts into a client's
- * rotation that nobody chose.
+ * `archetype` is still left null: which of the fifteen built-in compositions a
+ * reference most resembles is a judgement an operator makes looking at it, and
+ * guessing from a filename would put layouts into a client's rotation that
+ * nobody chose.
+ *
+ * The layout *spec* is different, because it is measured rather than judged —
+ * the geometry is in the image, and extracting it is what makes the upload
+ * worth more than storage. It runs here, inline, so an operator who uploads a
+ * template can review it immediately instead of hunting for a second button.
+ *
+ * **Extraction is best-effort and never fails the upload.** The file is already
+ * in Drive by this point; refusing the row because a vision call timed out would
+ * lose the operator's work to a fault that `extractTemplateLayout` can retry in
+ * one click. A null spec simply means the template falls back to its archetype,
+ * which is exactly the behaviour that existed before specs.
  */
 export async function uploadVerticalTemplate(
   categoryId: string,
@@ -1823,15 +1840,23 @@ export async function uploadVerticalTemplate(
       publish: false,
     });
 
+    const label = file.name.replace(/\.[^.]+$/, '').slice(0, 120) || 'Untitled';
+    const draft = await readLayoutQuietly(stored.body, stored.mimeType, label);
+
     const created = await prisma.categoryTemplate.create({
       data: {
         categoryId: id,
-        label: file.name.replace(/\.[^.]+$/, '').slice(0, 120) || 'Untitled',
+        label,
         gDriveFileId: uploaded.fileId,
         gDriveViewUrl: uploaded.viewUrl,
         mimeType: stored.mimeType,
         width: stored.width,
         height: stored.height,
+        layoutSpec: draft.spec ?? Prisma.DbNull,
+        layoutReading: draft.reading,
+        // Never set here. Approval means a human looked at the extraction
+        // rendered as a poster, and nobody has at this point.
+        layoutApprovedAt: null,
       },
       select: { id: true, label: true },
     });
@@ -1840,6 +1865,218 @@ export async function uploadVerticalTemplate(
     return success(created);
   } catch (error) {
     return toFailure(error, 'Uploading template');
+  }
+}
+
+interface LayoutDraft {
+  spec: Prisma.InputJsonValue | null;
+  /** Operator-facing: the model's reading, or why there isn't one. */
+  reading: string;
+  problems: string[];
+}
+
+/**
+ * Runs extraction and swallows every failure into a readable note.
+ *
+ * Separate from `extractLayoutSpec` because that function is right to throw —
+ * a caller asking for a spec should hear about a missing API key. This is the
+ * wrapper for the two callers who must not: an upload that has already written
+ * to Drive, and a re-extract whose job is to report what happened rather than
+ * to crash the console.
+ */
+async function readLayoutQuietly(
+  bytes: Buffer,
+  mimeType: string,
+  label: string,
+): Promise<LayoutDraft> {
+  try {
+    const result = await extractLayoutSpec({ bytes, mimeType, label });
+    const problems = result.problems.map(
+      (problem) => `${problem.path} ${problem.message}`,
+    );
+
+    return {
+      // A structurally invalid draft is still stored. It is far more useful to
+      // an operator as something to correct than as a blank grid, and
+      // `parseLayoutSpec` refuses it at render time regardless, so a bad spec
+      // cannot reach a client even if somebody approves it by mistake.
+      spec: result.spec as unknown as Prisma.InputJsonValue,
+      reading: result.reading,
+      problems,
+    };
+  } catch (error) {
+    const message = describeError(error);
+    console.warn(`[ace:layout] extraction failed for "${label}": ${message}`);
+    return {
+      spec: null,
+      reading: `Layout could not be read automatically: ${message}`,
+      problems: [message],
+    };
+  }
+}
+
+/**
+ * Re-reads a stored template's layout, replacing any existing draft.
+ *
+ * **Clears `layoutApprovedAt`.** An approval refers to the spec that was on
+ * screen when it was given; carrying it across to a freshly extracted one would
+ * publish geometry no human has seen, which is the single thing the approval
+ * gate exists to prevent.
+ */
+export async function extractTemplateLayout(
+  templateId: string,
+): Promise<ActionResult<{ approved: false; problems: string[] }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+
+    const template = await prisma.categoryTemplate.findUnique({
+      where: { id },
+      select: { gDriveFileId: true, mimeType: true, label: true },
+    });
+    if (!template) return failure('That template no longer exists.');
+
+    // Read back from Drive rather than kept in memory: this action is reached
+    // from a template row that may have been uploaded weeks ago.
+    let bytes: Buffer;
+    try {
+      bytes = await downloadDriveFile(template.gDriveFileId);
+    } catch (error) {
+      return failure(
+        'That template could not be read back from Drive — ' +
+          `${describeError(error)}. Check the service account still has access ` +
+          'to the vertical template folder.',
+      );
+    }
+
+    const draft = await readLayoutQuietly(bytes, template.mimeType, template.label);
+    if (!draft.spec) {
+      await prisma.categoryTemplate.update({
+        where: { id },
+        data: { layoutReading: draft.reading, layoutApprovedAt: null },
+      });
+      revalidateAdmin();
+      return failure(draft.reading);
+    }
+
+    await prisma.categoryTemplate.update({
+      where: { id },
+      data: {
+        layoutSpec: draft.spec,
+        layoutReading: draft.reading,
+        layoutApprovedAt: null,
+      },
+    });
+
+    revalidateAdmin();
+    return success({ approved: false as const, problems: draft.problems });
+  } catch (error) {
+    return toFailure(error, 'Reading template layout');
+  }
+}
+
+/**
+ * Publishes or withdraws a template's extracted layout.
+ *
+ * Approving is what puts the template's own geometry into its vertical's
+ * rotation — until then the row is inert and the vertical falls back to
+ * archetypes. Withdrawing takes it straight back out, which is the fix an
+ * operator reaches for when a client's posters come out wrong.
+ *
+ * Refuses to approve a spec that `validateLayoutSpec` rejects. That check is
+ * duplicated at render time, deliberately: this one gives the operator a
+ * sentence explaining what to fix, and that one guarantees a bad spec never
+ * draws a poster whatever route it took into the column.
+ */
+export async function setTemplateLayoutApproval(
+  templateId: string,
+  approved: boolean,
+): Promise<ActionResult<{ approved: boolean }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+
+    const template = await prisma.categoryTemplate.findUnique({
+      where: { id },
+      select: { layoutSpec: true },
+    });
+    if (!template) return failure('That template no longer exists.');
+
+    if (approved) {
+      const spec = parseLayoutSpec(template.layoutSpec);
+      if (!spec) {
+        return failure(
+          'This template has no usable layout yet. Re-read the layout, and if it ' +
+            'still reports problems, correct them before approving.',
+        );
+      }
+    }
+
+    await prisma.categoryTemplate.update({
+      where: { id },
+      data: { layoutApprovedAt: approved ? new Date() : null },
+    });
+
+    revalidateAdmin();
+    return success({ approved });
+  } catch (error) {
+    return toFailure(error, 'Approving template layout');
+  }
+}
+
+/**
+ * Replaces a template's layout spec with an operator's corrected version.
+ *
+ * The console's editor posts the whole spec rather than a patch: a layout is a
+ * tree, and a field-level patch protocol over a tree is a great deal of surface
+ * for something an operator edits a handful of times per template.
+ *
+ * Validated here and not merely parsed, because this is the one path where a
+ * human can write geometry directly — the extractor's output at least came from
+ * a schema-constrained model.
+ */
+export async function setTemplateLayoutSpec(
+  templateId: string,
+  specJson: string,
+): Promise<ActionResult<{ problems: string[] }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(specJson);
+    } catch {
+      return failure('That is not valid JSON.');
+    }
+
+    const parsed = posterLayoutSpecSchema.safeParse(raw);
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      return failure(
+        first
+          ? `${first.path.join('.') || 'spec'}: ${first.message}`
+          : 'That is not a readable layout spec.',
+      );
+    }
+
+    const spec = normalizeLayoutSpec(parsed.data);
+    const problems = validateLayoutSpec(spec);
+    if (problems.length > 0) {
+      return failure(problems.map((p) => `${p.path} ${p.message}`).join(' · '));
+    }
+
+    await prisma.categoryTemplate.update({
+      where: { id },
+      data: {
+        layoutSpec: spec as unknown as Prisma.InputJsonValue,
+        // Same reasoning as `extractTemplateLayout`: the approval on file refers
+        // to the spec that was replaced.
+        layoutApprovedAt: null,
+      },
+    });
+
+    revalidateAdmin();
+    return success({ problems: [] });
+  } catch (error) {
+    return toFailure(error, 'Saving template layout');
   }
 }
 
