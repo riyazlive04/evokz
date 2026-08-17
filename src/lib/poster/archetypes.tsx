@@ -605,6 +605,30 @@ function StackedBands({ spec, metrics, logoDimensions, logoInkLuminance }: Arche
         position: 'relative',
         width: metrics.width,
         height: photoHeight,
+        /*
+         * The band that gives. Every other row in this composition is sized by
+         * type it cannot reflow — the copy stack, the feature strip and the
+         * contact bar all measure whatever their content measures — so when the
+         * stack is taller than the canvas something has to absorb the
+         * difference, and a photograph losing a slice of its frame is the only
+         * loss that is not a defect. Without this the surplus fell off the
+         * bottom edge and `Canvas`'s `overflow: hidden` silently ate the contact
+         * bar: the poster still rendered, still looked deliberate, and shipped
+         * with no phone number on it.
+         *
+         * The floor keeps the band reading as a band. Below roughly half its
+         * intended depth the photograph stops being a horizontal establishing
+         * shot and becomes a stripe, at which point the composition is broken
+         * in a different way and the copy stage should be shortening the copy
+         * instead.
+         *
+         * `PhotoLayer` inside is absolutely positioned and cover-fitted against
+         * the *unshrunk* height, so a shrunk band crops further into the frame
+         * rather than distorting it — the focus point stays where the archetype
+         * put it and the extra crop comes off the bottom.
+         */
+        flexShrink: 1,
+        minHeight: photoHeight * 0.45,
         overflow: 'hidden',
       }}
     >
@@ -623,7 +647,7 @@ function StackedBands({ spec, metrics, logoDimensions, logoInkLuminance }: Arche
   );
 
   const copyBand = (
-    <div style={{ display: 'flex', padding: metrics.margin }}>
+    <div style={{ display: 'flex', flexShrink: 0, padding: metrics.margin }}>
       <CopyStack
         spec={spec}
         metrics={metrics}
@@ -648,12 +672,20 @@ function StackedBands({ spec, metrics, logoDimensions, logoInkLuminance }: Arche
       >
         {flipped ? photoBand : copyBand}
 
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
+        {/*
+         * `flexShrink: 1` so the shrink the photo band offers is actually
+         * reachable. The bottom group is a content-sized column, and yoga will
+         * only pass a shortfall down to a child that can give if the container
+         * between them is itself shrinkable — left at the default the group held
+         * its content height and the overflow reappeared below the canvas.
+         */}
+        <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 1 }}>
           {flipped ? copyBand : photoBand}
 
           <div
             style={{
               display: 'flex',
+              flexShrink: 0,
               width: metrics.width,
               backgroundColor: theme.darkNeutral,
               paddingLeft: metrics.margin,
