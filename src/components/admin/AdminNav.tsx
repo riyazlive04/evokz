@@ -40,7 +40,7 @@ const NAV_ITEMS: NavItem[] = [
 /** Pinned to the far end of the bar — a sales surface, not a console section. */
 const TRAILING_NAV_ITEMS: NavItem[] = [
   { href: '/admin/poster-preview', label: 'Posters', icon: Palette },
-  { href: '/admin/demo', label: 'Demo', icon: MonitorPlay, nested: true },
+  { href: '/admin/demo', label: 'Generate Now', icon: MonitorPlay, nested: true },
 ];
 
 export function AdminNav() {
