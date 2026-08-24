@@ -256,10 +256,20 @@ Two failure modes are worth knowing when reading a bad draft:
   `contact`.
 - At most two `photo` slots — the ceiling is economic, not technical. Each one is
   a separate diffusion render billed per poster per day.
-- A cell holds either a photo or text, never both. Cells stack their slots; they
-  do not overlay them. Copy over an image needs two cells, which is also why
-  specs need no `photoFocus`: the negative-space machinery in §5 exists to
-  protect copy laid *over* a photo, and here nothing ever is.
+- A cell holding a photo **and** text is an overlay: the photograph becomes that
+  cell's background and the copy is drawn over it under a flat scrim, with the
+  ground forced dark so the type stays legible. Every other slot combination
+  stacks. This is the one place the model layers rather than stacks, and it
+  exists because a full-bleed hero with the headline on it is one of the
+  commonest poster shapes there is — approximating it as two separate bands is
+  visibly not the same poster.
+- `featureCount` (2–4) and `featureStyle` (`labelAndBody` / `labelOnly`) describe
+  the feature block, because reference posters split about evenly between a wide
+  strip of labelled paragraphs and a row of icon cards carrying nothing but a
+  one-or-two-word label. Rendering the second as the first is the single most
+  common way a generated poster stops resembling its template. Both default to
+  today's behaviour — 3 and `labelAndBody` — so a spec stored before they existed
+  renders unchanged.
 
 Run `npm run check:layouts -- <spec.json...>` after touching this layer. It
 covers the validation rules, renders all fifteen archetypes as a regression, and

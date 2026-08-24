@@ -74,6 +74,13 @@ const COPY: PosterCopy = {
       label: 'Find us',
       body: '123 Anywhere St., any city — walk in, no booking.',
     },
+    // A fourth, so a spec asking for three exercises the clamp rather than
+    // silently getting exactly what it wanted.
+    {
+      icon: 'people',
+      label: 'Walk-ins welcome',
+      body: 'No booking needed at any hour we are open.',
+    },
   ],
   callLabel: 'TASTE IT TODAY',
   websiteLabel: 'FOLLOW OUR SOCIAL MEDIA',
@@ -168,14 +175,53 @@ function validationChecks(): void {
     ),
   );
 
+  // Copy over a photograph is now an overlay cell, not an error. The commonest
+  // poster shape there is; approximating it as two bands is visibly not the same
+  // poster.
   const overlaid = posterLayoutSpecSchema.parse(
-    spec([row([cell(['photo', 'headline'])]), row([cell(['photo'])], 'flex')]),
+    spec([row([cell(['photo', 'headline'])], 'flex')]),
   );
   check(
-    'photo and text in one cell is rejected',
-    validateLayoutSpec(normalizeLayoutSpec(overlaid)).some((p) =>
+    'photo and text in one cell is accepted as an overlay',
+    validateLayoutSpec(normalizeLayoutSpec(overlaid)).length === 0,
+    JSON.stringify(validateLayoutSpec(normalizeLayoutSpec(overlaid))),
+  );
+
+  // Two photos behind one block of copy has no meaning — the second is drawn
+  // underneath the first and never seen.
+  const doubleBacked = posterLayoutSpecSchema.parse(
+    spec([row([cell(['photo', 'photo', 'headline'])], 'flex')]),
+  );
+  check(
+    'an overlay backed by two photos is rejected',
+    validateLayoutSpec(normalizeLayoutSpec(doubleBacked)).some((p) =>
       p.message.includes('overlay'),
     ),
+  );
+
+  // The feature shape a template asks for must survive the round trip.
+  const labelOnly = posterLayoutSpecSchema.parse({
+    ...(spec([
+      row([cell(['headline'])]),
+      row([cell(['features'])]),
+      row([cell(['photo'])], 'flex'),
+    ]) as Record<string, unknown>),
+    featureCount: 4,
+    featureStyle: 'labelOnly',
+  });
+  check(
+    'featureCount and featureStyle survive parsing',
+    labelOnly.featureCount === 4 && labelOnly.featureStyle === 'labelOnly',
+  );
+
+  // The defaults are what let every template stored before these fields existed
+  // keep rendering exactly as it did.
+  const legacy = posterLayoutSpecSchema.parse(
+    spec([row([cell(['headline'])]), row([cell(['photo'])], 'flex')]),
+  );
+  check(
+    'a spec without the feature fields defaults to 3 and labelAndBody',
+    legacy.featureCount === 3 && legacy.featureStyle === 'labelAndBody',
   );
 
   const threePhotos = posterLayoutSpecSchema.parse(

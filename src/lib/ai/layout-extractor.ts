@@ -52,7 +52,7 @@ function visionModel(): string {
 const LAYOUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['reading', 'version', 'name', 'ground', 'rows'],
+  required: ['reading', 'version', 'name', 'ground', 'featureCount', 'featureStyle', 'rows'],
   properties: {
     /*
      * A scratchpad, and the single most load-bearing field in this schema.
@@ -77,7 +77,9 @@ const LAYOUT_SCHEMA = {
         'the headline, and no other block is, however large. Then list the ' +
         'horizontal bands from top to bottom, one short line each, saying what is in ' +
         'the band and — only where content truly sits side by side — how it splits. ' +
-        'Say "plain ground" for an empty side. Most posters have three to six bands.',
+        'Say "plain ground" for an empty side. Most posters have three to six bands. ' +
+        'Finally, if there is a row or column of small icon-and-label items, count ' +
+        'them and say whether each carries a sentence underneath or is just a label.',
     },
     version: { type: 'integer', enum: [1] },
     name: {
@@ -89,6 +91,19 @@ const LAYOUT_SCHEMA = {
       type: 'string',
       enum: ['light', 'dark'],
       description: 'The dominant background of the poster as a whole.',
+    },
+    featureCount: {
+      type: 'integer',
+      enum: [2, 3, 4],
+      description:
+        'How many items are in the feature block — the row or column of small ' +
+        'icon-and-label items. Count them. Send 3 if there is no feature block.',
+    },
+    featureStyle: {
+      type: 'string',
+      enum: ['labelAndBody', 'labelOnly'],
+      description:
+        'labelAndBody when each feature item has a sentence of explanation under its label. labelOnly when the items are just an icon and one or two words, with no sentence.',
     },
     rows: {
       type: 'array',
@@ -176,20 +191,22 @@ Read the poster as horizontal bands stacked top to bottom. Split a band into cel
   accentRule a short horizontal bar used as a divider under the headline
   body       a sentence or two of running prose
   features   two or more short labelled items: offers, times, addresses, benefits
-  photo      a photographic region
+  photo      a photographic region; put it in a cell with copy to overlay them
   contact    a phone number, website, address or social handle, usually a bar
   spacer     a column that is deliberately empty
 
 Rules that matter more than fidelity to the reference:
 
 1. Exactly one headline slot, on the whole poster. Posters routinely set a second block of large type further down — an offer, a price, a date, often in a different face — and it is NOT a second headline. Compare every large block against the largest: only the winner is the headline, and a runner-up belongs to "features" or "body" however big it looks on its own. Two headline slots makes the whole layout unusable.
-2. A cell holds either a photo or text, never both. Where the reference sets copy on top of an image, give the photo its own cell beside the copy.
+2. Where the reference sets copy directly on top of a photograph, put the photo and the copy in the SAME cell — the photo becomes that cell's background and the copy is drawn over it under a darkening wash. That is an overlay, and it is how a full-bleed hero with the headline on it is described. Only split them into separate cells when the photo and the copy genuinely sit side by side with a visible edge between them. One photo per overlay cell; a second would be hidden behind the first.
 3. Mark the largest photo row "flex". Text cannot reflow to fit a canvas, so one row must be able to give up space when the copy runs long. If there is no photo, mark the tallest row.
 4. Copy rows are "hug". A bar whose proportion is the point of it — a slim footer, a full-bleed contact strip — is "fixed" with its heightFraction.
 5. padded is true everywhere except a photo that bleeds to the poster edge.
 6. Fills are roles, not colours: the poster's darkest band is "dark", its brightest is "light", and a saturated brand-coloured band is "accent". A band with no fill of its own is "inherit".
 
 Group small items generously. Three stacked lines each with a little icon are one "features" slot, not three cells.
+
+Count that feature block and describe its shape, because the renderer draws exactly what you report. "featureCount" is how many items it holds — two, three or four. "featureStyle" is "labelOnly" when an item is an icon and one or two words and nothing else, and "labelAndBody" when a sentence sits under the label. Four label-only cards drawn as three labelled paragraphs is the single most common way a generated poster stops resembling the reference, and this is the only thing that prevents it. A poster with no feature block at all: send 3 and "labelAndBody", which is what the renderer already assumes.
 
 Emit one row for EVERY band, top edge to bottom edge, leaving no vertical gap between them. A poster that ends with a coloured footer strip has a row for that strip. Most posters are three to six rows; one row is almost always a misreading.
 

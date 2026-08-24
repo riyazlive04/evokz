@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "name": "Overlay hero",
+  "ground": "dark",
+  "featureCount": 4,
+  "featureStyle": "labelOnly",
+  "rows": [
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "center",
+          "padded": true,
+          "slots": [
+            "logo",
+            "headline",
+            "accentRule",
+            "photo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "light",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "light",
+          "align": "start",
+          "padded": true,
+          "slots": [
+            "features"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.1,
+      "fill": "accent",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "accent",
+          "align": "start",
+          "padded": false,
+          "slots": [
+            "contact"
+          ]
+        }
+      ]
+    }
+  ]
+}

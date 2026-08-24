@@ -45,6 +45,11 @@ const COPY: PosterCopy = {
       label: 'Find us',
       body: '123 Anywhere St., any city — walk in, no booking.',
     },
+    {
+      icon: 'people',
+      label: 'Walk-ins welcome',
+      body: 'No booking needed at any hour we are open.',
+    },
   ],
   callLabel: 'TASTE IT TODAY',
   websiteLabel: 'FOLLOW OUR SOCIAL MEDIA',

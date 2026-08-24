@@ -103,6 +103,10 @@ export async function ensurePosterCopy(
       '',
       `The background photograph is: ${entry.imagePrompt}`,
       '',
+      // The layout's own demands, when the caller knows them. This is what stops
+      // a three-card feature strip being handed four items, and an eyebrow being
+      // written for a template that has nowhere to draw one.
+      ...(shape ? [describeLayoutFit(shape), ''] : []),
       'Write the poster text layer for this day.',
     ].join('\n'),
     schema: POSTER_SCHEMA as unknown as Record<string, unknown>,
@@ -157,11 +161,28 @@ function describeLayoutFit(shape: LayoutCopyShape): string {
     'This day is laid out in a specific template. Fit the copy to it:',
   ];
 
-  notes.push(
-    shape.hasFeatures
-      ? '- features: exactly 3 items. The layout has room for three and reads as a mistake with four.'
-      : '- features: this layout has no feature block. Still supply 3 — they are required — but keep them short; they will not be shown.',
-  );
+  if (!shape.hasFeatures) {
+    notes.push(
+      '- features: this layout has no feature block. Still supply 3 — they are required — but keep them short; they will not be shown.',
+    );
+  } else if (shape.featureBodies) {
+    notes.push(
+      `- features: exactly ${shape.featureCount} items. The layout has room for ` +
+        `${shape.featureCount} and reads as a mistake with more.`,
+    );
+  } else {
+    // The card row shows the label and nothing else, so the body is written,
+    // stored, and never drawn — `posterFeatureSchema.body` is `.min(1)`, so it
+    // cannot be omitted. Asking for a short one keeps the tokens honest and
+    // leaves the copy usable if the template is later swapped for one that does
+    // draw bodies.
+    notes.push(
+      `- features: exactly ${shape.featureCount} items, and this layout draws only ` +
+        'the labels — no sentence is shown. Make each label carry the whole idea in ' +
+        'one or two words, and keep the body to a short sentence; it is stored but ' +
+        'not displayed.',
+    );
+  }
 
   notes.push(
     shape.hasEyebrow

@@ -23,6 +23,11 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
   version: 1,
   name: 'Built-in sample',
   ground: 'light',
+  // Stated rather than defaulted: this spec is hand-authored, and a reader
+  // comparing it against a rendered thumbnail should not have to know what the
+  // schema fills in.
+  featureCount: 3,
+  featureStyle: 'labelAndBody',
   rows: [
     {
       // Logo, eyebrow, headline, rule and body — the full copy stack, so every

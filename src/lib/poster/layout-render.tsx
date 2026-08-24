@@ -1,3 +1,4 @@
+import { withAlpha } from '@/lib/poster/color';
 import { fittedHeadlineSize, type PosterMetrics } from '@/lib/poster/metrics';
 import {
   AccentRule,
@@ -50,10 +51,10 @@ import type {
  * because their photo areas are expressed in canvas fractions. A spec's photo
  * cell sits in a row whose height is only settled after layout, so instead the
  * image fills its cell with `object-fit: cover` and lets satori resolve it. That
- * also removes the focus-point machinery: `photoFocus` exists in the archetypes
- * to protect the negative space that copy is laid *over*, and a spec cell never
- * overlays copy on a photo — `validateLayoutSpec` refuses that shape outright —
- * so a centre crop is not an approximation here, it is correct.
+ * Copy laid over a photograph is expressed by putting both in one cell: the
+ * photo becomes that cell's background under a scrim, rather than a stacked
+ * sibling. Everywhere else a centre crop is correct rather than approximate,
+ * because the copy sits beside the photograph rather than on it.
  */
 
 export interface LayoutRenderProps {
@@ -295,19 +296,82 @@ function Cell({
   const effectiveFill = cell.fill === 'inherit' ? rowFill : cell.fill;
   const ground = groundForLayoutFill(effectiveFill, theme, canvasIsDark);
 
-  const bleeds = cell.slots.every((slot) => SELF_BLEEDING.has(slot));
+  /*
+   * An overlay cell: a photograph behind, copy in front.
+   *
+   * The photo stops being a stacked sibling and becomes the cell's background,
+   * which is why it is pulled out of the slot list rather than rendered in it.
+   * Everything else in the cell draws normally on top.
+   */
+  const isOverlay =
+    cell.slots.includes('photo') && cell.slots.some((slot) => !SELF_BLEEDING.has(slot));
+  const drawnSlots = isOverlay ? cell.slots.filter((slot) => slot !== 'photo') : cell.slots;
+
+  const bleeds = drawnSlots.every((slot) => SELF_BLEEDING.has(slot));
   const padding = cell.padded && !bleeds ? metrics.margin : 0;
   const contentWidth = Math.max(1, width - padding * 2);
+
+  /*
+   * Copy over a photograph is copy over an unknown image, so the ground is
+   * forced dark and a scrim laid under it. The archetypes solved this with
+   * three-stop gradients that kept one side of the frame clean; a spec says the
+   * same thing by splitting the row, so a flat wash is all that is needed here.
+   *
+   * 0.55 is enough for `onDark` body copy to clear 4.5:1 against a mid-tone
+   * photograph. It is a starting point measured against the placeholder, not a
+   * guarantee for every image.
+   */
+  const overlayGround = isOverlay ? groundFor(theme, true) : ground;
+  const overlayPhoto = isOverlay ? photoIndexAt() : -1;
+
+  const drawn = drawnSlots.map((slot, index) => {
+    const previous = index > 0 ? drawnSlots[index - 1] : null;
+    const gap = previous ? metrics.s(slotGap(previous, slot)) : 0;
+
+    return (
+      <div
+        key={index}
+        style={{
+          display: 'flex',
+          // Photo and contact fill their cell; copy slots hang from the cell's
+          // own alignment edge.
+          ...(SELF_BLEEDING.has(slot)
+            ? { width: '100%', flexGrow: slot === 'photo' ? 1 : 0 }
+            : {}),
+          ...(gap > 0 ? { marginTop: gap } : {}),
+        }}
+      >
+        <Slot
+          slot={slot}
+          props={props}
+          ground={overlayGround}
+          align={cell.align}
+          width={contentWidth}
+          effectiveFill={effectiveFill}
+          photoIndexAt={photoIndexAt}
+        />
+      </div>
+    );
+  });
 
   return (
     <div
       style={{
         display: 'flex',
         flexDirection: 'column',
+        position: 'relative',
         width,
-        padding,
+        /*
+         * An overlay cell carries no padding of its own — its inner wrapper does.
+         *
+         * The background layers are positioned against the padding box and sized
+         * in percentages of the content box, so padding here would inset the
+         * photograph by the margin on every side: a black band down the right and
+         * along the bottom, which is exactly what the first version drew.
+         */
+        padding: isOverlay ? 0 : padding,
         overflow: 'hidden',
-        alignItems: FLEX[cell.align],
+        alignItems: isOverlay ? 'stretch' : FLEX[cell.align],
         // A hug row is exactly as tall as its content, so there is nothing to
         // distribute; a flex or fixed row has slack, and content pinned to the
         // top of a tall band reads as a mistake.
@@ -317,35 +381,97 @@ function Cell({
           : {}),
       }}
     >
-      {cell.slots.map((slot, index) => {
-        const previous = index > 0 ? cell.slots[index - 1] : null;
-        const gap = previous ? metrics.s(slotGap(previous, slot)) : 0;
+      {isOverlay && <OverlayBackground props={props} photoIndex={overlayPhoto} />}
 
-        return (
-          <div
-            key={index}
-            style={{
-              display: 'flex',
-              // Photo and contact fill their cell; copy slots hang from the
-              // cell's own alignment edge.
-              ...(SELF_BLEEDING.has(slot)
-                ? { width: '100%', flexGrow: slot === 'photo' ? 1 : 0 }
-                : {}),
-              ...(gap > 0 ? { marginTop: gap } : {}),
-            }}
-          >
-            <Slot
-              slot={slot}
-              props={props}
-              ground={ground}
-              align={cell.align}
-              width={contentWidth}
-              effectiveFill={effectiveFill}
-              photoIndexAt={photoIndexAt}
-            />
-          </div>
-        );
-      })}
+      {/*
+        * The padded wrapper exists only for an overlay cell, and deliberately.
+        *
+        * A photo slot fills its cell with `flexGrow: 1`, which needs the cell
+        * itself as its flex parent. Wrapping every cell put that growth inside a
+        * box with no height of its own, and every full-bleed photograph in the
+        * library silently disappeared. Non-overlay cells therefore keep the exact
+        * structure they had.
+        */}
+      {isOverlay ? (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            position: 'relative',
+            width: '100%',
+            padding,
+            alignItems: FLEX[cell.align],
+            justifyContent: rowIsHug ? 'flex-start' : 'center',
+          }}
+        >
+          {drawn}
+        </div>
+      ) : (
+        drawn
+      )}
+    </div>
+  );
+}
+
+/**
+ * The photograph and scrim behind an overlay cell's copy.
+ *
+ * Two absolutely-positioned layers at 100% of the cell rather than one image
+ * with a filter: satori has no `filter`, and a wrapper sized in percentages is
+ * the only thing that fills a cell whose height is settled by flex layout rather
+ * than known here. Verified against satori 0.10.14 before this was built on.
+ *
+ * Returns null rather than a grey box when no frame arrived — the copy stays
+ * legible on the cell's own fill, which is a far better failure than a hole.
+ */
+function OverlayBackground({
+  props,
+  photoIndex,
+}: {
+  props: LayoutRenderProps;
+  photoIndex: number;
+}) {
+  const { photos, theme } = props;
+  const photo = photos[photoIndex] ?? photos[photos.length - 1];
+  if (!photo) return null;
+
+  /*
+   * One rooted element, not a fragment. Satori walks the element tree itself and
+   * does not flatten `<>…</>` — an earlier version returned the photo and the
+   * scrim as fragment siblings and only the scrim was drawn, giving a flat dark
+   * band where the photograph should have been. Both layers now hang off a single
+   * absolutely-positioned container.
+   */
+  return (
+    <div
+      style={{
+        display: 'flex',
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+      }}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={photo.dataUri}
+        alt=""
+        width="100%"
+        height="100%"
+        style={{ objectFit: 'cover' }}
+      />
+      <div
+        style={{
+          display: 'flex',
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: withAlpha(theme.darkNeutral, 0.55),
+        }}
+      />
     </div>
   );
 }
@@ -367,7 +493,7 @@ function Slot({
   effectiveFill: LayoutFill;
   photoIndexAt: () => number;
 }) {
-  const { copy, theme, identity, metrics, photos, logoDimensions, logoInkLuminance } =
+  const { spec, copy, theme, identity, metrics, photos, logoDimensions, logoInkLuminance } =
     props;
   const copyAlign = ALIGN[align];
 
@@ -444,25 +570,40 @@ function Slot({
        * than about fourteen characters per line, which is where the strip stops
        * being readable and starts being a stack of hyphens.
        */
-      return width > metrics.s(560) ? (
-        <FeatureStrip
-          metrics={metrics}
-          theme={theme}
-          ground={ground}
-          align={copyAlign}
-          features={copy.features}
-          width={width}
-        />
-      ) : (
-        <FeatureList
-          metrics={metrics}
-          theme={theme}
-          ground={ground}
-          align={copyAlign}
-          features={copy.features}
-          width={width}
-        />
-      );
+      {
+        /*
+         * Trimmed to what the template has room for, and never padded out. The
+         * copy stage is asked for exactly `featureCount` items, but a day whose
+         * copy was written before the template was chosen — or under a different
+         * template — can arrive with more, and four cards in a three-card strip
+         * is the mismatch this whole field exists to stop. Fewer than asked for
+         * is left alone: inventing a filler item is worse than a shorter row.
+         */
+        const items = copy.features.slice(0, spec.featureCount);
+        const showBody = spec.featureStyle === 'labelAndBody';
+
+        return width > metrics.s(560) ? (
+          <FeatureStrip
+            metrics={metrics}
+            theme={theme}
+            ground={ground}
+            align={copyAlign}
+            features={items}
+            width={width}
+            showBody={showBody}
+          />
+        ) : (
+          <FeatureList
+            metrics={metrics}
+            theme={theme}
+            ground={ground}
+            align={copyAlign}
+            features={items}
+            width={width}
+            showBody={showBody}
+          />
+        );
+      }
 
     case 'contact':
       return (

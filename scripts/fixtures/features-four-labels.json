@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "name": "Four label cards",
+  "ground": "light",
+  "featureCount": 4,
+  "featureStyle": "labelOnly",
+  "rows": [
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "start",
+          "padded": true,
+          "slots": [
+            "logo",
+            "eyebrow",
+            "headline",
+            "accentRule"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "dark",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "dark",
+          "align": "center",
+          "padded": true,
+          "slots": [
+            "features"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "start",
+          "padded": false,
+          "slots": [
+            "photo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.1,
+      "fill": "accent",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "accent",
+          "align": "start",
+          "padded": false,
+          "slots": [
+            "contact"
+          ]
+        }
+      ]
+    }
+  ]
+}

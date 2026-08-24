@@ -528,6 +528,16 @@ export interface FeatureBlockProps extends SlotBase {
   features: PosterFeature[];
   /** Total width the block may occupy. */
   width: number;
+  /**
+   * Draw the sentence under each label.
+   *
+   * False for the label-only card rows a lot of reference posters use — an icon,
+   * one or two words, nothing else. The copy is still written and stored either
+   * way: `posterFeatureSchema.body` is `.min(1)`, so asking the copy stage for an
+   * empty body would fail validation and take the whole day's copy with it. The
+   * omission belongs here, at the point of drawing.
+   */
+  showBody?: boolean;
 }
 
 /** Icon in a circle, label right, two lines of body beneath. 6/12 references. */
@@ -538,6 +548,7 @@ export function FeatureList({
   align = 'start',
   features,
   width,
+  showBody = true,
 }: FeatureBlockProps) {
   const textWidth = width - metrics.feature.iconBox - metrics.feature.gap;
 
@@ -607,18 +618,20 @@ export function FeatureList({
               >
                 {feature.label}
               </div>
-              <div
-                style={{
-                  marginTop: metrics.s(4),
-                  fontFamily: theme.bodyFont.family,
-                  fontSize: metrics.feature.body,
-                  fontWeight: lightestWeight(theme.bodyFont),
-                  lineHeight: 1.45,
-                  color: withAlpha(ground.text, 0.75),
-                }}
-              >
-                {feature.body}
-              </div>
+              {showBody && (
+                <div
+                  style={{
+                    marginTop: metrics.s(4),
+                    fontFamily: theme.bodyFont.family,
+                    fontSize: metrics.feature.body,
+                    fontWeight: lightestWeight(theme.bodyFont),
+                    lineHeight: 1.45,
+                    color: withAlpha(ground.text, 0.75),
+                  }}
+                >
+                  {feature.body}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -638,6 +651,7 @@ export function FeatureStrip({
   ground,
   features,
   width,
+  showBody = true,
 }: FeatureBlockProps) {
   const columnWidth = width / features.length;
 
@@ -697,19 +711,21 @@ export function FeatureStrip({
             >
               {feature.label}
             </div>
-            <div
-              style={{
-                marginTop: metrics.s(6),
-                fontFamily: theme.bodyFont.family,
-                fontSize: metrics.feature.body,
-                fontWeight: lightestWeight(theme.bodyFont),
-                lineHeight: 1.4,
-                textAlign: 'center',
-                color: withAlpha(ground.text, 0.72),
-              }}
-            >
-              {feature.body}
-            </div>
+            {showBody && (
+              <div
+                style={{
+                  marginTop: metrics.s(6),
+                  fontFamily: theme.bodyFont.family,
+                  fontSize: metrics.feature.body,
+                  fontWeight: lightestWeight(theme.bodyFont),
+                  lineHeight: 1.4,
+                  textAlign: 'center',
+                  color: withAlpha(ground.text, 0.72),
+                }}
+              >
+                {feature.body}
+              </div>
+            )}
           </div>
         </div>
       ))}

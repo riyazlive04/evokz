@@ -43,9 +43,14 @@ import { z } from 'zod';
  * What a cell can contain.
  *
  * Deliberately the slot skeleton of docs/creative-style-spec.md §2 and nothing
- * else. A spec chooses *where* the eight slots go; it can neither invent a ninth
- * nor restyle one, which is what keeps every poster in a campaign recognisably
- * the same system however many templates a vertical accumulates.
+ * else. A spec chooses *where* the eight slots go and, through `featureCount`
+ * and `featureStyle`, how densely one of them is drawn; it can neither invent a
+ * ninth slot nor restyle one, which is what keeps every poster in a campaign
+ * recognisably the same system however many templates a vertical accumulates.
+ *
+ * A cell holding a photo *and* text is the one layering the model allows: the
+ * photograph becomes that cell's background and the copy is drawn over it. Every
+ * other combination stacks.
  *
  * `spacer` is the one addition, and it carries no content: it exists so a
  * template with a deliberately empty column — the wide left gutter that a lot of
@@ -168,6 +173,31 @@ export const posterLayoutSpecSchema = z.object({
   name: z.string().min(1).max(80),
   /** The canvas behind every `inherit` row. */
   ground: z.enum(['light', 'dark']),
+  /**
+   * How many items the template's feature block holds.
+   *
+   * On the spec rather than the cell because `validateLayoutSpec` already caps a
+   * spec at one `features` slot, so there is nowhere else it could apply.
+   *
+   * **The default is what lets existing templates alone.** Every spec stored
+   * before this field existed parses with 3 and renders exactly as it did — the
+   * count the copy stage has always produced. Only a newly extracted spec
+   * carries a measured value.
+   */
+  featureCount: z.number().int().min(2).max(4).default(3),
+  /**
+   * Whether each feature card carries a sentence under its label.
+   *
+   * Reference posters split about evenly: a wide strip of three labelled
+   * paragraphs, or a row of four icon cards with nothing but a one-or-two-word
+   * label. Rendering the second as the first is the single most common way a
+   * generated poster stops looking like the template it came from.
+   *
+   * Expressed here and honoured in the renderer rather than by asking the copy
+   * stage for empty bodies — `posterFeatureSchema.body` is `.min(1)`, so an empty
+   * one fails validation and takes the whole day's copy with it.
+   */
+  featureStyle: z.enum(['labelAndBody', 'labelOnly']).default('labelAndBody'),
   rows: z.array(layoutRowSchema).min(1),
 });
 
@@ -221,16 +251,24 @@ export function validateLayoutSpec(spec: PosterLayoutSpec): LayoutSpecProblem[] 
         counts.set(slot, (counts.get(slot) ?? 0) + 1);
       }
 
-      // A photo shares its cell with type only in compositions that put the copy
-      // *over* the image, which this model cannot express — cells stack their
-      // slots, they do not overlay them. Catching it here turns a baffling
-      // render into a sentence.
-      if (cell.slots.includes('photo') && cell.slots.some((s) => TEXT_SLOTS.has(s))) {
+      /*
+       * A cell holding a photo *and* text is an overlay: the photograph becomes
+       * the cell's background and the copy is drawn over it under a scrim. That
+       * used to be refused outright, because cells stack their slots rather than
+       * layering them — but a full-bleed photo with the headline on top is one of
+       * the commonest poster shapes there is, and approximating it as two
+       * separate bands is visibly not the same poster.
+       *
+       * Two photos in one cell has no meaning, though: the second would be drawn
+       * underneath the first and never seen.
+       */
+      const photosHere = cell.slots.filter((slot) => slot === 'photo').length;
+      if (photosHere > 1 && cell.slots.some((s) => TEXT_SLOTS.has(s))) {
         problems.push({
           path,
           message:
-            'puts a photo and text in one cell. Slots stack vertically, they do not ' +
-            'overlay — split the row into two cells instead.',
+            `overlays text on ${photosHere} photos. An overlay cell backs its copy ` +
+            'with exactly one photograph — split the row instead.',
         });
       }
     });
@@ -316,6 +354,26 @@ export function normalizeLayoutSpec(spec: PosterLayoutSpec): PosterLayoutSpec {
       slots: cell.slots.length > 0 ? cell.slots : (['spacer'] as LayoutSlot[]),
     })),
   }));
+
+  /*
+   * A `hug` row with nothing to hug collapses to nothing.
+   *
+   * `hug` means "as tall as its type". A row holding only a photograph — or only
+   * a spacer — has no type, so it resolves to zero height and the photograph
+   * vanishes: the poster renders, looks deliberate, and is simply missing a band.
+   * Seen on a real extraction, where the model marked a full-width hero photo
+   * `hug` and the top third of the poster came out blank.
+   *
+   * Promoted to `flex` rather than given an invented `heightFraction`, because
+   * flex is what a photo row is for — it is the band that gives when the copy
+   * runs long. Several flex rows simply share what is left.
+   */
+  for (const [index, row] of rows.entries()) {
+    if (row.sizingMode !== 'hug') continue;
+    const hasType = row.cells.some((cell) => cell.slots.some((slot) => TEXT_SLOTS.has(slot)));
+    if (hasType) continue;
+    rows[index] = { ...row, sizingMode: 'flex', heightFraction: 0 };
+  }
 
   // Promote a flex row if the extractor marked none. The photo row is the right
   // one for the reason given on LAYOUT_SIZING_MODES; failing that, the row with
@@ -442,6 +500,10 @@ export interface LayoutCopyShape {
   hasEyebrow: boolean;
   hasBody: boolean;
   hasFeatures: boolean;
+  /** How many feature items the template has room for. */
+  featureCount: number;
+  /** False when the cards are label-only, so bodies are written but never drawn. */
+  featureBodies: boolean;
   /** Share of the canvas width the headline column gets, 0–1. */
   headlineWidthShare: number;
 }
@@ -464,6 +526,8 @@ export function describeCopyShape(spec: PosterLayoutSpec): LayoutCopyShape {
     hasEyebrow: slots.has('eyebrow'),
     hasBody: slots.has('body'),
     hasFeatures: slots.has('features'),
+    featureCount: spec.featureCount,
+    featureBodies: spec.featureStyle === 'labelAndBody',
     headlineWidthShare,
   };
 }
