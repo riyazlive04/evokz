@@ -91,7 +91,11 @@ async function main() {
       label: true,
       layoutApprovedAt: true,
       layoutSpec: true,
-      category: { select: { name: true } },
+      width: true,
+      height: true,
+      category: {
+        select: { name: true, clients: { select: { imageSizePreset: true } } },
+      },
     },
     orderBy: [{ category: { name: 'asc' } }, { label: 'asc' }],
   });
@@ -136,6 +140,44 @@ async function main() {
     const problems = validateLayoutSpec(spec);
     for (const problem of problems) note(`invalid: ${problem.path} ${problem.message}`);
     if (problems.length > 0) continue;
+
+    /*
+     * The reference and the canvas must be the same shape.
+     *
+     * A spec records band order and column splits, never the aspect it was read
+     * from, and `resolveMetrics` sizes type against a fixed portrait reference.
+     * So a square 600x600 template drawn onto a 9:16 canvas keeps its type at
+     * reference size while the frame grows 42% taller, and every plain-ground
+     * margin the reference had — a tasteful gutter at 1:1 — opens into a
+     * half-poster void. Four live Individuals templates were doing exactly this
+     * while passing every other check in this file.
+     *
+     * Compared against the presets this vertical's clients are actually set to,
+     * not against every preset: a square reference is perfectly correct for a
+     * client delivering square, and calling that an error would be noise.
+     */
+    if (row.width && row.height) {
+      const reference = row.width / row.height;
+      const wanted = new Map<string, number>();
+      for (const client of row.category.clients) {
+        // Null means the client never chose one and takes the app default, which
+        // is resolved at render time — nothing to compare against here.
+        if (!client.imageSizePreset) continue;
+        const preset = getImageSizePreset(client.imageSizePreset);
+        if (preset) wanted.set(client.imageSizePreset, preset.width / preset.height);
+      }
+      for (const [id, aspect] of wanted) {
+        // 15% apart is roughly 4:5 against 9:16 — close enough that the bands
+        // stretch without opening holes. Beyond it they open holes.
+        if (Math.abs(reference - aspect) / aspect > 0.15) {
+          note(
+            `reference is ${row.width}x${row.height} (${reference.toFixed(2)}:1) but ` +
+              `clients here deliver at "${id}" (${aspect.toFixed(2)}:1) — ` +
+              'the layout will stretch and leave empty bands.',
+          );
+        }
+      }
+    }
 
     for (const presetId of PRESETS) {
       const preset = getImageSizePreset(presetId)!;

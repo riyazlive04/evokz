@@ -212,12 +212,20 @@ export async function renderPoster(
    * compresses. Reporting an empty `dropped` array would have retired the only
    * signal an operator ever got that their preset was degrading the poster, so
    * the mode is reported instead.
+   *
+   * It used to say the layout "was authored for a portrait frame", which nothing
+   * anywhere enforces and which was simply false for four live templates: square
+   * 600x600 references drawn onto a 9:16 canvas, where the reference's modest
+   * plain-ground margins became half-poster voids. A spec carries no record of
+   * the aspect it was read from, so this reports the canvas and stops there
+   * rather than asserting something it cannot know. `check:fleet` is where the
+   * reference-versus-preset mismatch is actually caught.
    */
   if (metrics.mode !== 'tall') {
     console.warn(
-      `[ace:poster] ${input.width}×${input.height} is a "${metrics.mode}" canvas — ` +
-        `layout "${input.layoutSpec.name}" was authored for a portrait frame and its ` +
-        'rows will compress. Pick a portrait preset.',
+      `[ace:poster] ${input.width}×${input.height} is a "${metrics.mode}" canvas and ` +
+        `layout "${input.layoutSpec.name}" is being drawn onto it; rows will compress. ` +
+        'Check the reference this layout was read from is the same shape.',
     );
   }
 
