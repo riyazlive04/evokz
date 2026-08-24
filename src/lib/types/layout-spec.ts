@@ -428,3 +428,42 @@ export function countPhotoSlots(spec: PosterLayoutSpec): number {
     0,
   );
 }
+
+/**
+ * What a layout wants from the copy stage.
+ *
+ * The renderer ignores content for slots a spec does not declare, so this is not
+ * about correctness — it is about not asking the model for words that will never
+ * be drawn, and about asking for the right *number* of feature items. A template
+ * whose feature strip has room for three reads badly with four, and the copy
+ * stage has no other way to know.
+ */
+export interface LayoutCopyShape {
+  hasEyebrow: boolean;
+  hasBody: boolean;
+  hasFeatures: boolean;
+  /** Share of the canvas width the headline column gets, 0–1. */
+  headlineWidthShare: number;
+}
+
+export function describeCopyShape(spec: PosterLayoutSpec): LayoutCopyShape {
+  const slots = new Set<LayoutSlot>();
+  let headlineWidthShare = 1;
+
+  for (const row of spec.rows) {
+    const totalWeight = row.cells.reduce((sum, cell) => sum + cell.weight, 0);
+    for (const cell of row.cells) {
+      for (const slot of cell.slots) slots.add(slot);
+      if (cell.slots.includes('headline') && totalWeight > 0) {
+        headlineWidthShare = cell.weight / totalWeight;
+      }
+    }
+  }
+
+  return {
+    hasEyebrow: slots.has('eyebrow'),
+    hasBody: slots.has('body'),
+    hasFeatures: slots.has('features'),
+    headlineWidthShare,
+  };
+}

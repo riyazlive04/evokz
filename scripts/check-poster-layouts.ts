@@ -4,9 +4,12 @@
  * Three things, in order of how cheap they are to run:
  *
  *   1. Spec validation — the rules that keep a bad layout out of production.
- *   2. Archetype renders — every one of the fifteen, so a change made for the
- *      spec path cannot silently break the path that still serves most clients.
- *   3. Spec renders — supplied spec JSON, at portrait and off-brand canvases.
+ *   2. Fixture renders — every spec in `scripts/fixtures/`, chosen to span the
+ *      interpreter's decision space rather than to imitate any real template.
+ *      They load by default, so this suite is meaningful with no arguments and
+ *      adding a regression case is a file drop.
+ *   3. Failure modes — the throws that must stay catchable, including the canvas
+ *      aspect that used to panic resvg in Rust and abort the whole process.
  *
  * No network, no database, no fal.ai: the photography is procedural and the
  * fonts come from the same loader production uses. There is no test framework in
@@ -15,15 +18,13 @@
  *
  * Run: npx tsx scripts/check-poster-layouts.ts [spec.json...]
  */
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 
 import { getImageSizePreset } from '@/lib/image-sizes';
 import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
-import {
-  resolvePhotoRequest,
-  resolveSpecPhotoRequests,
-} from '@/lib/poster/photo-request';
+import { resolveSpecPhotoRequests } from '@/lib/poster/photo-request';
+import { SAMPLE_LAYOUT_SPEC } from '@/lib/poster/sample-layout';
 import { renderPoster } from '@/lib/poster/render';
 import { EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
 import {
@@ -34,7 +35,7 @@ import {
   validateLayoutSpec,
   type PosterLayoutSpec,
 } from '@/lib/types/layout-spec';
-import { POSTER_ARCHETYPES, type PosterCopy } from '@/lib/types/poster';
+import type { PosterCopy } from '@/lib/types/poster';
 
 let failures = 0;
 
@@ -104,6 +105,9 @@ const PRESETS = [
   'instagram-portrait',
   'instagram-square',
   'instagram-landscape',
+  // 2.39:1, so it resolves to `letterbox` and compresses every row — the widest
+  // shape the renderer will still attempt.
+  'desktop-ultrawide',
 ];
 
 // ---------------------------------------------------------------------------
@@ -251,37 +255,8 @@ async function renderChecks(specs: Array<{ label: string; spec: PosterLayoutSpec
     logoUrl: `data:image/png;base64,${logoBytes.toString('base64')}`,
   };
 
-  console.log('\n=== archetype renders (regression) ===');
-  for (const archetype of POSTER_ARCHETYPES) {
-    const preset = getImageSizePreset('whatsapp-status')!;
-    const request = resolvePhotoRequest(archetype, preset);
-    try {
-      const poster = await renderPoster({
-        archetype,
-        layoutSpec: null,
-        dayNumber: 1,
-        copy: COPY,
-        guideline: EMPTY_BRAND_GUIDELINE,
-        identity,
-        photos: [placeholder(request.width, request.height, 0)],
-        width: preset.width,
-        height: preset.height,
-      });
-      check(
-        `${archetype} renders`,
-        poster.body.byteLength > 0 && poster.layout === 'archetype',
-      );
-    } catch (error) {
-      check(`${archetype} renders`, false, describe(error));
-    }
-  }
+  console.log('\n=== fixture spec renders (regression) ===');
 
-  if (specs.length === 0) {
-    console.log('\n(no spec files given — skipping spec renders)');
-    return;
-  }
-
-  console.log('\n=== spec renders ===');
   for (const entry of specs) {
     for (const presetId of PRESETS) {
       const preset = getImageSizePreset(presetId)!;
@@ -292,19 +267,17 @@ async function renderChecks(specs: Array<{ label: string; spec: PosterLayoutSpec
 
       try {
         const poster = await renderPoster({
-          archetype: null,
           layoutSpec: entry.spec,
-          dayNumber: 1,
           copy: COPY,
           guideline: EMPTY_BRAND_GUIDELINE,
           identity,
-          photos: photos.length > 0 ? photos : [placeholder(1024, 1024, 0)],
+          photos,
           width: preset.width,
           height: preset.height,
         });
         check(
           `${entry.label} @ ${preset.width}×${preset.height}`,
-          poster.body.byteLength > 0 && poster.layout === 'spec',
+          poster.body.byteLength > 0 && poster.layoutName === entry.spec.name,
         );
       } catch (error) {
         check(
@@ -320,8 +293,56 @@ async function renderChecks(specs: Array<{ label: string; spec: PosterLayoutSpec
     const preset = getImageSizePreset('whatsapp-status')!;
     check(
       `${entry.label} asks for one photo per slot`,
-      resolveSpecPhotoRequests(entry.spec, preset).length ===
-        countPhotoSlots(entry.spec),
+      resolveSpecPhotoRequests(entry.spec, preset).length === countPhotoSlots(entry.spec),
+    );
+  }
+
+  console.log('\n=== failure modes ===');
+
+  const preset = getImageSizePreset('whatsapp-status')!;
+  const withPhoto = specs.find((entry) => countPhotoSlots(entry.spec) > 0);
+
+  // A spec that wants photography and is handed none must say so by name, not
+  // die on a generic "no background photo" from deep in the renderer.
+  if (withPhoto) {
+    try {
+      await renderPoster({
+        layoutSpec: withPhoto.spec,
+        copy: COPY,
+        guideline: EMPTY_BRAND_GUIDELINE,
+        identity,
+        photos: [],
+        width: preset.width,
+        height: preset.height,
+      });
+      check('a photo spec with no frames throws', false, 'it rendered');
+    } catch (error) {
+      check(
+        'a photo spec with no frames throws, naming the layout',
+        describe(error).includes(withPhoto.spec.name),
+        describe(error),
+      );
+    }
+  }
+
+  // The canvas that used to panic resvg in Rust and abort the whole process,
+  // taking a cron sweep with it. It must be a catchable JS throw.
+  try {
+    await renderPoster({
+      layoutSpec: SAMPLE_LAYOUT_SPEC,
+      copy: COPY,
+      guideline: EMPTY_BRAND_GUIDELINE,
+      identity,
+      photos: [placeholder(1024, 256, 0)],
+      width: 2400,
+      height: 400,
+    });
+    check('a beyond-4:1 canvas is refused', false, 'it rendered');
+  } catch (error) {
+    check(
+      'a beyond-4:1 canvas is refused before resvg sees it',
+      describe(error).includes('the poster layer can compose'),
+      describe(error),
     );
   }
 }
@@ -333,7 +354,35 @@ function describe(error: unknown): string {
 async function main() {
   validationChecks();
 
-  const specs: Array<{ label: string; spec: PosterLayoutSpec }> = [];
+  console.log('\n=== shipped sample layout ===');
+  check(
+    'SAMPLE_LAYOUT_SPEC is structurally valid',
+    validateLayoutSpec(SAMPLE_LAYOUT_SPEC).length === 0,
+    validateLayoutSpec(SAMPLE_LAYOUT_SPEC)
+      .map((problem) => `${problem.path} ${problem.message}`)
+      .join('; '),
+  );
+
+  const specs: Array<{ label: string; spec: PosterLayoutSpec }> = [
+    { label: 'SAMPLE_LAYOUT_SPEC', spec: SAMPLE_LAYOUT_SPEC },
+  ];
+
+  // Fixtures load by default, so the suite has real coverage with no arguments.
+  // Parsed through `parseLayoutSpec` rather than trusted, which exercises the
+  // stored-column path at the same time.
+  const fixtureDir = new URL('fixtures/', import.meta.url);
+  for (const name of (await readdir(fixtureDir)).filter((f) => f.endsWith('.json'))) {
+    const parsed = parseLayoutSpec(
+      JSON.parse(await readFile(new URL(name, fixtureDir), 'utf8')),
+    );
+    if (!parsed) {
+      failures += 1;
+      console.error(`  FAIL fixture ${name} is not a usable spec`);
+      continue;
+    }
+    specs.push({ label: name, spec: parsed });
+  }
+
   for (const path of process.argv.slice(2)) {
     const parsed = parseLayoutSpec(JSON.parse(await readFile(path, 'utf8')));
     if (!parsed) {
@@ -347,7 +396,8 @@ async function main() {
   await renderChecks(specs);
 
   if (failures > 0) {
-    console.error(`\n${failures} check(s) failed.`);
+    console.error(`
+${failures} check(s) failed.`);
     process.exitCode = 1;
   } else {
     console.log('\nAll poster layout checks passed.');

@@ -5,7 +5,6 @@ import { Resvg } from '@resvg/resvg-js';
 import satori from 'satori';
 
 import { intEnv, optionalEnv } from '@/lib/env';
-import { renderArchetype } from '@/lib/poster/archetypes';
 import { loadFonts } from '@/lib/poster/fonts';
 import { renderLayoutSpec } from '@/lib/poster/layout-render';
 import {
@@ -14,18 +13,14 @@ import {
   type ImageDimensions,
 } from '@/lib/poster/image-info';
 import { measureInkLuminance } from '@/lib/poster/logo-key';
-import { droppedSlots, resolveMetrics } from '@/lib/poster/metrics';
+import { resolveMetrics } from '@/lib/poster/metrics';
 import { requiredFaces, resolvePosterTheme } from '@/lib/poster/theme';
 import type { BrandGuideline } from '@/lib/types/brand';
-import type { PosterLayoutSpec } from '@/lib/types/layout-spec';
-import {
-  archetypeForDay,
-  posterArchetypeSchema,
-  type PosterArchetype,
-  type PosterCopy,
-  type PosterIdentity,
-  type PosterPhoto,
-  type PosterSpec,
+import { countPhotoSlots, type PosterLayoutSpec } from '@/lib/types/layout-spec';
+import type {
+  PosterCopy,
+  PosterIdentity,
+  PosterPhoto,
 } from '@/lib/types/poster';
 
 /**
@@ -55,19 +50,12 @@ import {
  */
 
 export interface RenderPosterInput {
-  /** Explicit choice, or null to derive deterministically from `dayNumber`. */
-  archetype: string | null;
   /**
-   * A template's own geometry, when the vertical has one mapped.
-   *
-   * Takes precedence over `archetype` — a spec is the layout an operator
-   * uploaded and approved, while an archetype is the nearest of fifteen
-   * built-in compositions somebody thought it resembled. `archetype` stays as
-   * the fallback for verticals with no specs yet, and as the landing place when
-   * a stored spec no longer parses.
+   * The geometry to draw. There is no other way to lay out a poster — every one
+   * comes from a reference template an operator uploaded and approved, resolved
+   * by `resolveDayLayout` before this is called.
    */
-  layoutSpec: PosterLayoutSpec | null;
-  dayNumber: number;
+  layoutSpec: PosterLayoutSpec;
   copy: PosterCopy;
   guideline: BrandGuideline;
   identity: {
@@ -84,10 +72,9 @@ export interface RenderPosterInput {
   /**
    * Background photo bytes from the image stage, in slot order.
    *
-   * An array because a layout spec may declare two photo cells — the reference
-   * templates routinely pair a hero shot with a detail shot — while every
-   * archetype uses exactly one and reads `photos[0]`. A spec given fewer frames
-   * than it has slots repeats the last rather than leaving a hole.
+   * An array because a spec may declare two photo cells — reference templates
+   * routinely pair a hero shot with a detail shot. Fewer frames than slots
+   * repeats the last one rather than leaving a hole; see the warning below.
    */
   photos: Buffer[];
   /** Output canvas, from the client's `imageSizePreset`. */
@@ -98,29 +85,43 @@ export interface RenderPosterInput {
 export interface RenderedPoster {
   body: Buffer;
   mimeType: 'image/png';
+  /** The layout's operator-facing name — which template drew this. */
+  layoutName: string;
   /**
-   * Which composition drew it. `archetype` is still reported on a spec render —
-   * it is what the row would have used — so a stored value stays meaningful if
-   * the spec is later unmapped.
+   * Resolved canvas mode. Anything but `tall` means an off-brand preset
+   * compressed the rows, which is worth an operator knowing about.
    */
-  layout: 'spec' | 'archetype';
-  /** The spec's operator-facing name, when one was used. */
-  layoutName: string | null;
-  archetype: PosterArchetype;
-  /** Slots the canvas mode could not carry. Empty for portrait presets. */
-  dropped: string[];
+  canvasMode: string;
 }
 
 export async function renderPoster(
   input: RenderPosterInput,
 ): Promise<RenderedPoster> {
-  const archetype = resolveArchetype(input.archetype, input.dayNumber);
   const theme = resolvePosterTheme(input.guideline);
   const metrics = resolveMetrics(input.width, input.height);
   assertRenderableCanvas(metrics, input.width, input.height);
 
-  if (input.photos.length === 0) {
-    throw new Error('The poster layer was given no background photo to compose.');
+  /*
+   * A spec with no photo cell is legal — `validateLayoutSpec` does not demand
+   * one — so the guard is conditional on the spec actually wanting a photograph
+   * rather than on the array being empty. Under the archetypes this could not
+   * happen: every one of them had a photo region.
+   */
+  const wantedPhotos = countPhotoSlots(input.layoutSpec);
+  if (wantedPhotos > 0 && input.photos.length === 0) {
+    throw new Error(
+      `The layout "${input.layoutSpec.name}" declares ${wantedPhotos} photo cell(s) but ` +
+        'the poster layer was given no background photo.',
+    );
+  }
+  if (wantedPhotos > input.photos.length && input.photos.length > 0) {
+    // The renderer repeats the last frame rather than leaving a hole, which is
+    // the right policy and a bad thing to do silently — a two-photo poster whose
+    // second diffusion call failed would otherwise ship the same image twice.
+    console.warn(
+      `[ace:poster] layout "${input.layoutSpec.name}" wants ${wantedPhotos} photos but ` +
+        `${input.photos.length} were supplied — the last frame will be repeated.`,
+    );
   }
 
   const photos: PosterPhoto[] = input.photos.map((bytes, index) => {
@@ -138,9 +139,6 @@ export async function renderPoster(
     };
   });
 
-  // Non-null: the length check above guarantees at least one entry.
-  const photo = photos[0]!;
-
   const logo = await loadLogo(input.identity.logoUrl);
 
   const identity: PosterIdentity = {
@@ -152,41 +150,19 @@ export async function renderPoster(
     website: normalizeWebsite(input.identity.websiteUrl),
   };
 
-  const spec: PosterSpec = {
-    archetype,
-    copy: input.copy,
-    theme,
-    identity,
-    photo,
-    width: input.width,
-    height: input.height,
-  };
-
   const fonts = await loadFonts(requiredFaces(theme));
 
   // Stage 1 — lay out the tree and emit SVG.
-  //
-  // A layout spec wins where the vertical has one: it is the geometry an
-  // operator uploaded and signed off, against an archetype's "nearest of
-  // fifteen". The archetype path is untouched and still serves every vertical
-  // with no specs mapped yet.
-  const tree = input.layoutSpec
-    ? renderLayoutSpec({
-        spec: input.layoutSpec,
-        copy: input.copy,
-        theme,
-        identity,
-        photos,
-        metrics,
-        logoDimensions: logo?.dimensions ?? null,
-        logoInkLuminance: logo?.inkLuminance ?? null,
-      })
-    : renderArchetype({
-        spec,
-        metrics,
-        logoDimensions: logo?.dimensions ?? null,
-        logoInkLuminance: logo?.inkLuminance ?? null,
-      });
+  const tree = renderLayoutSpec({
+    spec: input.layoutSpec,
+    copy: input.copy,
+    theme,
+    identity,
+    photos,
+    metrics,
+    logoDimensions: logo?.dimensions ?? null,
+    logoInkLuminance: logo?.inkLuminance ?? null,
+  });
 
   const svg = await satori(tree, {
     width: input.width,
@@ -205,7 +181,7 @@ export async function renderPoster(
   // *before* it is handed over. Set POSTER_DEBUG_SVG_DIR to keep a copy.
   const debugDir = optionalEnv('POSTER_DEBUG_SVG_DIR', '');
   if (debugDir) {
-    const name = `poster-${input.width}x${input.height}-${archetype}.svg`;
+    const name = `poster-${input.width}x${input.height}-${slugify(input.layoutSpec.name)}.svg`;
     await writeFile(join(debugDir, name), svg, 'utf8').catch((error: unknown) => {
       console.warn(`[ace:poster] could not write debug SVG: ${describe(error)}`);
     });
@@ -228,26 +204,34 @@ export async function renderPoster(
     throw new Error('The poster renderer produced an empty image');
   }
 
-  // Only the archetypes switch composition by canvas mode — `WideLayout` and
-  // `LetterboxLayout` genuinely drop slots to fit. A spec renders its own grid
-  // at whatever aspect it is given, so nothing is dropped and reporting the
-  // archetype answer here would be a lie an operator might act on.
-  const dropped = input.layoutSpec ? [] : droppedSlots(metrics.mode);
-  if (dropped.length > 0) {
+  /*
+   * The archetypes reported which slots an off-brand canvas forced them to drop.
+   * A spec drops nothing — it renders its own grid at whatever aspect it is
+   * given — but it is not therefore unaffected: `resolveMetrics` scales a
+   * `wide` or `letterbox` canvas against a much shorter reference and every row
+   * compresses. Reporting an empty `dropped` array would have retired the only
+   * signal an operator ever got that their preset was degrading the poster, so
+   * the mode is reported instead.
+   */
+  if (metrics.mode !== 'tall') {
     console.warn(
       `[ace:poster] ${input.width}×${input.height} is a "${metrics.mode}" canvas — ` +
-        `dropped: ${dropped.join(', ')}. Pick a portrait preset to carry the full layout.`,
+        `layout "${input.layoutSpec.name}" was authored for a portrait frame and its ` +
+        'rows will compress. Pick a portrait preset.',
     );
   }
 
   return {
     body,
     mimeType: 'image/png',
-    layout: input.layoutSpec ? 'spec' : 'archetype',
-    layoutName: input.layoutSpec?.name ?? null,
-    archetype,
-    dropped,
+    layoutName: input.layoutSpec.name,
+    canvasMode: metrics.mode,
   };
+}
+
+/** Filesystem-safe form of a layout name, for the debug SVG filename. */
+function slugify(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'layout';
 }
 
 // ---------------------------------------------------------------------------
@@ -327,18 +311,6 @@ function assertRenderableCanvas(
         'minimum edge the poster layer can compose.',
     );
   }
-}
-
-// ---------------------------------------------------------------------------
-// Archetype selection
-// ---------------------------------------------------------------------------
-
-function resolveArchetype(stored: string | null, dayNumber: number): PosterArchetype {
-  const parsed = posterArchetypeSchema.safeParse(stored);
-  if (parsed.success) return parsed.data;
-  // Covers both null and a value written by an older build whose archetype has
-  // since been renamed. Deriving from the day keeps a campaign varied.
-  return archetypeForDay(dayNumber);
 }
 
 // ---------------------------------------------------------------------------

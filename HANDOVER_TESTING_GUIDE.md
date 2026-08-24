@@ -1,5 +1,11 @@
 # Evokz ACE — Handover & Testing Guide
 
+> **Superseded 2026-08-23.** The fifteen built-in archetypes were removed; every poster is
+> now drawn from a reference template uploaded to the client's vertical and approved by an
+> operator. Passages below describing archetypes, `posterArchetype`, the `theme` import
+> column or `/admin/poster-preview` are history. See README § Layouts and
+> docs/creative-style-spec.md §7.
+
 **For:** the developer taking over testing, bug-hunting and fixes
 **Written:** 2026-08-04
 **Companion to:** [`PROJECT_KNOWLEDGE_BASE.md`](PROJECT_KNOWLEDGE_BASE.md)

@@ -39,7 +39,8 @@ export interface QueueRecord {
   id: string;
   dayNumber: number;
   scheduledDate: Date;
-  theme: string;
+  /** Null on days imported from a sheet — those carry no content angle. */
+  theme: string | null;
   caption: string;
   hashtags: string;
   deliveryStatus: DeliveryStatus;

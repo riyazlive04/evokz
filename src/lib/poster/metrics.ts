@@ -14,17 +14,13 @@ import { REFERENCE_HEIGHT, REFERENCE_WIDTH } from '@/lib/types/poster';
 // ---------------------------------------------------------------------------
 
 /**
- * How much of the slot skeleton a canvas can actually carry.
+ * How far a canvas departs from the portrait frame layouts are authored in.
  *
- * The five archetypes are portrait compositions — the spec's whole vertical stack
- * assumes a tall canvas. But `IMAGE_SIZE_PRESETS` offers square, landscape and
- * letterbox shapes (all flagged `offBrand`), and an operator may legitimately
- * pick one. Rather than emit a poster with slots running off the bottom edge,
- * the renderer switches composition:
- *
- *   tall      — the archetype as designed, full vertical stack
- *   wide      — copy confined to a left column, photo right, features listed
- *   letterbox — logo + headline + contact only; body and features are dropped
+ * **Advisory only.** It used to select between three compositions, because the
+ * archetypes answered an off-brand canvas by re-laying their slots into a row. A
+ * layout spec cannot do that — it is a stack of rows whatever the aspect — so
+ * this now only tells the renderer whether to warn that a preset is squeezing
+ * the poster. Nothing branches on it.
  *
  * Thresholds are on the aspect ratio (width / height).
  */
@@ -33,44 +29,11 @@ export type CanvasMode = 'tall' | 'wide' | 'letterbox';
 const WIDE_ABOVE_ASPECT = 0.82;
 const LETTERBOX_ABOVE_ASPECT = 2.2;
 
-/**
- * Reference height the letterbox row is fitted against.
- *
- * Letterbox keeps only the logo lockup, headline and contact bar, arranged
- * side by side, so it does not need the full 1568 px stack. It does still need
- * room for the tallest cell — the logo box, 180 reference px — plus its own
- * vertical margins. 320 leaves comfortable headroom for both.
- *
- * Sized empirically against the shortest preset in the catalogue
- * (`linkedin-banner`, 1128×191): scale resolves to 0.597, giving a 107 px logo
- * box and 13 px margins inside 191 px. `desktop-ultrawide` (3440×1440) is
- * unaffected — width still binds there.
- */
-const LETTERBOX_REFERENCE_HEIGHT = 320;
-
 export function resolveCanvasMode(width: number, height: number): CanvasMode {
   const aspect = width / height;
   if (aspect > LETTERBOX_ABOVE_ASPECT) return 'letterbox';
   if (aspect > WIDE_ABOVE_ASPECT) return 'wide';
   return 'tall';
-}
-
-/**
- * Slots a mode cannot fit, for the caller to log.
- *
- * Silent truncation is the failure worth guarding against here: a letterbox
- * poster that quietly omits the feature block looks intentional, and nobody
- * discovers the preset was a bad choice.
- */
-export function droppedSlots(mode: CanvasMode): string[] {
-  switch (mode) {
-    case 'letterbox':
-      return ['body paragraph', 'feature block', 'eyebrow'];
-    case 'wide':
-      return [];
-    case 'tall':
-      return [];
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,25 +91,28 @@ export interface PosterMetrics {
  * tall and push the contact bar off a 3120 px poster.
  */
 export function resolveMetrics(width: number, height: number): PosterMetrics {
+  // Advisory only — see `resolveCanvasMode`. Nothing below branches on it.
   const mode = resolveCanvasMode(width, height);
 
-  // In wide and letterbox modes the copy occupies part of the width, so the
-  // design is fitted against that column rather than the whole canvas.
-  const designWidth =
-    mode === 'tall' ? width : mode === 'wide' ? width * 0.52 : width * 0.62;
-
-  const scale = Math.min(
-    designWidth / REFERENCE_WIDTH,
-    // Letterbox lays its slots out in a ROW rather than a vertical stack, so it
-    // is fitted against a much shorter reference — but height never stops
-    // constraining entirely. It used to be Number.POSITIVE_INFINITY here, which
-    // meant a 1128×191 LinkedIn banner scaled purely off its width: the logo box
-    // alone came out 134 px tall in a 191 px canvas, the row overflowed, and
-    // resvg panicked on the resulting non-positive geometry — taking the whole
-    // Node process down, uncatchably, because it is a Rust panic and not a JS
-    // throw. See LETTERBOX_REFERENCE_HEIGHT.
-    height / (mode === 'letterbox' ? LETTERBOX_REFERENCE_HEIGHT : REFERENCE_HEIGHT),
-  );
+  /*
+   * Always fitted against the full reference, on both axes.
+   *
+   * The mode used to change this: `wide` fitted the design to 52% of the width
+   * and `letterbox` to 62% of it against a 320px reference height, because the
+   * archetypes answered an off-brand canvas by switching to a component that
+   * laid its slots out in a ROW. Nothing does that any more — a layout spec is a
+   * vertical stack of rows at every aspect — so those factors stopped describing
+   * anything and became actively dangerous.
+   *
+   * How dangerous: at 3440×1440 the letterbox branch resolved a scale of 2.27,
+   * so every measurement was set at more than double size on a canvas 1440px
+   * tall. The rows overflowed far enough to drive a width negative, and resvg
+   * panicked in Rust — which aborts the Node process outright rather than
+   * throwing, taking a whole dispatch sweep with it. Caught by
+   * `npm run check:layouts`, which renders each fixture at `desktop-ultrawide`
+   * for exactly this reason.
+   */
+  const scale = Math.min(width / REFERENCE_WIDTH, height / REFERENCE_HEIGHT);
 
   const s = (referenceValue: number): number =>
     Math.round(referenceValue * scale * 100) / 100;
@@ -154,19 +120,13 @@ export function resolveMetrics(width: number, height: number): PosterMetrics {
   // The spec's 48 px reference margin reads as too tight below ~5% of width on
   // small canvases and too loose above it on huge ones, so it is clamped.
   //
-  // The clamp is against the SHORT edge in letterbox mode. Basing it on width
-  // there put a 39 px floor on both vertical margins of a 191 px canvas — 41% of
-  // the available height gone before a single element was placed. Every other
-  // mode keeps the width basis, so no existing preset shifts.
-  const marginBasis = mode === 'letterbox' ? Math.min(width, height) : width;
+  // Against the short edge, not the width. On a 3440×1440 canvas a width basis
+  // puts a 120px floor on the vertical margins too, which is a tenth of the
+  // height gone before a single element is placed.
+  const marginBasis = Math.min(width, height);
   const margin = clamp(s(48), marginBasis * 0.035, marginBasis * 0.07);
 
-  const copyWidth =
-    mode === 'tall'
-      ? width - margin * 2
-      : mode === 'wide'
-        ? width * 0.52 - margin * 1.5
-        : width * 0.62 - margin * 1.5;
+  const copyWidth = width - margin * 2;
 
   return {
     width,

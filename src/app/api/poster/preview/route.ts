@@ -5,46 +5,43 @@ import {
   getImageSizePreset,
   resolveImageSizePreset,
 } from '@/lib/image-sizes';
-import { resolvePosterArchetype } from '@/lib/ai-pipeline';
-import { loadCategoryArchetypes } from '@/lib/poster/archetype-library';
-import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
 import {
-  resolvePhotoRequest,
-  resolveSpecPhotoRequests,
-} from '@/lib/poster/photo-request';
+  describeLayoutFailure,
+  resolveDayLayout,
+} from '@/lib/poster/layout-library';
+import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
+import { resolveSpecPhotoRequests } from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
+import { SAMPLE_LAYOUT_SPEC } from '@/lib/poster/sample-layout';
 import { prisma } from '@/lib/prisma';
 import { parseBrandGuideline, EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
-import { parseLayoutDraft } from '@/lib/types/layout-spec';
-import {
-  parsePosterCopy,
-  posterArchetypeSchema,
-  type PosterArchetype,
-  type PosterCopy,
-} from '@/lib/types/poster';
+import { parseLayoutDraft, type PosterLayoutSpec } from '@/lib/types/layout-spec';
+import { parsePosterCopy, type PosterCopy } from '@/lib/types/poster';
 
 /**
- * Renders one poster for the admin preview grid.
+ * Renders one poster without spending anything.
  *
- * Exists so a layout change can be inspected without spending anything: the
- * background photo is generated procedurally, and no fal.ai, Drive or WhatsApp call
- * is made. Everything downstream of the photo — theme resolution, font loading,
- * archetype composition — is the exact production path, so what this returns is
- * what a client would receive.
+ * The background photo is generated procedurally and no fal.ai, Drive or WhatsApp
+ * call is made. Everything downstream of the photo — theme resolution, font
+ * loading, spec interpretation — is the exact production path, so what this
+ * returns is what a client would receive.
  *
  * Query parameters:
- *   archetype  any id in `POSTER_ARCHETYPES` — the eight bases or their
- *              variants, not only the subset the day-number rotation uses
- *              (default `scrim`)
- *   templateId a `CategoryTemplate` whose extracted layout spec to render.
- *              This is the review surface: it renders a spec that has NOT been
- *              approved yet, which is the whole point — an operator has to see
- *              the layout as a poster before `layoutApprovedAt` is set and it
- *              starts reaching clients. Wins over `archetype`.
+ *   templateId a `CategoryTemplate` whose extracted layout to render. The review
+ *              surface: it deliberately renders a spec that has NOT been approved
+ *              yet, which is the whole point — an operator has to see the layout
+ *              as a poster before `layoutApprovedAt` is set and it starts
+ *              reaching clients. Wins over `clientId`.
+ *   clientId   render what this client would actually receive, resolving the
+ *              layout exactly as the pipeline does. 409s with the same message
+ *              the pipeline would fail with when the vertical has none approved.
+ *   day        calendar day whose stored copy and template pin to use
  *   preset     an `IMAGE_SIZE_PRESETS` id (default WhatsApp Status)
- *   clientId   render with a real client's brand, logo and contact details
- *   day        calendar day whose stored copy to use, with `clientId`
  *   tone       `dusk` | `daylight` placeholder photo
+ *
+ * With neither `templateId` nor `clientId` it renders `SAMPLE_LAYOUT_SPEC` — a
+ * built-in layout that exists for the brand panel's thumbnail and is never
+ * reachable from a client render.
  */
 
 // The renderer reads fonts from the filesystem and composes Buffers, so this must
@@ -55,7 +52,6 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
 
-  const archetypeParam = posterArchetypeSchema.safeParse(params.get('archetype'));
 
   const preset =
     getImageSizePreset(params.get('preset')) ??
@@ -113,24 +109,42 @@ export async function GET(request: NextRequest) {
     }
 
     /*
-     * An explicit `archetype` wins — the preview grid names one per tile, which is
-     * what makes it a catalogue.
+     * Three modes, in order of specificity.
      *
-     * Without one, and given a real client, this resolves exactly as the pipeline
-     * would: the row's stored pin, else the layouts mapped to that client's
-     * vertical, else the day-number rotation. That is what lets an operator check
-     * "what will this client actually receive on day 4" rather than only "what does
-     * layout X look like".
+     *   templateId  the review surface — that template's draft, approved or not,
+     *               handled above so an unreadable one 404s rather than being
+     *               quietly substituted.
+     *   clientId    what this client would actually receive, resolved exactly as
+     *               the pipeline resolves it.
+     *   neither     the built-in sample, which is what the brand panel wants: a
+     *               palette rendered through the real path, on a vertical that
+     *               may have no approved template at all.
+     *
+     * The sample is never reachable from a client render. `resolveDayLayout`
+     * failing for a real client is reported, not papered over — that failure is
+     * the operator's signal that the vertical is not shippable.
      */
-    const archetype: PosterArchetype = archetypeParam.success
-      ? archetypeParam.data
-      : context
-        ? resolvePosterArchetype(
-            context.storedArchetype,
-            Number.isFinite(day) ? day : 1,
-            await loadCategoryArchetypes(context.categoryId),
-          )
-        : 'scrim';
+    let resolved: PosterLayoutSpec = draft?.spec ?? SAMPLE_LAYOUT_SPEC;
+    if (!templateId && context) {
+      const layout = await resolveDayLayout({
+        categoryId: context.categoryId,
+        dayNumber: Number.isFinite(day) ? day : 1,
+        pinnedTemplateId: context.pinnedTemplateId,
+      });
+      if (!layout.ok) {
+        return NextResponse.json(
+          {
+            error: describeLayoutFailure(layout, {
+              categoryId: context.categoryId,
+              categoryName: context.categoryName,
+              dayNumber: Number.isFinite(day) ? day : 1,
+            }),
+          },
+          { status: 409 },
+        );
+      }
+      resolved = layout.spec;
+    }
 
     // Shaped exactly as the pipeline would shape it, so a cropping problem shows up
     // in the preview rather than only in production — but capped in absolute size.
@@ -142,9 +156,7 @@ export async function GET(request: NextRequest) {
     // heap and kill the process mid-request. Only the aspect ratio matters for
     // judging a layout, so the long edge is bounded and the production path — which
     // uses the real photo at full size — is untouched.
-    const requests = layoutSpec
-      ? resolveSpecPhotoRequests(layoutSpec, preset)
-      : [resolvePhotoRequest(archetype, preset)];
+    const requests = resolveSpecPhotoRequests(resolved, preset);
 
     const photos = requests.map((request, index) => {
       const placeholder = capLongEdge(request.width, request.height, 1280);
@@ -156,9 +168,7 @@ export async function GET(request: NextRequest) {
     });
 
     const poster = await renderPoster({
-      archetype,
-      layoutSpec,
-      dayNumber: Number.isFinite(day) ? day : 1,
+      layoutSpec: resolved,
       copy: context?.copy ?? SAMPLE_COPY,
       guideline: context?.guideline ?? EMPTY_BRAND_GUIDELINE,
       identity: context?.identity ?? SAMPLE_IDENTITY,
@@ -173,8 +183,10 @@ export async function GET(request: NextRequest) {
         'Content-Type': 'image/png',
         // Never cached: the point of the preview is to reflect the current code.
         'Cache-Control': 'no-store, max-age=0',
-        'X-Poster-Archetype': poster.archetype,
-        'X-Poster-Dropped': poster.dropped.join(',') || 'none',
+        // Names the layout that drew this, which is how a caller can tell a real
+        // template apart from the built-in sample without reading the pixels.
+        'X-Poster-Layout': poster.layoutName,
+        'X-Poster-Canvas-Mode': poster.canvasMode,
       },
     });
   } catch (error) {
@@ -230,6 +242,7 @@ async function loadClientContext(clientId: string, day: number | null) {
       companyName: true,
       whatsappNumber: true,
       categoryId: true,
+      category: { select: { name: true } },
       brandGuideline: true,
       logoUrl: true,
       logoIncludesName: true,
@@ -239,7 +252,7 @@ async function loadClientContext(clientId: string, day: number | null) {
       calendarDays: day
         ? {
             where: { dayNumber: day },
-            select: { posterCopy: true, posterArchetype: true },
+            select: { posterCopy: true, posterTemplateId: true },
             take: 1,
           }
         : false,
@@ -253,7 +266,8 @@ async function loadClientContext(clientId: string, day: number | null) {
 
   return {
     categoryId: client.categoryId,
-    storedArchetype: entry?.posterArchetype ?? null,
+    categoryName: client.category.name,
+    pinnedTemplateId: entry?.posterTemplateId ?? null,
     guideline: parseBrandGuideline(client.brandGuideline),
     // Falls back to the sample rather than 404ing: an operator previewing a client
     // that has not been seeded yet still wants to see their palette and logo

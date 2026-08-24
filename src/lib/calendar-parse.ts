@@ -2,13 +2,14 @@ import { z } from 'zod';
 
 import {
   coercePosterCopy,
-  posterArchetypeSchema,
   posterCopySchema,
-  POSTER_ARCHETYPES,
   POSTER_ICONS,
-  type PosterArchetype,
   type PosterCopy,
 } from '@/lib/types/poster';
+import {
+  normalizeTemplateLabel,
+  TEMPLATE_LABEL_MAX,
+} from '@/lib/template-label';
 
 /**
  * Bulk content-calendar import — sheet parsing and the wire contract.
@@ -19,11 +20,18 @@ import {
  * this module may import Prisma or any other server-only code — `types/poster`
  * is zod-only and safe to pull into the browser bundle.
  *
- * Two column groups. The **content** columns (theme, caption, hashtags, image
- * prompt) are what the calendar generator writes and are all an import needs.
- * The **poster** columns are optional: supply them to author the typographic
- * layer by hand, or leave them blank and `ensurePosterCopy` derives it from the
- * content columns on first render.
+ * Two column groups. The **content** columns (template name, caption, hashtags,
+ * image prompt) are all an import needs. The **poster** columns are optional:
+ * supply them to author the typographic layer by hand, or leave them blank and
+ * `ensurePosterCopy` derives it from the content columns on first render.
+ *
+ * **The template name is resolved against a catalogue the caller passes in**, not
+ * one this module fetches — which is the no-Prisma rule showing up as a
+ * parameter. The panel hands it the vertical's approved templates so a typo is
+ * caught before submit; the server action hands it a freshly read catalogue,
+ * and that one is the authority. A name that resolves in the browser and not on
+ * the server means the library moved in between, which is exactly the race the
+ * day-number comment below describes.
  */
 
 // ---------------------------------------------------------------------------
@@ -40,7 +48,7 @@ import {
  * operator's deliberate wording at a word boundary.
  */
 export const IMPORT_FIELD_LIMITS = {
-  theme: { min: 2, max: 120 },
+  templateName: { min: 1, max: TEMPLATE_LABEL_MAX },
   caption: { min: 10, max: 2_000 },
   hashtags: { max: 400 },
   imagePrompt: { min: 10, max: 2_000 },
@@ -72,11 +80,19 @@ export const calendarImportRowSchema = z.object({
    * the browser's snapshot from whenever the page was rendered.
    */
   dayNumber: z.number().int().min(1).max(3650).nullable(),
-  theme: z
+  /**
+   * The reference template this day must be laid out from, by name.
+   *
+   * The name rather than the id, for the same reason `dayNumber` is resolved
+   * server-side: the browser's catalogue is a snapshot from whenever the page
+   * rendered, and a template un-approved or renamed since then must be caught by
+   * the server rather than trusted from the wire.
+   */
+  templateName: z
     .string()
     .trim()
-    .min(IMPORT_FIELD_LIMITS.theme.min, 'Theme is too short')
-    .max(IMPORT_FIELD_LIMITS.theme.max, 'Theme is too long'),
+    .min(1, 'Template name is required')
+    .max(IMPORT_FIELD_LIMITS.templateName.max, 'Template name is too long'),
   caption: z
     .string()
     .trim()
@@ -94,8 +110,6 @@ export const calendarImportRowSchema = z.object({
    * the signal `ensurePosterCopy` uses to write it at render time.
    */
   poster: posterCopySchema.nullable(),
-  /** Pinned layout. Null lets `archetypeForDay` derive it from the day number. */
-  archetype: posterArchetypeSchema.nullable(),
 });
 
 export const calendarImportSchema = z.object({
@@ -113,7 +127,7 @@ export type CalendarImportInput = z.input<typeof calendarImportSchema>;
 // Column recognition
 // ---------------------------------------------------------------------------
 
-type ContentColumn = 'dayNumber' | 'theme' | 'caption' | 'hashtags' | 'imagePrompt';
+type ContentColumn = 'dayNumber' | 'templateName' | 'caption' | 'hashtags' | 'imagePrompt';
 
 type PosterColumn =
   | 'headline'
@@ -122,8 +136,7 @@ type PosterColumn =
   | 'posterBody'
   | 'callLabel'
   | 'websiteLabel'
-  | 'headlinePeriod'
-  | 'archetype';
+  | 'headlinePeriod';
 
 type FeatureSlot = 1 | 2 | 3 | 4;
 type FeatureColumn = `feature${FeatureSlot}${'Icon' | 'Label' | 'Body'}`;
@@ -133,12 +146,12 @@ type SheetColumn = ContentColumn | PosterColumn | FeatureColumn;
 const FEATURE_SLOTS: FeatureSlot[] = [1, 2, 3, 4];
 
 /** Without these three a row carries no deliverable content at all. */
-const REQUIRED_COLUMNS: ContentColumn[] = ['theme', 'caption', 'imagePrompt'];
+const REQUIRED_COLUMNS: ContentColumn[] = ['templateName', 'caption', 'imagePrompt'];
 
 /** Canonical spelling of the content columns, in template order. */
 export const CONTENT_COLUMN_LABELS: Record<ContentColumn, string> = {
   dayNumber: 'day',
-  theme: 'theme',
+  templateName: 'template name',
   caption: 'caption',
   hashtags: 'hashtags',
   imagePrompt: 'image prompt',
@@ -158,7 +171,6 @@ export const POSTER_COLUMN_LABELS: string[] = [
   'call label',
   'website label',
   'headline period',
-  'archetype',
 ];
 
 /**
@@ -175,10 +187,18 @@ const HEADER_ALIASES: Record<string, SheetColumn> = {
   sno: 'dayNumber',
   srno: 'dayNumber',
 
-  theme: 'theme',
-  topic: 'theme',
-  angle: 'theme',
-  contentangle: 'theme',
+  // `theme` is deliberately absent. Leaving it unrecognised routes a legacy
+  // sheet's column into `ignoredColumns`, so the panel says "theme was ignored"
+  // *and* "missing required column: template name" — together the exact pair of
+  // messages that explains the change to whoever pasted it.
+  templatename: 'templateName',
+  template: 'templateName',
+  templatelabel: 'templateName',
+  layoutname: 'templateName',
+  posterlayout: 'templateName',
+  reference: 'templateName',
+  referencetemplate: 'templateName',
+  design: 'templateName',
 
   caption: 'caption',
   copy: 'caption',
@@ -227,9 +247,10 @@ const HEADER_ALIASES: Record<string, SheetColumn> = {
   period: 'headlinePeriod',
   fullstop: 'headlinePeriod',
 
-  archetype: 'archetype',
-  layout: 'archetype',
-  posterarchetype: 'archetype',
+  // Repurposed. A legacy sheet whose `layout` column holds `scrim` or `diagonal`
+  // now fails strict matching by name, which is the right outcome — a named
+  // value that no longer exists beats a silent misread.
+  layout: 'templateName',
 
   // ---- Features (generated below) ----
   ...buildFeatureAliases(),
@@ -265,6 +286,104 @@ function normalizeHeader(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Template name resolution
+// ---------------------------------------------------------------------------
+
+/** One approved template a sheet may name. */
+export interface ImportTemplate {
+  id: string;
+  label: string;
+}
+
+export interface TemplateIndex {
+  /** Normalised label to every template id carrying it. */
+  byName: Map<string, string[]>;
+  /** Original labels, for the "valid names are" sentence. */
+  labels: string[];
+  /** Pre-rendered once per sheet — see `finalize`. */
+  validNames: string;
+}
+
+/**
+ * How many names an error message lists before giving up and counting.
+ *
+ * A vertical may hold a hundred templates. Naming all of them on each of four
+ * hundred rows produces a three-kilobyte sentence repeated four hundred times,
+ * which is not help, it is noise.
+ */
+const NAMES_IN_ERROR = 12;
+
+export function buildTemplateIndex(templates: readonly ImportTemplate[]): TemplateIndex {
+  const byName = new Map<string, string[]>();
+  for (const template of templates) {
+    const key = normalizeTemplateLabel(template.label);
+    const existing = byName.get(key);
+    if (existing) existing.push(template.id);
+    else byName.set(key, [template.id]);
+  }
+
+  const labels = templates.map((template) => template.label);
+  const shown = labels.slice(0, NAMES_IN_ERROR).join(', ');
+  const validNames =
+    labels.length > NAMES_IN_ERROR
+      ? `${shown} (+${labels.length - NAMES_IN_ERROR} more)`
+      : shown;
+
+  return { byName, labels, validNames };
+}
+
+/**
+ * Matches one typed name against the catalogue.
+ *
+ * Four outcomes, four sentences. The distinctions matter because they call for
+ * different actions: an empty catalogue is a job for the vertical's template
+ * library, a misspelling is a job for the sheet, and an ambiguous name is a job
+ * for the rename control — and an operator reading "invalid template" would have
+ * to work out which.
+ *
+ * Matching is case- and spacing-insensitive (`normalizeTemplateLabel`), because
+ * those are the differences nobody means. Two templates whose labels differ only
+ * that way can only predate the uniqueness constraint; rather than pick one, this
+ * names both and asks for a rename.
+ */
+export function resolveTemplateName(
+  name: string,
+  index: TemplateIndex,
+): { id: string } | { error: string } {
+  if (index.labels.length === 0) {
+    return {
+      error:
+        'This vertical has no approved template layouts, so there is nothing for a ' +
+        'sheet to name. Upload a reference poster and approve its layout first.',
+    };
+  }
+
+  const trimmed = name.trim();
+  if (trimmed.length === 0) {
+    return { error: `Template name is required. Valid names: ${index.validNames}` };
+  }
+
+  const matches = index.byName.get(normalizeTemplateLabel(trimmed));
+  if (!matches || matches.length === 0) {
+    return {
+      error:
+        `Template "${truncate(trimmed, 40)}" is not an approved template for this ` +
+        `vertical. Valid names: ${index.validNames}`,
+    };
+  }
+
+  if (matches.length > 1) {
+    return {
+      error:
+        `Template name "${truncate(trimmed, 40)}" matches ${matches.length} templates ` +
+        'in this vertical. Rename one in the template library so a sheet can tell them apart.',
+    };
+  }
+
+  return { id: matches[0] as string };
+}
+
+// ---------------------------------------------------------------------------
 // Parse results
 // ---------------------------------------------------------------------------
 
@@ -273,6 +392,14 @@ export interface ParsedImportRow extends CalendarImportRow {
   line: number;
   /** Empty when the row is importable exactly as it stands. */
   issues: string[];
+  /**
+   * The template `templateName` resolved to, or null when it did not resolve.
+   *
+   * Preview-only and deliberately NOT on the wire schema: the browser's
+   * catalogue is a snapshot, so the server resolves the name again against a
+   * fresh read rather than trusting an id it was handed.
+   */
+  templateId: string | null;
 }
 
 export interface CalendarImportParse {
@@ -315,7 +442,7 @@ type CellReader = (column: SheetColumn) => string;
  */
 export function parseCalendarImport(
   raw: string,
-  options: { maxDay: number },
+  options: { maxDay: number; templates: readonly ImportTemplate[] },
 ): CalendarImportParse {
   // Excel and Google Sheets both prepend a BOM to CSV exports, which would
   // otherwise glue itself to the first header cell and break its alias lookup.
@@ -331,7 +458,7 @@ export function parseCalendarImport(
 
   if (parsed.error !== null) return parsed;
 
-  return finalize(parsed, options.maxDay);
+  return finalize(parsed, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -571,13 +698,13 @@ function parseJsonSheet(text: string): CalendarImportParse {
       rows.push({
         line,
         dayNumber: null,
-        theme: '',
+        templateName: '',
         caption: '',
         hashtags: '',
         imagePrompt: '',
         poster: null,
-        archetype: null,
         issues: ['Entry is not an object'],
+        templateId: null,
       });
       return;
     }
@@ -663,12 +790,17 @@ function draftRow(
 
   const dayNumber = readDayNumber(read('dayNumber'), issues);
 
-  const theme = read('theme');
+  const templateName = read('templateName');
   const caption = read('caption');
   const hashtags = normalizeHashtags(read('hashtags'));
   const imagePrompt = read('imagePrompt');
 
-  checkLength(issues, 'Theme', theme, IMPORT_FIELD_LIMITS.theme);
+  // Length only. Whether the name is empty or unknown is settled in `finalize`,
+  // where the catalogue is in hand, so exactly one place composes the sentence
+  // that lists the valid names.
+  if (templateName.length > IMPORT_FIELD_LIMITS.templateName.max) {
+    issues.push(`Template name exceeds ${IMPORT_FIELD_LIMITS.templateName.max} characters`);
+  }
   checkLength(issues, 'Caption', caption, IMPORT_FIELD_LIMITS.caption);
   checkLength(issues, 'Image prompt', imagePrompt, IMPORT_FIELD_LIMITS.imagePrompt);
 
@@ -681,18 +813,17 @@ function draftRow(
       ? readNestedPoster(nestedPoster, issues)
       : readPosterCells(read, issues);
 
-  const archetype = readArchetype(read('archetype'), issues);
-
   return {
     line,
     dayNumber,
-    theme,
+    templateName,
     caption,
     hashtags,
     imagePrompt,
     poster,
-    archetype,
     issues,
+    // Filled by `finalize`, which holds the catalogue.
+    templateId: null,
   };
 }
 
@@ -706,19 +837,6 @@ function readDayNumber(raw: string, issues: string[]): number | null {
     return null;
   }
   return Number.parseInt(digits[1] as string, 10);
-}
-
-function readArchetype(raw: string, issues: string[]): PosterArchetype | null {
-  if (raw.length === 0) return null;
-
-  const result = posterArchetypeSchema.safeParse(raw.toLowerCase());
-  if (!result.success) {
-    issues.push(
-      `Archetype "${truncate(raw, 20)}" is not one of: ${POSTER_ARCHETYPES.join(', ')}`,
-    );
-    return null;
-  }
-  return result.data;
 }
 
 /** JSON rows carrying the generator's nested `poster` object. */
@@ -921,26 +1039,41 @@ function checkLength(
  * Applies the checks that need the whole sheet in hand: a duplicated day number
  * and a day number the plan cannot reach.
  */
-function finalize(parsed: CalendarImportParse, maxDay: number): CalendarImportParse {
+function finalize(
+  parsed: CalendarImportParse,
+  options: { maxDay: number; templates: readonly ImportTemplate[] },
+): CalendarImportParse {
   const seen = new Map<number, number>();
+  // Built once per sheet, not once per row. A 400-row import against a
+  // 100-template vertical would otherwise rebuild the same index 400 times —
+  // the same waste the `columnIndex` map further up exists to avoid.
+  const index = buildTemplateIndex(options.templates);
 
   const rows = parsed.rows.map((row) => {
-    if (row.dayNumber === null) return row;
-
     const issues = [...row.issues];
 
-    if (row.dayNumber > maxDay) {
-      issues.push(`Day ${row.dayNumber} is past the plan's ${maxDay}-day duration`);
+    // Runs for every row, including one with no day number: a bad template name
+    // is worth reporting whether or not the day resolved.
+    const resolved = resolveTemplateName(row.templateName, index);
+    const templateId = 'id' in resolved ? resolved.id : null;
+    if ('error' in resolved) issues.push(resolved.error);
+
+    if (row.dayNumber !== null) {
+      if (row.dayNumber > options.maxDay) {
+        issues.push(`Day ${row.dayNumber} is past the plan's ${options.maxDay}-day duration`);
+      }
+
+      const firstLine = seen.get(row.dayNumber);
+      if (firstLine === undefined) {
+        seen.set(row.dayNumber, row.line);
+      } else {
+        issues.push(`Day ${row.dayNumber} is already used on line ${firstLine}`);
+      }
     }
 
-    const firstLine = seen.get(row.dayNumber);
-    if (firstLine === undefined) {
-      seen.set(row.dayNumber, row.line);
-    } else {
-      issues.push(`Day ${row.dayNumber} is already used on line ${firstLine}`);
-    }
-
-    return issues.length === row.issues.length ? row : { ...row, issues };
+    return issues.length === row.issues.length && templateId === row.templateId
+      ? row
+      : { ...row, issues, templateId };
   });
 
   return { ...parsed, rows };
@@ -987,11 +1120,17 @@ function truncate(value: string, max: number): string {
  * spell) and must push the subject aside to reserve a low-detail region for that
  * type; the headline is 2–4 stacked lines the copywriter breaks by hand; feature
  * labels have to read as parallel noun phrases.
+ *
+ * The template-name cell is filled from the vertical's *own* approved templates
+ * rather than a fixed sample value. Under the strict rule a hard-coded name is
+ * guaranteed to be rejected, so a downloaded sheet would fail on every row — and
+ * generating it from the catalogue both makes the file importable as it stands
+ * and shows the operator the exact spelling to copy, which is the best defence
+ * there is against the strict rule feeling arbitrary.
  */
 const TEMPLATE_ROWS = [
   {
     day: '1',
-    theme: 'Monsoon-ready sites',
     caption:
       'Rain does not pause a deadline — it exposes the crews who planned for it. Our pre-monsoon drainage audit is now open for the season: silt traps cleared, pump capacity verified, access roads graded before the first downpour. Book a site walkthrough this week and start the rains on schedule.',
     hashtags: '#construction #sitesafety #monsoonprep #infrastructure',
@@ -1010,11 +1149,9 @@ const TEMPLATE_ROWS = [
     callLabel: 'BOOK A WALKTHROUGH',
     websiteLabel: 'VISIT OUR WEBSITE',
     headlinePeriod: 'yes',
-    archetype: 'scrim',
   },
   {
     day: '2',
-    theme: 'Steel that holds',
     caption:
       'Every beam we set carries a mill certificate and a name. Third-party tested, batch-traced, and logged against the drawing before it leaves the yard — because the cheapest steel on a quote is the most expensive line in a retrofit. Ask us for the traceability file on your next structural package.',
     hashtags: '#structuralsteel #qualityassurance #engineering #buildright',
@@ -1033,7 +1170,6 @@ const TEMPLATE_ROWS = [
     callLabel: 'TALK TO OUR TEAM',
     websiteLabel: 'VISIT OUR WEBSITE',
     headlinePeriod: 'no',
-    archetype: 'diagonal',
   },
 ] as const;
 
@@ -1042,13 +1178,22 @@ function csvCell(value: string): string {
   return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
-function buildTemplate(includePoster: boolean): string {
+function buildTemplate(
+  templates: readonly ImportTemplate[],
+  includePoster: boolean,
+): string {
   const header = includePoster
     ? [...Object.values(CONTENT_COLUMN_LABELS), ...POSTER_COLUMN_LABELS]
     : Object.values(CONTENT_COLUMN_LABELS);
 
-  const lines = TEMPLATE_ROWS.map((row) => {
-    const content = [row.day, row.theme, row.caption, row.hashtags, row.imagePrompt];
+  // Vary the named template across the sample rows where the vertical has more
+  // than one, so the file demonstrates that days may differ rather than implying
+  // a campaign is one layout repeated.
+  const nameFor = (index: number): string =>
+    templates[index % Math.max(1, templates.length)]?.label ?? 'NAME AN APPROVED TEMPLATE HERE';
+
+  const lines = TEMPLATE_ROWS.map((row, index) => {
+    const content = [row.day, nameFor(index), row.caption, row.hashtags, row.imagePrompt];
     if (!includePoster) return content.map(csvCell).join(',');
 
     const poster = [
@@ -1060,7 +1205,6 @@ function buildTemplate(includePoster: boolean): string {
       row.callLabel,
       row.websiteLabel,
       row.headlinePeriod,
-      row.archetype,
     ];
     return [...content, ...poster].map(csvCell).join(',');
   });
@@ -1070,8 +1214,22 @@ function buildTemplate(includePoster: boolean): string {
   return [header.map(csvCell).join(','), ...lines].join('\r\n');
 }
 
-/** Content columns only — the four fields plus the day. */
-export const CALENDAR_IMPORT_TEMPLATE = buildTemplate(false);
+/**
+ * Content columns only — the day, the template name and the three copy fields.
+ *
+ * A function rather than a constant because the sheet now has to name templates
+ * that exist, and which those are depends on the vertical the operator is
+ * downloading for.
+ */
+export function buildCalendarImportTemplate(
+  templates: readonly ImportTemplate[],
+): string {
+  return buildTemplate(templates, false);
+}
 
 /** Content columns plus the whole hand-authored poster text layer. */
-export const CALENDAR_IMPORT_TEMPLATE_FULL = buildTemplate(true);
+export function buildCalendarImportTemplateFull(
+  templates: readonly ImportTemplate[],
+): string {
+  return buildTemplate(templates, true);
+}

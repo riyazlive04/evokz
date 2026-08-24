@@ -68,7 +68,6 @@ export default async function VerticalDetailPage({
           gDriveViewUrl: true,
           width: true,
           height: true,
-          archetype: true,
           layoutSpec: true,
           layoutReading: true,
           layoutApprovedAt: true,
@@ -90,7 +89,6 @@ export default async function VerticalDetailPage({
     viewUrl: `/api/templates/${template.id}/thumbnail?full=1`,
     width: template.width,
     height: template.height,
-    archetype: template.archetype,
     // `parseLayoutDraft`, not `parseLayoutSpec`. The strict parse answers "may
     // this draw a poster?" and returns null for anything it refuses, which would
     // show an operator "no layout read from this template yet" for a draft that
@@ -119,14 +117,9 @@ export default async function VerticalDetailPage({
 
   // Counted in the database, not over `templates` — that array is now one page,
   // and a per-page figure would report "3 of 24 mapped" on a library of ninety.
-  const [mapped, approvedLayouts] = await Promise.all([
-    prisma.categoryTemplate.count({
-      where: { categoryId: category.id, archetype: { not: null } },
-    }),
-    prisma.categoryTemplate.count({
-      where: { categoryId: category.id, layoutApprovedAt: { not: null } },
-    }),
-  ]);
+  const approvedLayouts = await prisma.categoryTemplate.count({
+    where: { categoryId: category.id, layoutApprovedAt: { not: null } },
+  });
 
   return (
     <>
@@ -149,10 +142,8 @@ export default async function VerticalDetailPage({
         title={category.name}
         description={
           approvedLayouts > 0
-            ? `Reference posters for this vertical. ${approvedLayouts} of ${totalTemplates} have an approved layout, and this vertical's clients receive those layouts — in proportion, so two approved templates split the campaign between them. Templates without one fall back to the mapped archetype (${mapped} of ${totalTemplates}).`
-            : mapped > 0
-              ? `Reference posters for this vertical. None have an approved layout yet, so generation is still using the mapped archetypes (${mapped} of ${totalTemplates}) — the nearest built-in composition rather than the template's own. Approve a template's layout to have creatives follow it exactly.`
-              : "Reference posters for this vertical. Each upload's layout is read automatically; approve it and generated creatives follow that template's own geometry. Templates with neither an approved layout nor a mapped archetype are stored but never used."
+            ? `Reference posters for this vertical. ${approvedLayouts} of ${totalTemplates} have an approved layout, and every poster this vertical's clients receive is drawn from one of them — either the template a calendar sheet named for that day, or a deterministic rotation across all ${approvedLayouts} when the sheet named none.`
+            : "No template in this vertical has an approved layout, so none of its clients can generate a poster at all — every render will fail until at least one is approved. On each card: Read layout, See this template rendered, then Approve layout."
         }
       />
 

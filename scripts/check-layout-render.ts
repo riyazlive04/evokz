@@ -51,7 +51,7 @@ const COPY: PosterCopy = {
   headlinePeriod: true,
 };
 
-const PRESETS = ['instagram-square', 'instagram-landscape'];
+const PRESETS = ['whatsapp-status', 'instagram-portrait'];
 
 async function main() {
   const [outDir, ...specPaths] = process.argv.slice(2);
@@ -97,9 +97,7 @@ async function main() {
 
       try {
         const poster = await renderPoster({
-          archetype: null,
           layoutSpec: spec,
-          dayNumber: 1,
           copy: COPY,
           guideline: EMPTY_BRAND_GUIDELINE,
           identity: {
@@ -118,7 +116,7 @@ async function main() {
         const name = `spec-${slug(spec.name)}-${preset.width}x${preset.height}.png`;
         await writeFile(`${outDir}/${name}`, poster.body);
         console.log(
-          `wrote ${name}  (${poster.layout}: ${poster.layoutName ?? '-'}, ` +
+          `wrote ${name}  (${poster.layoutName}, ${poster.canvasMode} canvas, ` +
             `${requests.length} photo request(s))`,
         );
       } catch (error) {

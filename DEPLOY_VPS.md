@@ -379,7 +379,7 @@ a platform-specific binary, so exercise it explicitly:
 # `cookies.txt` must hold a live session — the preview route is behind the
 # middleware, so without one this saves a redirect to /login, not a PNG.
 curl -b cookies.txt \
-  "https://evokz.in/api/poster/preview?archetype=scrim" -o test.png
+  "https://evokz.in/api/poster/preview" -o test.png
 file test.png    # expect: PNG image data
 ```
 

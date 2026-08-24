@@ -18,7 +18,7 @@ export interface QueueEntry {
   whatsappNumber: string;
   cronTime: string;
   dayNumber: number;
-  theme: string;
+  theme: string | null;
   caption: string;
   hashtags: string;
   scheduledLabel: string;
@@ -173,7 +173,12 @@ function QueueCard({
           <h4 className="truncate text-sm font-semibold text-foreground">
             {entry.companyName}
           </h4>
-          <p className="line-clamp-1 text-xs font-medium text-foreground">{entry.theme}</p>
+          {/* Rendered only when present. An imported day carries no content
+              angle, and an empty <p> would leave a line of dead space on every
+              card in a sheet-seeded campaign. */}
+          {entry.theme && (
+            <p className="line-clamp-1 text-xs font-medium text-foreground">{entry.theme}</p>
+          )}
           <p className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
             <Clock className="h-3 w-3" />
             {entry.scheduledLabel} · {entry.cronTime} · +{entry.whatsappNumber}

@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "name": "Banded",
+  "ground": "light",
+  "rows": [
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "light",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "start",
+          "padded": true,
+          "slots": [
+            "logo",
+            "eyebrow"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "dark",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "dark",
+          "align": "center",
+          "padded": true,
+          "slots": [
+            "headline",
+            "accentRule"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "start",
+          "padded": false,
+          "slots": [
+            "photo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "light",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "light",
+          "align": "start",
+          "padded": true,
+          "slots": [
+            "body",
+            "features"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.12,
+      "fill": "accent",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "accent",
+          "align": "start",
+          "padded": false,
+          "slots": [
+            "contact"
+          ]
+        }
+      ]
+    }
+  ]
+}

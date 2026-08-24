@@ -43,11 +43,15 @@ import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key
 import { BODY_FONT_OPTIONS, HEADING_FONT_OPTIONS } from '@/lib/poster/theme';
 import { prepareTemplateImage, templateFileName } from '@/lib/template-image';
 import {
+  dedupeTemplateLabel,
+  normalizeTemplateLabel,
+  templateLabelSchema,
+} from '@/lib/template-label';
+import {
   MAX_TEMPLATE_BYTES,
   MAX_TEMPLATES_PER_CATEGORY,
   TEMPLATE_MIME_TYPES,
 } from '@/lib/template-limits';
-import { posterArchetypeSchema } from '@/lib/types/poster';
 import { isImageSizePresetId } from '@/lib/image-sizes';
 import {
   clientProvisionSchema,
@@ -489,17 +493,40 @@ export async function updateClientImageSize(
 /**
  * Reassigns the client's vertical.
  *
- * Safe and unguarded: `category.name` only feeds the LLM system prefix
- * (`Industry: …`) for *future* generation. Days already seeded keep the copy
- * written for the old vertical — reseeding them is the operator's call.
+ * `category.name` only feeds the LLM system prefix (`Industry: …`) for *future*
+ * generation, and days already seeded keep the copy written for the old
+ * vertical — reseeding them is the operator's call.
+ *
+ * **The layout pins are not safe to leave, though.** A day pinned to a template
+ * belongs to a vertical, and no foreign key can express "the same vertical the
+ * client is in" without denormalising `categoryId` onto every calendar row. So
+ * moving a client strands every pin it carries, pointing at templates the new
+ * vertical does not own. `resolveDayLayout` catches that as `pinned-foreign` and
+ * fails the render rather than drawing the wrong layout — correct, but a silent
+ * trap: the operator changing a dropdown here has no idea they have just armed a
+ * compose failure on every pinned day.
+ *
+ * Cleared, and only on rows that can still be rebuilt. A PENDING or FAILED day
+ * falls back to the new vertical's rotation, which is what an unpinned day gets
+ * anyway. GENERATED and DELIVERED rows keep their pin: it is now a record of
+ * what was actually rendered and sent, and rewriting history to tidy a foreign
+ * key would be worse than leaving it.
+ *
+ * The count comes back so the console can say what happened.
  */
 export async function updateClientCategory(
   clientId: string,
   categoryId: string,
-): Promise<ActionResult> {
+): Promise<ActionResult<{ unpinnedDays: number }>> {
   try {
     const id = z.string().uuid().parse(clientId);
     const nextId = z.string().uuid('A valid vertical must be selected').parse(categoryId);
+
+    const client = await prisma.client.findUnique({
+      where: { id },
+      select: { categoryId: true },
+    });
+    if (!client) return failure('That client no longer exists.');
 
     const category = await prisma.category.findUnique({
       where: { id: nextId },
@@ -507,10 +534,22 @@ export async function updateClientCategory(
     });
     if (!category) return failure('That vertical no longer exists.');
 
-    await prisma.client.update({ where: { id }, data: { categoryId: nextId } });
+    if (client.categoryId === nextId) return success({ unpinnedDays: 0 });
+
+    const [, cleared] = await prisma.$transaction([
+      prisma.client.update({ where: { id }, data: { categoryId: nextId } }),
+      prisma.contentCalendar.updateMany({
+        where: {
+          clientId: id,
+          posterTemplateId: { not: null },
+          deliveryStatus: { in: [DeliveryStatus.PENDING, DeliveryStatus.FAILED] },
+        },
+        data: { posterTemplateId: null },
+      }),
+    ]);
 
     revalidateAdmin();
-    return success();
+    return success({ unpinnedDays: cleared.count });
   } catch (error) {
     return toFailure(error, 'Updating vertical');
   }
@@ -1613,22 +1652,17 @@ export async function seedContentCalendar(
  * already-delivered short-circuit so a delivered day can be re-rendered at all.
  * Withholding the send is the approval guard's responsibility, not its.
  *
- * **The layout is released too.** The pipeline pins `posterArchetype` on the
- * first successful compose so a *retry* reproduces the poster the client
- * received — but this is not a retry, it is a rejection, and holding the pin made
- * the layout the one thing about a rejected poster an operator could not change.
- * Nothing else could either: a sheet re-import only rewrites PENDING and FAILED
- * rows, and there is no per-day picker in the console, so a GENERATED row was
- * stuck with whichever composition the rotation first handed it.
+ * **The layout pin is left alone**, unlike its predecessor. `posterArchetype`
+ * was written by the pipeline itself on first compose, so clearing it here was
+ * the only way an operator could ever move a rendered day off whichever
+ * composition the rotation first handed it. `posterTemplateId` is the opposite:
+ * nothing but an imported sheet ever sets one, so it is an instruction rather
+ * than a derivation, and discarding it because someone disliked a photograph
+ * would silently undo a deliberate choice.
  *
- * Clearing it sends the row back through `resolvePosterArchetype`, which is what
- * lets a changed rotation, or a newly mapped set of vertical templates, reach a
- * day that has already been rendered once.
- *
- * The cost is that rejecting a poster purely for its photograph may also move its
- * layout. That is the right trade while every layout the rotation can return is
- * one that holds up — see `FALLBACK_ARCHETYPES` — and an operator who wants a
- * specific composition back can pin it in the sheet.
+ * A day with no pin re-resolves through the vertical's rotation on every render
+ * anyway, so a newly approved template reaches it without help. A day that named
+ * its template is changed by re-importing the sheet.
  */
 export async function regenerateCreative(
   calendarId: string,
@@ -1638,7 +1672,7 @@ export async function regenerateCreative(
 
     const cleared = await prisma.contentCalendar.updateMany({
       where: { id },
-      data: { approvedAt: null, sendAfter: null, posterArchetype: null },
+      data: { approvedAt: null, sendAfter: null },
     });
     if (cleared.count === 0) return failure('That calendar entry no longer exists.');
 
@@ -1812,7 +1846,14 @@ export async function uploadVerticalTemplate(
 
     const category = await prisma.category.findUnique({
       where: { id },
-      select: { name: true, _count: { select: { templates: true } } },
+      select: {
+        name: true,
+        _count: { select: { templates: true } },
+        // At most 100 rows, served by @@index([categoryId, createdAt]). Needed to
+        // suffix a colliding name rather than let the unique constraint reject an
+        // upload whose bytes are already in Drive.
+        templates: { select: { label: true } },
+      },
     });
     if (!category) return failure('That vertical no longer exists.');
     if (category._count.templates >= MAX_TEMPLATES_PER_CATEGORY) {
@@ -1840,7 +1881,12 @@ export async function uploadVerticalTemplate(
       publish: false,
     });
 
-    const label = file.name.replace(/\.[^.]+$/, '').slice(0, 120) || 'Untitled';
+    const base = file.name.replace(/\.[^.]+$/, '').trim() || 'Untitled';
+    const label = dedupeTemplateLabel(
+      base,
+      new Set(category.templates.map((existing) => normalizeTemplateLabel(existing.label))),
+      uploaded.fileId.slice(0, 8),
+    );
     const draft = await readLayoutQuietly(stored.body, stored.mimeType, label);
 
     const created = await prisma.categoryTemplate.create({
@@ -2081,41 +2127,84 @@ export async function setTemplateLayoutSpec(
 }
 
 /**
- * Records which layout a reference template represents, or clears it.
+ * Renames a reference template.
  *
- * This is what turns the template library from storage into a renderer input: a
- * mapped template puts its layout into the vertical's rotation, and the count of
- * templates sharing a layout is what weights it. Ten diagonal references and two
- * curved ones produce a campaign in roughly that proportion.
+ * The name matters now in a way it did not when it was a caption: a calendar
+ * sheet chooses a layout by typing it, so it has to be unique within the vertical
+ * and worth typing. Uploads derive it from a filename, which almost never is.
  *
- * Passing null unmaps, which removes that vote without deleting the image.
- *
- * Validated against `posterArchetypeSchema` rather than trusted, because the
- * value reaches the renderer's layout switch. A string that is not a known
- * archetype would fall through `resolvePosterArchetype` to the day-number
- * default, which looks like the mapping being quietly ignored.
+ * **Renaming invalidates saved sheets.** Any spreadsheet still naming the old
+ * label is rejected on its next import — the unavoidable cost of a pin keyed on
+ * an id and a sheet keyed on a name, and the panel says so where the rename
+ * happens.
  */
-export async function setTemplateArchetype(
+export async function renameVerticalTemplate(
   templateId: string,
-  archetype: string | null,
-): Promise<ActionResult<{ archetype: string | null }>> {
+  label: string,
+): Promise<ActionResult<{ label: string }>> {
   try {
     const id = z.string().uuid().parse(templateId);
-    const value = archetype === null ? null : posterArchetypeSchema.parse(archetype);
+    const next = templateLabelSchema.parse(label);
 
-    const updated = await prisma.categoryTemplate.updateMany({
+    const current = await prisma.categoryTemplate.findUnique({
       where: { id },
-      data: { archetype: value },
+      select: { categoryId: true, label: true },
     });
-    if (updated.count === 0) return failure('That template no longer exists.');
+    if (!current) return failure('That template no longer exists.');
+    // Short-circuit before the collision check, which would otherwise find this
+    // row itself when only the case has changed.
+    if (current.label === next) return success({ label: next });
+
+    /*
+     * Case-insensitive, unlike the database constraint.
+     *
+     * `@@unique([categoryId, label])` is case-sensitive — Prisma cannot express a
+     * functional index, and a shadow one it did not know about would trap the next
+     * person to run `migrate diff`. So the application carries the other half:
+     * "Grand Opening" and "grand opening" are the same name to anyone typing one
+     * into a sheet, and allowing both would make an import ambiguous.
+     *
+     * `mode: 'insensitive'` emits ILIKE, which the unique index cannot serve —
+     * but with the categoryId predicate and at most 100 rows the planner filters
+     * off `CategoryTemplate_categoryId_createdAt_idx`. Do not "optimise" it.
+     */
+    const clash = await prisma.categoryTemplate.findFirst({
+      where: {
+        categoryId: current.categoryId,
+        id: { not: id },
+        label: { equals: next, mode: 'insensitive' },
+      },
+      select: { label: true },
+    });
+    if (clash) {
+      return failure(
+        `"${clash.label}" is already the name of another template in this vertical. ` +
+          'Names have to be unique because a calendar sheet picks a layout by typing one.',
+      );
+    }
+
+    try {
+      await prisma.categoryTemplate.update({ where: { id }, data: { label: next } });
+    } catch (error) {
+      // The check above is racy; the constraint is the authority.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        return failure(
+          `"${next}" is already the name of another template in this vertical.`,
+        );
+      }
+      throw error;
+    }
 
     revalidateAdmin();
-    return success({ archetype: value });
+    return success({ label: next });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return failure('That is not a layout this renderer knows about.');
+      return failure(error.issues[0]?.message ?? 'That is not a usable template name.');
     }
-    return toFailure(error, 'Setting template layout');
+    return toFailure(error, 'Renaming template');
   }
 }
 

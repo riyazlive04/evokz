@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "name": "Spacer gutter",
+  "ground": "light",
+  "rows": [
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 25,
+          "fill": "inherit",
+          "align": "start",
+          "padded": true,
+          "slots": [
+            "spacer"
+          ]
+        },
+        {
+          "weight": 75,
+          "fill": "inherit",
+          "align": "start",
+          "padded": true,
+          "slots": [
+            "logo",
+            "headline",
+            "accentRule",
+            "body"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "start",
+          "padded": false,
+          "slots": [
+            "photo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "dark",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "dark",
+          "align": "start",
+          "padded": true,
+          "slots": [
+            "features"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.09,
+      "fill": "accent",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "accent",
+          "align": "start",
+          "padded": false,
+          "slots": [
+            "contact"
+          ]
+        }
+      ]
+    }
+  ]
+}

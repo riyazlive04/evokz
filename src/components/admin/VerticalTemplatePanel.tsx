@@ -7,22 +7,14 @@ import { ExternalLink, ImagePlus, Loader2, Trash2, Upload } from 'lucide-react';
 import {
   deleteVerticalTemplate,
   extractTemplateLayout,
-  setTemplateArchetype,
+  renameVerticalTemplate,
   setTemplateLayoutApproval,
   setTemplateLayoutSpec,
   uploadVerticalTemplate,
 } from '@/app/admin/dashboard/actions';
 import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { useAction } from '@/hooks/use-action';
 import { MAX_TEMPLATES_PER_CATEGORY } from '@/lib/template-limits';
-import { ARCHETYPE_CATALOGUE, POSTER_ARCHETYPES } from '@/lib/types/poster';
 
 /**
  * Reference-poster library for one vertical, and the layout each one represents.
@@ -53,8 +45,6 @@ export interface VerticalTemplateRow {
   viewUrl: string;
   width: number | null;
   height: number | null;
-  /** The layout this reference represents, or null while unmapped. */
-  archetype: string | null;
   /**
    * The template's own extracted geometry, pretty-printed, or null when
    * extraction has not run or produced nothing this build can read.
@@ -200,23 +190,25 @@ export function VerticalTemplatePanel({
   );
 }
 
-/** Sentinel for the "not mapped" option — Radix Select rejects an empty value. */
-const UNMAPPED = '__unmapped__';
-
 function TemplateCard({ template }: { template: VerticalTemplateRow }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const remove = useAction(deleteVerticalTemplate);
-  const map = useAction(setTemplateArchetype);
-  // Held locally so the select reflects the choice immediately; the server
-  // revalidation that follows confirms it a moment later.
-  const [archetype, setArchetype] = React.useState(template.archetype);
+  const rename = useAction(renameVerticalTemplate);
 
-  async function handleArchetype(next: string) {
-    const value = next === UNMAPPED ? null : next;
-    const previous = archetype;
-    setArchetype(value);
-    const result = await map.run(template.id, value);
-    if (!result.ok) setArchetype(previous);
+  const [editingName, setEditingName] = React.useState(false);
+  const [draftName, setDraftName] = React.useState(template.label);
+
+  React.useEffect(() => {
+    setDraftName(template.label);
+  }, [template.label]);
+
+  async function commitName() {
+    if (draftName.trim() === template.label) {
+      setEditingName(false);
+      return;
+    }
+    const result = await rename.run(template.id, draftName);
+    if (result.ok) setEditingName(false);
   }
 
   // Click twice to delete, matching the vertical list itself. A dialog for a
@@ -283,44 +275,51 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
       <div className="space-y-1.5 border-t border-border px-3 py-2.5">
         <div className="flex items-center justify-between gap-2">
           <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-            Layout
+            Name
           </span>
-          {map.pending && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+          {rename.pending && (
+            <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+          )}
         </div>
 
-        <Select value={archetype ?? UNMAPPED} onValueChange={handleArchetype}>
-          <SelectTrigger className="h-8 text-xs" aria-label={`Layout for ${template.label}`}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="max-h-80">
-            <SelectItem value={UNMAPPED}>Not mapped — excluded</SelectItem>
-            {POSTER_ARCHETYPES.map((id) => (
-              <SelectItem key={id} value={id}>
-                {ARCHETYPE_CATALOGUE[id].label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {archetype ? (
-          <a
-            href={`/admin/poster-preview?archetype=${encodeURIComponent(archetype)}`}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="inline-flex items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <ExternalLink className="h-3 w-3" />
-            See this layout rendered
-          </a>
+        {/* The name is what a calendar sheet types to choose this layout, so it
+            has to be editable — a filename is a poor thing to put in a
+            spreadsheet three hundred times. */}
+        {editingName ? (
+          <input
+            value={draftName}
+            autoFocus
+            onChange={(event) => setDraftName(event.target.value)}
+            onBlur={() => void commitName()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void commitName();
+              if (event.key === 'Escape') {
+                setDraftName(template.label);
+                setEditingName(false);
+              }
+            }}
+            aria-label={`Name for ${template.label}`}
+            className="w-full rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+          />
         ) : (
-          <p className="text-[10px] text-muted-foreground/70">
-            Unmapped templates are stored but never used for generation.
-          </p>
+          <button
+            type="button"
+            onClick={() => setEditingName(true)}
+            className="w-full truncate rounded border border-transparent px-2 py-1 text-left text-xs text-foreground hover:border-border"
+            title="Rename"
+          >
+            {template.label}
+          </button>
         )}
 
-        {map.error && (
+        <p className="text-[10px] text-muted-foreground/70">
+          Sheets choose this layout by typing this name. Renaming it means any sheet
+          still using the old one will be rejected on its next import.
+        </p>
+
+        {rename.error && (
           <p role="alert" className="text-[10px] text-danger-ink">
-            {map.error}
+            {rename.error}
           </p>
         )}
       </div>

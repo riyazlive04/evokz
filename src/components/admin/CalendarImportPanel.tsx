@@ -2,6 +2,8 @@
 
 import * as React from 'react';
 
+import Link from 'next/link';
+
 import {
   AlertTriangle,
   Check,
@@ -34,8 +36,8 @@ import {
 import { useAction } from '@/hooks/use-action';
 import type { CalendarImportResult } from '@/lib/calendar-import';
 import {
-  CALENDAR_IMPORT_TEMPLATE,
-  CALENDAR_IMPORT_TEMPLATE_FULL,
+  buildCalendarImportTemplate,
+  buildCalendarImportTemplateFull,
   CONTENT_COLUMN_LABELS,
   IMPORT_MAX_BYTES,
   IMPORT_ROW_LIMIT,
@@ -44,7 +46,7 @@ import {
   type ConflictMode,
   type ParsedImportRow,
 } from '@/lib/calendar-parse';
-import { POSTER_ARCHETYPES, POSTER_ICONS } from '@/lib/types/poster';
+import { POSTER_ICONS } from '@/lib/types/poster';
 
 /**
  * Bulk import of operator-authored calendar days.
@@ -89,6 +91,7 @@ export function CalendarImportPanel({
   totalDays,
   seededDays,
   lockedDays,
+  templates,
 }: {
   clientId: string;
   companyName: string;
@@ -97,6 +100,12 @@ export function CalendarImportPanel({
   seededDays: number[];
   /** Subset of `seededDays` already GENERATED or DELIVERED — never rewritten. */
   lockedDays: number[];
+  /**
+   * The vertical's approved template layouts, for resolving the sheet's template
+   * column. A courtesy copy — it lets a typo surface in the preview instead of
+   * as a rejected import — while the server resolves again against a fresh read.
+   */
+  templates: Array<{ id: string; label: string }>;
 }) {
   const importRows = useAction(importCalendarEntries);
   const fileInput = React.useRef<HTMLInputElement>(null);
@@ -109,8 +118,8 @@ export function CalendarImportPanel({
   const [result, setResult] = React.useState<CalendarImportResult | null>(null);
 
   const parse = React.useMemo(
-    () => parseCalendarImport(raw, { maxDay: totalDays }),
-    [raw, totalDays],
+    () => parseCalendarImport(raw, { maxDay: totalDays, templates }),
+    [raw, totalDays, templates],
   );
 
   const planned = React.useMemo(
@@ -174,7 +183,11 @@ export function CalendarImportPanel({
 
   function handleTemplate(withPoster: boolean): void {
     const blob = new Blob(
-      [withPoster ? CALENDAR_IMPORT_TEMPLATE_FULL : CALENDAR_IMPORT_TEMPLATE],
+      [
+        withPoster
+          ? buildCalendarImportTemplateFull(templates)
+          : buildCalendarImportTemplate(templates),
+      ],
       { type: 'text/csv;charset=utf-8' },
     );
     const url = URL.createObjectURL(blob);
@@ -196,12 +209,11 @@ export function CalendarImportPanel({
         .filter((row) => row.issues.length === 0)
         .map((row) => ({
           dayNumber: row.dayNumber,
-          theme: row.theme,
+          templateName: row.templateName,
           caption: row.caption,
           hashtags: row.hashtags,
           imagePrompt: row.imagePrompt,
           poster: row.poster,
-          archetype: row.archetype,
         })),
     });
 
@@ -214,6 +226,31 @@ export function CalendarImportPanel({
   }
 
   const problems = planned.filter((entry) => entry.row.issues.length > 0);
+
+  /*
+   * Nothing can be imported into a vertical with no approved layout, because
+   * every row has to name one. Said once, up front, rather than left to produce
+   * four hundred identical row errors — and the link is the actual fix, which a
+   * per-row message cannot carry.
+   */
+  if (templates.length === 0) {
+    return (
+      <div className="rounded-xl border border-warning/30 bg-warning/5 p-4 text-xs text-warning-ink">
+        <p className="font-medium">
+          This vertical has no approved template layouts yet.
+        </p>
+        <p className="mt-1.5 text-muted-foreground">
+          Every imported day names the template its poster is drawn in, so there is nothing
+          for a sheet to choose from until at least one is approved. Open the vertical, use
+          <span className="font-mono"> Read layout</span> on a reference poster, check it with
+          <span className="font-mono"> See this template rendered</span>, then approve it.
+        </p>
+        <Button asChild size="sm" variant="ghost" className="mt-2 h-7 px-2 text-[11px]">
+          <Link href="/admin/verticals">Open verticals</Link>
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -279,6 +316,21 @@ export function CalendarImportPanel({
           Up to {IMPORT_ROW_LIMIT} rows per import.
         </p>
         <p className="text-[10px] text-muted-foreground/70">
+          <span className="font-mono">template name</span> chooses the layout that day&apos;s
+          poster is drawn in, and must match an approved template in this vertical exactly —
+          a name that does not match stops the whole import rather than guessing.{' '}
+          {templates.length > 0 ? (
+            <>
+              Available here:{' '}
+              <span className="font-mono">
+                {templates.slice(0, 8).map((template) => template.label).join(', ')}
+                {templates.length > 8 ? ` (+${templates.length - 8} more)` : ''}
+              </span>
+              .
+            </>
+          ) : null}
+        </p>
+        <p className="text-[10px] text-muted-foreground/70">
           Image prompts describe the <strong className="font-semibold">background photograph
           only</strong>: no text, letters, or logos in frame, and push the subject to one side
           so there is a low-detail area — open sky, deep shadow, plain wall — for the poster
@@ -293,17 +345,15 @@ export function CalendarImportPanel({
             <p>
               Add <span className="font-mono">{POSTER_COLUMN_LABELS.join(', ')}</span>. Leave
               them out entirely and the poster&apos;s headline, body, and features are written
-              on first render from that day&apos;s theme, caption, and image prompt.
+              on first render from that day&apos;s caption and image prompt, shaped to fit the
+              template that day names.
             </p>
             <p>
               <span className="font-mono">headline</span> takes 2–4 short lines separated by{' '}
               <span className="font-mono">|</span> — you choose the breaks.{' '}
               <span className="font-mono">accent line</span> is which of those lines takes the
               brand colour, counting from 1.{' '}
-              <span className="font-mono">headline period</span> is yes/no.{' '}
-              <span className="font-mono">archetype</span> pins the layout to any of the{' '}
-              {POSTER_ARCHETYPES.length}; blank rotates by day number through the
-              subset chosen for unattended use.
+              <span className="font-mono">headline period</span> is yes/no.
             </p>
             <p>
               Each feature needs all three of icon, label, and body. Valid icons:{' '}
@@ -382,13 +432,27 @@ export function CalendarImportPanel({
             </p>
           )}
 
+          {/* Every sheet written before this change will land here, so it is
+              worth saying plainly what replaced what rather than leaving the
+              generic "unrecognised column" line to imply a typo. */}
+          {parse.ignoredColumns.some(
+            (column) => column.toLowerCase().replace(/[^a-z]/g, '') === 'theme',
+          ) && (
+            <p className="text-[11px] text-warning-ink">
+              The <span className="font-mono">theme</span> column was retired — a day&apos;s
+              angle now comes from its caption. Replace it with{' '}
+              <span className="font-mono">template name</span>, naming the layout each day
+              should be drawn in.
+            </p>
+          )}
+
           <div className="rounded-xl border border-border">
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-14">Day</TableHead>
                   <TableHead className="w-24">Outcome</TableHead>
-                  <TableHead>Theme</TableHead>
+                  <TableHead>Template</TableHead>
                   <TableHead>Caption</TableHead>
                   <TableHead>Image prompt</TableHead>
                   {parse.hasPosterColumns && <TableHead className="w-24">Poster</TableHead>}
@@ -408,8 +472,15 @@ export function CalendarImportPanel({
                         {DISPOSITION_LABEL[entry.disposition]}
                       </Badge>
                     </TableCell>
-                    <TableCell className="max-w-[10rem] truncate text-xs">
-                      {entry.row.theme || '—'}
+                    {/* Tinted when the name did not resolve, so a typo is
+                        visible in the row it belongs to rather than only in the
+                        issues list underneath. */}
+                    <TableCell
+                      className={`max-w-[10rem] truncate text-xs ${
+                        entry.row.templateId === null ? 'text-danger-ink' : ''
+                      }`}
+                    >
+                      {entry.row.templateName || '—'}
                     </TableCell>
                     <TableCell className="max-w-[16rem] truncate text-xs text-muted-foreground">
                       {entry.row.caption || '—'}
@@ -426,7 +497,6 @@ export function CalendarImportPanel({
                           >
                             {entry.row.poster.headlineLines.length} lines,{' '}
                             {entry.row.poster.features.length} features
-                            {entry.row.archetype ? ` · ${entry.row.archetype}` : ''}
                           </span>
                         ) : (
                           <span className="text-muted-foreground">On render</span>
@@ -535,7 +605,7 @@ export function CalendarImportPanel({
 
           {armed && !importRows.pending && (
             <span className="text-[11px] text-warning-ink">
-              Replaces the stored theme, caption, hashtags, and image prompt on{' '}
+              Replaces the stored caption, hashtags, image prompt and template on{' '}
               {counts.overwrite} of {companyName}&apos;s days. The previous copy is not
               recoverable.
             </span>

@@ -158,72 +158,7 @@ as a rare variant, max one word, accent colour, never for the primary line.
 
 ---
 
-## 5. Layout archetypes
-
-Eight compositions. Each defines where the photo sits and therefore where the photo must
-contain negative space.
-
-A–E are the recurring compositions reverse-engineered from the reference set. F–H were
-added later and are *derived* rather than observed: the reference set clustered into
-five, but five layouts cycling by day number is visibly repetitive over a 30-day
-campaign, and each of the three fills a gap the originals left — an unused photo
-treatment, an unused contact-bar form, and an unused reading order. They obey the same
-slot skeleton (§2) and colour system (§3), so nothing else in the spec changes.
-
-### A. Scrim overlay — refs 1, 6, 9, 10
-Photo full-bleed. Dark scrim gradient across the left/upper 55%. All copy on the scrim,
-vertically stacked, feature block as a horizontal strip near the bottom, contact bar
-full-bleed. **Photo requirement:** subject in the right/lower third, sky or dark
-low-detail area upper-left.
-
-### B. Diagonal split — refs 2, 13
-Solid dark panel left, photo right, boundary a single straight diagonal (~12–18° off
-vertical). Copy in the panel. Feature block sits in a contrasting rounded shape
-overlapping the boundary. **Photo requirement:** subject right of centre.
-
-### C. Stacked bands — refs 3, 5, 7
-Photo occupies a horizontal band across the middle/lower area. Headline and body above
-it on a light neutral, feature strip in a dark band below the photo, contact bar below
-that. Three hard horizontal edges. **Photo requirement:** wide establishing shot,
-subject centred.
-
-### D. Curved split — ref 4
-Photo top-right on a light field; a large curved sweep in the dark neutral rises from
-the bottom-left to carry the contact bar. Feature list vertical on the left over the
-light field. **Photo requirement:** subject upper-right, clean lower-left.
-
-### E. Light editorial — refs 8, 11, 12
-Light neutral field, photo fading into it (no hard edge — the photo's own bright sky
-or a white gradient dissolves the boundary). Copy left, feature strip low, dark contact
-bar. Feels the most premium; needs a genuinely bright, airy photo. **Photo requirement:**
-high-key, bright background, subject right.
-
-### F. Spotlight centre — derived
-Photo full-bleed under an *even* wash rather than a directional scrim — the global
-darkening treatment §3 records at 2/12 and which no observed archetype used. Copy and
-feature list are centred as one block down the frame, making this the only composition
-that does not anchor copy to the top. Vertical feature list, accent contact bar.
-**Photo requirement:** subject near centre, tolerant of heavy darkening.
-
-### G. Corner inset — derived
-Light field. Photo is a tall inset panel filling the right half from 8% to 76% of the
-height, bleeding off the right edge only, with an accent hairline at its base. Copy and
-a vertical feature list share the left column, centred against the panel. Contact bar is
-**stacked** — the form §2 records at 4/12 that no archetype had ever requested.
-**Photo requirement:** subject centred in a tall crop.
-
-### H. Inverted band — derived
-Photo band across the top 30%, an accent hairline on the seam, then all copy below it on
-the dark ground. The only composition where the photo is read before the copy rather
-than beneath or beside it. Feature strip, accent contact bar. The band is 30% rather than
-a true half because the full slot skeleton is not negotiable — `droppedSlots` reports
-omissions by canvas mode, not by archetype, so a layout that bought height by dropping
-the feature block would be truncation nobody could see. **Photo requirement:** wide
-establishing shot, horizon high.
-
----
-
-## 6. Copy conventions
+## 5. Copy conventions
 
 - Headline: 3–7 words total across all lines. Benefit or identity, not a sentence.
   Observed real example: `PREMIUM / COMMERCIAL / SPACES`.
@@ -238,7 +173,7 @@ establishing shot, horizon high.
 
 ---
 
-## 7. Photo direction
+## 6. Photo direction
 
 The photo is a **background asset with a mandated empty region**, not the creative.
 Prompt it for:
@@ -249,7 +184,7 @@ Prompt it for:
 - Lighting: golden hour or blue-hour dusk for warm-accent posters; bright midday for
   cool-blue and light-editorial posters. Warm interior window glow is a recurring motif
   in every residential shot.
-- Composition: subject pushed to the side the archetype requires, with a low-detail
+- Composition: subject pushed to the side the template's photo cell requires, with a low-detail
   region (sky, shadow, plain wall) reserved for the copy.
 - **Never** request text, letters, numbers, logos, signage, or watermarks in the photo —
   that rule was correct all along. It is the *poster layer* that carries text, composited
@@ -257,12 +192,13 @@ Prompt it for:
 
 ---
 
-## 8. Layout specs — templates as geometry
+## 7. Layout specs — templates as geometry
 
-§5's eight archetypes are hand-written compositions: adding one means adding a
-component and a catalogue entry. That bounds the system at whatever somebody
-sat down and built, which is the wrong shape for a product whose operators
-upload their own reference posters per vertical.
+The eight archetypes this system started with were hand-written compositions:
+adding one meant adding a component and a catalogue entry. That bounded the
+system at whatever somebody sat down and built, which is the wrong shape for a
+product whose operators upload their own reference posters per vertical. They
+were retired on 2026-08-23 and are recorded in Appendix A.
 
 A **layout spec** (`src/lib/types/layout-spec.ts`) is the same idea as an
 archetype expressed as data, so the hundredth template costs what the first one
@@ -328,3 +264,85 @@ Two failure modes are worth knowing when reading a bad draft:
 Run `npm run check:layouts -- <spec.json...>` after touching this layer. It
 covers the validation rules, renders all fifteen archetypes as a regression, and
 renders any supplied specs at portrait and off-brand canvases.
+
+---
+
+## Appendix A — The eight built-in compositions (retired)
+
+Hand-written React components in `src/lib/poster/archetypes.tsx`, **removed on
+2026-08-23** when uploaded templates became the only source of layout (§7).
+
+Kept rather than deleted because the rest of this document derives from them.
+§2's slot skeleton, §3's colour system and §6's photo direction were all
+reverse-engineered from the same twelve references these compositions describe,
+and an operator judging an uploaded template is still judging it against that
+skeleton — a layout spec chooses where the eight slots go and cannot invent a
+ninth. Deleting this section would orphan the reasoning behind the rest.
+
+Read as history. Any sentence below describing runtime behaviour — canvas-mode
+slot dropping in particular — no longer describes anything.
+
+
+Eight compositions. Each defines where the photo sits and therefore where the photo must
+contain negative space.
+
+A–E are the recurring compositions reverse-engineered from the reference set. F–H were
+added later and are *derived* rather than observed: the reference set clustered into
+five, but five layouts cycling by day number is visibly repetitive over a 30-day
+campaign, and each of the three fills a gap the originals left — an unused photo
+treatment, an unused contact-bar form, and an unused reading order. They obey the same
+slot skeleton (§2) and colour system (§3), so nothing else in the spec changes.
+
+### A. Scrim overlay — refs 1, 6, 9, 10
+Photo full-bleed. Dark scrim gradient across the left/upper 55%. All copy on the scrim,
+vertically stacked, feature block as a horizontal strip near the bottom, contact bar
+full-bleed. **Photo requirement:** subject in the right/lower third, sky or dark
+low-detail area upper-left.
+
+### B. Diagonal split — refs 2, 13
+Solid dark panel left, photo right, boundary a single straight diagonal (~12–18° off
+vertical). Copy in the panel. Feature block sits in a contrasting rounded shape
+overlapping the boundary. **Photo requirement:** subject right of centre.
+
+### C. Stacked bands — refs 3, 5, 7
+Photo occupies a horizontal band across the middle/lower area. Headline and body above
+it on a light neutral, feature strip in a dark band below the photo, contact bar below
+that. Three hard horizontal edges. **Photo requirement:** wide establishing shot,
+subject centred.
+
+### D. Curved split — ref 4
+Photo top-right on a light field; a large curved sweep in the dark neutral rises from
+the bottom-left to carry the contact bar. Feature list vertical on the left over the
+light field. **Photo requirement:** subject upper-right, clean lower-left.
+
+### E. Light editorial — refs 8, 11, 12
+Light neutral field, photo fading into it (no hard edge — the photo's own bright sky
+or a white gradient dissolves the boundary). Copy left, feature strip low, dark contact
+bar. Feels the most premium; needs a genuinely bright, airy photo. **Photo requirement:**
+high-key, bright background, subject right.
+
+### F. Spotlight centre — derived
+Photo full-bleed under an *even* wash rather than a directional scrim — the global
+darkening treatment §3 records at 2/12 and which no observed archetype used. Copy and
+feature list are centred as one block down the frame, making this the only composition
+that does not anchor copy to the top. Vertical feature list, accent contact bar.
+**Photo requirement:** subject near centre, tolerant of heavy darkening.
+
+### G. Corner inset — derived
+Light field. Photo is a tall inset panel filling the right half from 8% to 76% of the
+height, bleeding off the right edge only, with an accent hairline at its base. Copy and
+a vertical feature list share the left column, centred against the panel. Contact bar is
+**stacked** — the form §2 records at 4/12 that no archetype had ever requested.
+**Photo requirement:** subject centred in a tall crop.
+
+### H. Inverted band — derived
+Photo band across the top 30%, an accent hairline on the seam, then all copy below it on
+the dark ground. The only composition where the photo is read before the copy rather
+than beneath or beside it. Feature strip, accent contact bar. The band is 30% rather than
+a true half because the full slot skeleton is not negotiable — `droppedSlots` reports
+omissions by canvas mode, not by archetype, so a layout that bought height by dropping
+the feature block would be truncation nobody could see. **Photo requirement:** wide
+establishing shot, horizon high.
+
+---
+

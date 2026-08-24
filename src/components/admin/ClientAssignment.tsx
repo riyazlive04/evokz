@@ -83,8 +83,17 @@ export function ClientAssignment({
 
   async function saveCategory() {
     const result = await categoryAction.run(clientId, nextCategory);
-    if (result.ok) setFlash('Vertical updated. Days already seeded keep their old copy.');
-    else setNextCategory(categoryId);
+    if (result.ok) {
+      // The unpinned count is the part an operator cannot infer. A template pin
+      // belongs to a vertical, so moving the client had to release the ones on
+      // rebuildable days — those now follow the new vertical's rotation, and any
+      // sheet naming the old templates will be rejected on its next import.
+      setFlash(
+        result.data.unpinnedDays > 0
+          ? `Vertical updated. Days already seeded keep their old copy, and ${result.data.unpinnedDays} pending day(s) released their template — they now follow the new vertical's rotation.`
+          : 'Vertical updated. Days already seeded keep their old copy.',
+      );
+    } else setNextCategory(categoryId);
   }
 
   async function saveDays() {

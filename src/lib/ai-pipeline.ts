@@ -6,11 +6,10 @@ import { uploadClientAsset } from '@/lib/google-drive';
 import { ensurePosterCopy } from '@/lib/ai/poster-copy';
 import { resolveImageSizePreset } from '@/lib/image-sizes';
 import {
-  loadCategoryArchetypes,
-  loadCategoryLayouts,
-} from '@/lib/poster/archetype-library';
+  describeLayoutFailure,
+  resolveDayLayout,
+} from '@/lib/poster/layout-library';
 import {
-  resolvePhotoRequest,
   resolveSpecPhotoRequests,
   type PhotoRequest,
 } from '@/lib/poster/photo-request';
@@ -18,12 +17,8 @@ import { renderPoster } from '@/lib/poster/render';
 import { prisma } from '@/lib/prisma';
 import { describeDelay, nextSendDelay } from '@/lib/send-jitter';
 import { parseBrandGuideline } from '@/lib/types/brand';
-import {
-  archetypeForDay,
-  pickForDay,
-  posterArchetypeSchema,
-  type PosterArchetype,
-} from '@/lib/types/poster';
+import { describeCopyShape } from '@/lib/types/layout-spec';
+import { pickForDay } from '@/lib/types/poster';
 import { recordImageUsage, recordWhatsAppUsage } from '@/lib/usage';
 
 /**
@@ -220,34 +215,41 @@ export async function runCreativePipeline(
       );
 
       /*
-       * The layout is settled before the render because it dictates how many
-       * photographs to buy and at what aspect — see `resolveSpecPhotoRequests`.
+       * The layout is settled before anything is bought.
        *
-       * A stored `posterArchetype` still pins the *archetype* path for a row
-       * that has rendered before, but the spec ballot is consulted regardless:
-       * approving a vertical's templates should change what its clients receive
-       * from the next render on, and a day pinned to `bands` months ago is
-       * exactly the row that most needs to move onto its vertical's real layout.
+       * It has to be: the spec declares how many photographs the poster needs
+       * and at what aspect, so resolving it after `stage = 'generate'` would bill
+       * fal.ai for frames that a compose failure then throws away.
        *
-       * Two indexed queries per render, both narrow.
+       * `stage` is still 'load' here, so the failure is thrown with its stage
+       * named explicitly — an operator reading a compose error goes to the
+       * vertical console, which is where the fix is.
        */
-      const layouts = await loadCategoryLayouts(client.categoryId);
-      const layoutSpec = pickForDay(entry.dayNumber, layouts);
+      const layout = await resolveDayLayout({
+        categoryId: client.categoryId,
+        dayNumber: entry.dayNumber,
+        pinnedTemplateId: entry.posterTemplateId,
+      });
 
-      const library =
-        layoutSpec || entry.posterArchetype
-          ? []
-          : await loadCategoryArchetypes(client.categoryId);
-      const archetype = resolvePosterArchetype(
-        entry.posterArchetype,
-        entry.dayNumber,
-        library,
-      );
+      if (!layout.ok) {
+        // Fetched only on the failure path. Widening the entry's `include` to
+        // join the category would pay for a name on every successful render for
+        // the sake of an error string.
+        const category = await prisma.category.findUnique({
+          where: { id: client.categoryId },
+          select: { name: true },
+        });
+        throw new PipelineStageError(
+          'compose',
+          describeLayoutFailure(layout, {
+            categoryId: client.categoryId,
+            categoryName: category?.name ?? 'this',
+            dayNumber: entry.dayNumber,
+          }),
+        );
+      }
 
-      // A spec declares its own photo cells; an archetype has exactly one region.
-      const photoRequests = layoutSpec
-        ? resolveSpecPhotoRequests(layoutSpec, sizePreset)
-        : [resolvePhotoRequest(archetype, sizePreset)];
+      const photoRequests = resolveSpecPhotoRequests(layout.spec, sizePreset);
 
       // ---- Step 1: Flux.1 via fal.ai --------------------------------------
       stage = 'generate';
@@ -290,12 +292,13 @@ export async function runCreativePipeline(
       stage = 'compose';
       // Backfills rows seeded before the poster layer existed, and any whose
       // batch-generated copy was unusable. A no-op for a normally seeded day.
-      const posterCopy = await ensurePosterCopy(entry.id);
+      // The layout is passed so the copy is written to fit it — the number of
+      // feature items, whether an eyebrow will be drawn, how narrow the headline
+      // column is. Resolved above, before anything was bought.
+      const posterCopy = await ensurePosterCopy(entry.id, describeCopyShape(layout.spec));
 
       const poster = await renderPoster({
-        archetype,
-        layoutSpec,
-        dayNumber: entry.dayNumber,
+        layoutSpec: layout.spec,
         copy: posterCopy,
         guideline: parseBrandGuideline(client.brandGuideline),
         identity: {
@@ -312,14 +315,20 @@ export async function runCreativePipeline(
         height: sizePreset.height,
       });
 
-      // Persisted so a later re-render of this row reproduces the same layout
-      // rather than re-deriving it, and so the queue ledger can show it.
-      if (entry.posterArchetype !== poster.archetype) {
-        await prisma.contentCalendar.update({
-          where: { id: calendarId },
-          data: { posterArchetype: poster.archetype },
-        });
-      }
+      /*
+       * Logged, not written back.
+       *
+       * Its predecessor persisted the resolved archetype so a retry reproduced
+       * the poster the client received. Doing that with a template would pin
+       * every rendered row, and approving a new template could then never reach
+       * a day that had rendered once — the exact complaint `regenerateCreative`
+       * was written to escape. A pin is an operator's instruction from a sheet;
+       * nothing else may create one.
+       */
+      console.info(
+        `[ace:pipeline] day ${entry.dayNumber} composed from "${poster.layoutName}" ` +
+          `(${layout.source}, template ${layout.templateId})`,
+      );
 
       const asset: GeneratedAsset = {
         body: poster.body,
@@ -507,29 +516,6 @@ export async function runCreativePipeline(
 /** The configured image endpoint. Shared with the spend ledger's `model` column. */
 export function getFalEndpoint(): string {
   return optionalEnv('FAL_MODEL_ENDPOINT', 'fal-ai/flux/schnell');
-}
-
-/**
- * The archetype for a row, in order of authority:
- *
- *   1. Its stored choice — an operator's pin, or what a previous render settled
- *      on. This is what makes a retry reproduce the poster the client received.
- *   2. The layouts mapped to the vertical's reference templates, walked by day
- *      number. Duplicates in that list are the whole point: they weight a layout
- *      by how many references were mapped to it.
- *   3. The eight base compositions, for a vertical with nothing mapped.
- *
- * Every step is deterministic rather than random, so an operator comparing a
- * re-render against the original never sees a spurious difference.
- */
-export function resolvePosterArchetype(
-  stored: string | null,
-  dayNumber: number,
-  library: readonly PosterArchetype[] = [],
-): PosterArchetype {
-  const parsed = posterArchetypeSchema.safeParse(stored);
-  if (parsed.success) return parsed.data;
-  return pickForDay(dayNumber, library) ?? archetypeForDay(dayNumber);
 }
 
 /**

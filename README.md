@@ -84,20 +84,30 @@ arrives from data instead.
 | --- | --- |
 | Layout rules, reverse-engineered from the reference set | [docs/creative-style-spec.md](docs/creative-style-spec.md) |
 | Slot components (logo, headline, accent rule, features, contact bar) | [src/lib/poster/slots.tsx](src/lib/poster/slots.tsx) |
-| Eight layout archetypes + wide/letterbox adaptations | [src/lib/poster/archetypes.tsx](src/lib/poster/archetypes.tsx) |
+| Layout spec — a template's geometry as data | [src/lib/types/layout-spec.ts](src/lib/types/layout-spec.ts) |
+| Spec interpreter (draws every layout) | [src/lib/poster/layout-render.tsx](src/lib/poster/layout-render.tsx) |
+| Reading a layout out of an uploaded poster | [src/lib/ai/layout-extractor.ts](src/lib/ai/layout-extractor.ts) |
 | Brand tokens → colours, fonts, contrast correction | [src/lib/poster/theme.ts](src/lib/poster/theme.ts) |
 | Spec pixel values scaled to any canvas | [src/lib/poster/metrics.ts](src/lib/poster/metrics.ts) |
 | Render entry point | [src/lib/poster/render.tsx](src/lib/poster/render.tsx) |
-| Preview surface | `/admin/poster-preview` |
+| Preview surface | `/api/poster/preview` |
 
-### Archetypes
+### Layouts
 
-Eight compositions (§5 of the spec): `scrim`, `diagonal`, `bands`, `curve`, `editorial`,
-`spotlight`, `corner`, `inverted`. A calendar row may pin one in `posterArchetype`; otherwise it
-is derived from `dayNumber` by `archetypeForDay`, stepping through the set by the smallest stride
-above 1 that is coprime with its size — 3 at eight archetypes — so all eight appear before any
-repeats. The stride is computed rather than written down: a literal that stops being coprime
-silently walks a subset forever, with nothing to catch it.
+Every poster is drawn from a reference template an operator uploaded to the client's vertical,
+whose geometry was read by the vision extractor and **approved** by a human. There are no
+built-in compositions: a vertical with no approved template cannot generate at all, and says so
+as a `[compose]` failure naming the fix.
+
+A calendar row may name its template in `posterTemplateId`, set only by an imported sheet.
+Otherwise the vertical's approved templates are walked by `dayNumber` using the smallest stride
+above 1 coprime with the set size, so all of them appear before any repeats. The stride is
+computed rather than written down: a literal that stops being coprime silently walks a subset
+forever, with nothing to catch it.
+
+Nothing writes a pin back on render. Its predecessor `posterArchetype` did, which froze a day's
+layout against every later change — approving a new template could never reach a day that had
+rendered once.
 
 The last three are derived rather than reverse-engineered from the reference set: `spotlight`
 puts a full-bleed photo under an even wash with the copy centred down the frame, `corner` insets
@@ -108,9 +118,10 @@ Derivation is deterministic on purpose. Re-rendering day 47 after a failure must
 layout the first attempt would have produced, or an operator comparing a retry against the
 original sees a difference that isn't there.
 
-**The archetype picks the photo's aspect ratio, not the output preset.** `bands`, `curve` and
-`inverted` place the photo in a landscape band; asking fal for a 9:16 portrait and cover-fitting
-it into a short wide box discards most of the frame and usually decapitates the subject. See
+**The layout picks each photo's aspect ratio, not the output preset.** A template placing its
+photo in a landscape band, asked for a 9:16 portrait and cover-fitted into a short wide box,
+discards most of the frame and usually decapitates the subject. A spec may declare up to two
+photo cells, and each is a separate billed render. See
 [src/lib/poster/photo-request.ts](src/lib/poster/photo-request.ts).
 
 ### Poster identity
@@ -151,8 +162,10 @@ imported directly instead.
 
 ### Previewing
 
-`/admin/poster-preview` renders all eight archetypes at any output preset, optionally with a
-real client's brand and a real calendar day's copy. It costs nothing to refresh: the background
+`/api/poster/preview?templateId=…` renders one template's extracted layout — approved or not,
+which is what makes it the review surface. `?clientId=…` renders what that client would actually
+receive, resolving the layout exactly as the pipeline does. With neither it renders the built-in
+sample layout, which is what the brand panel's thumbnail uses. It costs nothing to refresh: the background
 photo is generated procedurally by
 [src/lib/poster/placeholder-photo.ts](src/lib/poster/placeholder-photo.ts) rather than diffused.
 The page also reports the resolved theme, any contrast pairing still below target after
@@ -181,7 +194,7 @@ Two caveats are surfaced in the picker rather than blocked:
   delivered file is still the preset's exact size and all type stays vector-sharp — only the
   photo loses detail, which is why this is an advisory rather than a refusal.
 
-Because the preset sets the composite canvas and the archetype sets the photo request, no
+Because the preset sets the composite canvas and the layout sets the photo requests, no
 preset is bounded by Flux's ceiling: a 3840×2160 wallpaper is delivered at 3840×2160.
 
 One cost caveat is **not** surfaced in the UI: `PRICE_FAL_PER_IMAGE` is a flat per-image rate,
@@ -303,7 +316,6 @@ at all.
 | `feature N icon/label/body` | Three per feature, 2–4 features. Icon must be one of the names in `POSTER_ICONS`. |
 | `call label` / `website label` | Contact-bar imperatives. Blank → `CALL US TODAY` / `VISIT OUR WEBSITE`. |
 | `headline period` | yes/no. |
-| `archetype` | Pins the layout to one of the eight. Blank rotates by day number. |
 
 Poster columns are **all-or-nothing per row**: touch any one and that row must supply a complete
 block. A half-filled poster cannot be rendered, and silently falling back to generation would
@@ -319,10 +331,10 @@ The two template buttons emit exactly these two shapes — content-only, and con
 poster column — both with two filled example rows, since the image-prompt and headline house
 rules are easier to copy than to describe.
 
-`posterCopy` and `posterArchetype` are treated differently on overwrite, deliberately: poster
-copy is *derived from the caption being replaced*, so it is cleared unless the sheet supplies a
-new block; the archetype is a layout pin rather than derived content, so a sheet with no opinion
-on it leaves an existing pin alone.
+On overwrite, `posterCopy` and `theme` are both cleared — each is *derived from the caption being
+replaced*, so keeping either would typeset the old headline, or show the old angle, over new
+content. `posterTemplateId` is written unconditionally: the template column is required, so
+there is no no-opinion state for a sheet to express.
 
 ## Content stages (OpenAI)
 

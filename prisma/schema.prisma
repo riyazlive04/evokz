@@ -68,7 +68,12 @@ model CategoryTemplate {
   // The Drive files are trashed by the action before the rows go.
   category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
-  /// Operator-facing name. Defaults to the uploaded filename.
+  /// Operator-facing name, and the key an imported sheet names a template by.
+  ///
+  /// Defaults to the uploaded filename, deduped against the vertical on upload
+  /// and editable afterwards, because a filename is a poor thing to type into a
+  /// spreadsheet three hundred times. Unique per vertical — see the constraint
+  /// at the bottom of this model.
   label String
 
   // Mirrors ContentCalendar's pair, but used differently. Unlike a poster, a
@@ -85,18 +90,6 @@ model CategoryTemplate {
   width    Int?
   height   Int?
 
-  /// Which layout from `POSTER_ARCHETYPES` this reference poster represents,
-  /// chosen by the operator looking at it.
-  ///
-  /// Null means unmapped, which excludes it from generation entirely: an image
-  /// with no stated composition tells the renderer nothing, and guessing from the
-  /// filename would be worse than leaving it out.
-  ///
-  /// A String rather than an enum, matching `ContentCalendar.posterArchetype` —
-  /// the set grows whenever a layout is added, and each addition would otherwise
-  /// need its own migration. Validated against `posterArchetypeSchema` at the
-  /// action boundary.
-  archetype String?
 
   /// This template's own geometry, as a `PosterLayoutSpec` (src/lib/types/layout-spec.ts).
   ///
@@ -129,15 +122,23 @@ model CategoryTemplate {
   /// that existed before specs.
   layoutApprovedAt DateTime?
 
+  /// Days pinned to this template by name in an imported sheet.
+  calendarDays ContentCalendar[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Serves the gallery query: every template for one vertical, newest first.
   @@index([categoryId, createdAt])
-  // Serves generation: the mapped layouts for one vertical, in upload order.
-  @@index([categoryId, archetype])
   // Serves generation's preferred path: approved specs for one vertical.
   @@index([categoryId, layoutApprovedAt])
+  /// Makes the label addressable from a spreadsheet.
+  ///
+  /// A sheet names the template it wants per day, so the name has to resolve to
+  /// exactly one row. Scoped to the vertical rather than global: two industries
+  /// may both reasonably own a "Grand Opening" reference, and a client only ever
+  /// draws from its own category.
+  @@unique([categoryId, label])
 }
 
 model Client {
@@ -253,7 +254,13 @@ model ContentCalendar {
   client             Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
   dayNumber          Int
   scheduledDate      DateTime
-  theme              String
+  /// Short content angle for the day, fed to the poster-copy prompt.
+  ///
+  /// Nullable since the bulk importer stopped carrying it: a sheet now names the
+  /// template it wants instead, and the copy stage anchors on the caption and the
+  /// photo brief, which every row has. The AI calendar generator still writes one
+  /// — it needs the value to keep 365 days from converging on the same angle.
+  theme              String?
   caption            String         @db.Text
   hashtags           String
   // Background-photo prompt only. The poster's text is never diffusion-rendered;
@@ -264,10 +271,19 @@ model ContentCalendar {
   // (src/lib/types/poster.ts). Null on rows seeded before the poster layer
   // existed — `ensurePosterCopy` backfills them on first render.
   posterCopy         Json?
-  // Which of the five layout archetypes to compose. Null means "let the
-  // renderer pick deterministically from dayNumber", which keeps a long
-  // campaign visually varied without storing a choice per row.
-  posterArchetype    String?
+  /// The reference template this day's poster must be laid out from.
+  ///
+  /// Set only by a human — an imported sheet naming it, never a render. That is
+  /// the difference from the retired `posterArchetype`, which the pipeline wrote
+  /// back on first compose and which therefore froze a day's layout against every
+  /// later change. Null means "rotate across the vertical's approved templates",
+  /// which is what an AI-seeded calendar gets.
+  ///
+  /// SetNull rather than Restrict: retiring a template must not be blocked by the
+  /// days that once used it, and a row falling back to the rotation is a better
+  /// outcome than an undeletable row.
+  posterTemplateId   String?
+  posterTemplate     CategoryTemplate? @relation(fields: [posterTemplateId], references: [id], onDelete: SetNull)
   gDriveFileId       String? // Storage reference inside Google Drive
   gDriveViewUrl      String? // Public link used by Evolution API + the dashboard
   deliveryStatus     DeliveryStatus @default(PENDING)
@@ -318,6 +334,8 @@ model ContentCalendar {
   // Drives the backlog phase: "which pending rows has the operator asked for",
   // asked once a minute against a column that is null for almost every row.
   @@index([deliveryStatus, generationQueuedAt])
+  // Serves the SetNull cascade when a template is deleted.
+  @@index([posterTemplateId])
 }
 
 /// One billable provider call. Append-only: rows are never updated, so the

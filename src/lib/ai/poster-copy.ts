@@ -1,6 +1,7 @@
 import { generateStructured } from '@/lib/ai/openai';
 import { POSTER_COPY_RULES, POSTER_SCHEMA } from '@/lib/ai/poster-prompt';
 import { prisma } from '@/lib/prisma';
+import type { LayoutCopyShape } from '@/lib/types/layout-spec';
 import { parseBrandGuideline, type BrandGuideline } from '@/lib/types/brand';
 import { coercePosterCopy, parsePosterCopy, type PosterCopy } from '@/lib/types/poster';
 
@@ -35,7 +36,19 @@ ${POSTER_COPY_RULES}`;
  * pipeline's `FAILED` state with a readable reason beats delivering a photograph
  * with no text on it — the exact defect this whole layer exists to fix.
  */
-export async function ensurePosterCopy(calendarId: string): Promise<PosterCopy> {
+export async function ensurePosterCopy(
+  calendarId: string,
+  /**
+   * The layout this day will be drawn in, when the caller knows it.
+   *
+   * Omitted by the backfill paths that have no layout in hand. Supplying it is
+   * what makes the copy fit the template rather than the template absorb
+   * whatever copy arrived: a three-column feature strip asked for four items
+   * reads as a mistake, and an eyebrow written for a layout with no eyebrow slot
+   * is tokens spent on words nobody sees.
+   */
+  shape?: LayoutCopyShape,
+): Promise<PosterCopy> {
   const entry = await prisma.contentCalendar.findUnique({
     where: { id: calendarId },
     select: {
@@ -71,8 +84,18 @@ export async function ensurePosterCopy(calendarId: string): Promise<PosterCopy> 
       `Industry: ${entry.client.category.name}`,
       describeBrandVoice(guideline),
       '',
-      `The day's content angle: ${entry.theme}`,
-      '',
+      /*
+       * Omitted entirely — line and separator — when the day has no theme, which
+       * is every day imported from a sheet since the importer dropped that
+       * column. Interpolating a null would put the literal text "null" in front
+       * of the model as the day's angle.
+       *
+       * This degrades onto a stronger signal rather than a weaker one. A theme
+       * was 2-5 words; the caption below is a paragraph on the same day's subject
+       * in the same voice, and the prompt already frames it as the thing the
+       * poster copy must agree with. Do not "restore" this line.
+       */
+      ...(entry.theme ? [`The day's content angle: ${entry.theme}`, ''] : []),
       // The caption and photo brief already exist for this day, so the poster copy
       // is anchored to them rather than invented independently — otherwise the
       // headline can contradict the photograph it is typeset over.
@@ -118,4 +141,47 @@ function describeBrandVoice(guideline: BrandGuideline): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Tells the model what the chosen layout can actually show.
+ *
+ * Steered through the prompt rather than the schema because `POSTER_SCHEMA` runs
+ * under OpenAI Structured Outputs, where every property must stay required — an
+ * eyebrow field cannot be made conditional. The renderer already drops content
+ * for slots a spec omits, so the win here is the feature count and not wasting
+ * the model's attention on slots that will never be drawn.
+ */
+function describeLayoutFit(shape: LayoutCopyShape): string {
+  const notes: string[] = [
+    'This day is laid out in a specific template. Fit the copy to it:',
+  ];
+
+  notes.push(
+    shape.hasFeatures
+      ? '- features: exactly 3 items. The layout has room for three and reads as a mistake with four.'
+      : '- features: this layout has no feature block. Still supply 3 — they are required — but keep them short; they will not be shown.',
+  );
+
+  notes.push(
+    shape.hasEyebrow
+      ? '- eyebrow: this layout shows one. A short all-caps kicker is worth writing.'
+      : '- eyebrow: this layout has no eyebrow. Send an empty string.',
+  );
+
+  if (!shape.hasBody) {
+    notes.push('- body: this layout has no body paragraph. Keep it to one short sentence.');
+  }
+
+  // Below roughly a third of the canvas the headline column is narrow enough
+  // that `fittedHeadlineSize` shrinks the type toward its floor, which reads as
+  // a smaller headline rather than a designed one. Shorter lines avoid it.
+  if (shape.headlineWidthShare < 0.45) {
+    notes.push(
+      `- headline: the headline column is only ${Math.round(shape.headlineWidthShare * 100)}% ` +
+        'of the poster width. Keep every line to 12 characters or fewer, and prefer 3-4 short lines over 2 long ones.',
+    );
+  }
+
+  return notes.join('\n');
 }

@@ -109,6 +109,7 @@ export default async function ClientDetailPage({
     seededRows,
     planOptions,
     categoryOptions,
+    approvedTemplates,
   ] = await Promise.all([
     prisma.contentCalendar.groupBy({
       by: ['deliveryStatus'],
@@ -152,6 +153,15 @@ export default async function ClientDetailPage({
     prisma.category.findMany({
       orderBy: { name: 'asc' },
       select: { id: true, name: true },
+    }),
+    // The layouts a sheet may name for this client, served by
+    // @@index([categoryId, layoutApprovedAt]). Cheap, and it is what lets the
+    // importer reject a misspelt template before anything is written — and what
+    // fills the template column in the downloadable CSV with names that exist.
+    prisma.categoryTemplate.findMany({
+      where: { categoryId: client.categoryId, layoutApprovedAt: { not: null } },
+      orderBy: { label: 'asc' },
+      select: { id: true, label: true },
     }),
   ]);
 
@@ -476,6 +486,7 @@ export default async function ClientDetailPage({
             totalDays={totalDays}
             seededDays={seededDays}
             lockedDays={lockedDays}
+            templates={approvedTemplates}
           />
         </CardContent>
       </Card>

@@ -1,8 +1,10 @@
 import { DeliveryStatus, Prisma } from '@prisma/client';
 
 import {
+  buildTemplateIndex,
   calendarImportSchema,
   normalizeHashtags,
+  resolveTemplateName,
   type CalendarImportInput,
   type ConflictMode,
 } from '@/lib/calendar-parse';
@@ -14,7 +16,7 @@ import { getAppTimeZone, nthDeliveryDate } from '@/lib/time';
  * `generateContentCalendar`.
  *
  * Same destination, same row shape, no LLM and no spend: the Evokz team writes
- * theme / caption / hashtags / image prompt in a spreadsheet and imports it. The
+ * template / caption / hashtags / image prompt in a spreadsheet and imports it. The
  * creative pipeline downstream cannot tell the two sources apart, which is the
  * point — a hand-written calendar day delivers exactly like a generated one.
  */
@@ -78,6 +80,7 @@ export async function applyCalendarImport(
     select: {
       id: true,
       companyName: true,
+      categoryId: true,
       startDate: true,
       deliveryDays: true,
       plan: { select: { name: true, durationDays: true } },
@@ -90,13 +93,58 @@ export async function applyCalendarImport(
     throw new Error(`Plan "${client.plan.name}" has an invalid durationDays`);
   }
 
+  /*
+   * The authority on template names.
+   *
+   * The panel resolved these already against a catalogue passed down at page
+   * render, but that snapshot can be minutes old: a template may have been
+   * renamed, un-approved or deleted since. Resolving again here, scoped to the
+   * client's own vertical, also makes cross-vertical pinning structurally
+   * impossible — there is no separate authorization check to forget.
+   */
+  const approved = await prisma.categoryTemplate.findMany({
+    where: { categoryId: client.categoryId, layoutApprovedAt: { not: null } },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, label: true },
+  });
+
+  const index = buildTemplateIndex(approved);
+  const resolutions = rows.map((row) => resolveTemplateName(row.templateName, index));
+
+  /*
+   * Throws rather than importing the good rows and counting the rest.
+   *
+   * `planWrites` is pure precisely so the whole plan is settled before the first
+   * write, and a name failure here means the browser preview was wrong — the
+   * library moved underneath the operator. Writing the rows that happened to
+   * survive would leave a calendar nobody reviewed, which is worse than an error
+   * they can act on. `importCalendarEntries` funnels this into the panel intact.
+   */
+  const unresolved = resolutions.flatMap((resolution, position) =>
+    'error' in resolution ? [`Row ${position + 1}: ${resolution.error}`] : [],
+  );
+  if (unresolved.length > 0) {
+    const shown = unresolved.slice(0, 5).join(' · ');
+    throw new Error(
+      unresolved.length > 5
+        ? `${shown} · and ${unresolved.length - 5} more row(s). Nothing was imported.`
+        : `${shown} Nothing was imported.`,
+    );
+  }
+
+  const pinned = rows.map((row, position) => ({
+    ...row,
+    // Non-null: every resolution was checked above.
+    templateId: (resolutions[position] as { id: string }).id,
+  }));
+
   const existing = await prisma.contentCalendar.findMany({
     where: { clientId },
     select: { id: true, dayNumber: true, deliveryStatus: true },
   });
   const byDay = new Map(existing.map((row) => [row.dayNumber, row]));
 
-  const plan = planWrites(rows, mode, {
+  const plan = planWrites(pinned, mode, {
     clientId,
     totalDays,
     startDate: client.startDate,
@@ -154,16 +202,20 @@ export async function applyCalendarImport(
 // ---------------------------------------------------------------------------
 
 interface RowCopy {
-  theme: string;
   caption: string;
   hashtags: string;
   imagePrompt: string;
   scheduledDate: Date;
+  /** The template this day must be laid out from. Always set — the column is required. */
+  posterTemplateId: string;
 }
 
 interface WritePlan {
   toCreate: Array<Prisma.ContentCalendarCreateManyInput>;
-  toUpdate: Array<{ id: string; data: Prisma.ContentCalendarUpdateInput }>;
+  // Unchecked rather than the checked variant: the payload is all scalars, and
+  // the checked input would demand `posterTemplate: { connect: … }` for what is
+  // already a plain id in hand.
+  toUpdate: Array<{ id: string; data: Prisma.ContentCalendarUncheckedUpdateInput }>;
   writtenDays: number[];
   /** Rows that supplied a hand-authored poster block rather than deferring it. */
   postersAuthored: number;
@@ -180,7 +232,9 @@ interface WritePlan {
  * that cannot land is counted rather than discovered halfway through.
  */
 function planWrites(
-  rows: ReturnType<typeof calendarImportSchema.parse>['rows'],
+  rows: Array<
+    ReturnType<typeof calendarImportSchema.parse>['rows'][number] & { templateId: string }
+  >,
   mode: ConflictMode,
   context: {
     clientId: string;
@@ -252,7 +306,7 @@ function planWrites(
     handled.add(dayNumber);
 
     const copy: RowCopy = {
-      theme: row.theme,
+      posterTemplateId: row.templateId,
       caption: row.caption,
       hashtags: normalizeHashtags(row.hashtags),
       imagePrompt: row.imagePrompt,
@@ -272,7 +326,6 @@ function planWrites(
         // `undefined` omits the column, leaving it null — the signal
         // `ensurePosterCopy` reads to write the text layer at render time.
         posterCopy: row.poster ?? undefined,
-        posterArchetype: row.archetype ?? undefined,
       });
       plan.writtenDays.push(dayNumber);
       continue;
@@ -301,10 +354,16 @@ function planWrites(
         // replaced* — keeping it would typeset the old headline over the new
         // photo brief.
         posterCopy: row.poster ?? Prisma.DbNull,
-        // Deliberately asymmetric with posterCopy above: the archetype is a
-        // layout pin, not derived content, so a sheet with no opinion on it must
-        // not silently discard one an operator set earlier.
-        ...(row.archetype === null ? {} : { posterArchetype: row.archetype }),
+        // Cleared for the same reason as posterCopy above — the theme described
+        // the caption being replaced. Leaving it would anchor the new poster's
+        // headline to the old angle in `ensurePosterCopy`, and show a stale angle
+        // over new copy in the queue ledger.
+        theme: null,
+        // The template arrives through `...copy` and is written unconditionally.
+        // Its predecessor `posterArchetype` was deliberately asymmetric here — a
+        // sheet with no opinion had to leave an operator's pin alone — but under
+        // the strict rule there is no no-opinion state: the column is required
+        // and every accepted row carries a resolved template.
         // A FAILED row can already hold an asset rendered from the *old* image
         // prompt (upload succeeded, broadcast did not). Keeping the reference
         // would let a later re-send deliver the previous creative under the new

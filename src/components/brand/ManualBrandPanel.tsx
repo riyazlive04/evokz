@@ -408,13 +408,15 @@ export function ManualBrandPanel({
               a dynamic route; next/image would proxy and cache a preview whose whole
               purpose is to reflect the palette that was just saved. */}
           <img
-            src={`/api/poster/preview?clientId=${encodeURIComponent(clientId)}&archetype=scrim&v=${previewKey}`}
+            src={`/api/poster/preview?clientId=${encodeURIComponent(clientId)}&v=${previewKey}`}
             alt={`Poster preview using ${companyName}'s saved brand tokens`}
             className="w-40 rounded-lg border border-border bg-muted"
           />
           <p className="w-40 text-[10px] text-muted-foreground/70">
-            Saved tokens, real renderer, placeholder photo. Costs nothing — refresh after
-            saving to see a change.
+            Saved tokens, real renderer, placeholder photo, and this vertical&apos;s own
+            approved layout. Costs nothing — refresh after saving to see a change. If it
+            fails to load, the vertical has no approved template and this client cannot
+            generate at all yet.
           </p>
         </div>
       </div>
