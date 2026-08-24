@@ -42,6 +42,92 @@ const FALLBACK: VerticalImagery = {
     'clean natural daylight with soft directional shadow. Keep the treatment neutral and professional — no theatrical colour, no manufactured drama',
 };
 
+/**
+ * Distinctive fragments that map an operator-typed vertical onto a vocabulary.
+ *
+ * The lookup used to be an exact match on `normalize()` output, and the keys were
+ * written against the content library's canonical names — "Heavy Construction",
+ * "Healthcare & Dental Clinics", "Interior Design". Nobody types those. The
+ * admin UI's category field is free text, and what production actually holds is
+ * "Contructions" (sic), "Medicals", "Interiors" and "Automation and Software" —
+ * so five of seven verticals silently fell through to FALLBACK and every client
+ * in them was briefed with generic imagery. That is exactly the defect this
+ * module was written to fix, surviving in the lookup rather than the data.
+ *
+ * Fragment matching rather than more exact keys, because the failure mode is
+ * unbounded: singular/plural, a dropped ampersand, a typo. `contruction` is
+ * listed because it is what is actually in the database — a real name beats a
+ * correct one.
+ *
+ * Order matters: the first fragment found in the normalised name wins, so put
+ * anything ambiguous after the term that should beat it.
+ */
+const ALIASES: ReadonlyArray<readonly [string, string]> = [
+  ['contruction', 'heavyconstruction'],
+  ['construction', 'heavyconstruction'],
+  ['builder', 'heavyconstruction'],
+  ['infrastructure', 'heavyconstruction'],
+  ['civil', 'heavyconstruction'],
+
+  ['interior', 'interiordesign'],
+  ['architect', 'interiordesign'],
+  ['furnish', 'interiordesign'],
+
+  ['realestate', 'realestate'],
+  ['property', 'realestate'],
+  ['builders', 'realestate'],
+
+  ['medical', 'healthcaredentalclinics'],
+  ['health', 'healthcaredentalclinics'],
+  ['dental', 'healthcaredentalclinics'],
+  ['dentist', 'healthcaredentalclinics'],
+  ['clinic', 'healthcaredentalclinics'],
+  ['hospital', 'healthcaredentalclinics'],
+  ['pharma', 'healthcaredentalclinics'],
+
+  ['fitness', 'fitnessgyms'],
+  ['gym', 'fitnessgyms'],
+  ['yoga', 'fitnessgyms'],
+
+  ['restaurant', 'restaurantscafes'],
+  ['cafe', 'restaurantscafes'],
+  ['coffee', 'restaurantscafes'],
+  ['bakery', 'restaurantscafes'],
+  ['catering', 'restaurantscafes'],
+  ['food', 'restaurantscafes'],
+
+  ['education', 'educationcoaching'],
+  ['coaching', 'educationcoaching'],
+  ['school', 'educationcoaching'],
+  ['tuition', 'educationcoaching'],
+  ['academy', 'educationcoaching'],
+  ['training', 'educationcoaching'],
+
+  ['beauty', 'beautysalon'],
+  ['salon', 'beautysalon'],
+  ['spa', 'beautysalon'],
+  ['cosmetic', 'beautysalon'],
+
+  ['automotive', 'automotivesalesservice'],
+  ['automobile', 'automotivesalesservice'],
+  ['garage', 'automotivesalesservice'],
+  ['motors', 'automotivesalesservice'],
+
+  ['legal', 'legalfinancialservices'],
+  ['lawyer', 'legalfinancialservices'],
+  ['advocate', 'legalfinancialservices'],
+  ['financial', 'legalfinancialservices'],
+  ['finance', 'legalfinancialservices'],
+  ['account', 'legalfinancialservices'],
+  ['insurance', 'legalfinancialservices'],
+
+  // After `automotive`, so "automation" cannot be swallowed by it.
+  ['software', 'softwareautomation'],
+  ['automation', 'softwareautomation'],
+  ['technology', 'softwareautomation'],
+  ['saas', 'softwareautomation'],
+];
+
 /** Keys are `normalize()` output; the comment carries the display name. */
 const VERTICAL_IMAGERY: Record<string, VerticalImagery> = {
   // Heavy Construction
@@ -86,6 +172,14 @@ const VERTICAL_IMAGERY: Record<string, VerticalImagery> = {
     lighting:
       'warm tungsten interior light with window side-light on the food, dropping to low candlelit ambience for evening dining. Steam and shallow depth of field are recurring motifs',
   },
+  // Software & Automation
+  softwareautomation: {
+    subjects:
+      'a laptop open on a desk showing an abstract dashboard with no legible text, a developer at a two-screen workstation seen over the shoulder, a small team around a whiteboard mid-discussion, server or network hardware shot close and clean, hands on a keyboard in shallow focus, a modern office corner with plants and glass',
+    lighting:
+      'cool daylight from a large window with soft blue screen glow on faces, clean and uncluttered. Shallow depth of field and negative space are recurring motifs',
+  },
+
   // Education & Coaching
   educationcoaching: {
     subjects:
@@ -127,12 +221,46 @@ const VERTICAL_IMAGERY: Record<string, VerticalImagery> = {
 export function describeVerticalImagery(
   categoryName: string | null | undefined,
 ): string {
-  const imagery = categoryName
-    ? VERTICAL_IMAGERY[normalize(categoryName)] ?? FALLBACK
-    : FALLBACK;
+  const imagery = verticalImageryFor(categoryName);
 
   return [
     `- Subject vocabulary for this vertical: ${imagery.subjects}.`,
     `- Lighting: ${imagery.lighting}.`,
   ].join('\n');
+}
+
+/**
+ * The raw imagery entry for a vertical, for callers that compose their own
+ * sentence rather than the prompt's bullet pair.
+ *
+ * The downloadable import template uses it to write a worked image-prompt
+ * example in the operator's own industry. Same reason the lists exist at all: a
+ * café told to photograph a tower crane is the failure this module was written
+ * to stop, and a sample sheet full of construction copy is that failure wearing
+ * a different hat.
+ */
+export function verticalImageryFor(categoryName: string | null | undefined): VerticalImagery {
+  if (!categoryName) return FALLBACK;
+
+  const key = normalize(categoryName);
+  const exact = VERTICAL_IMAGERY[key];
+  if (exact) return exact;
+
+  for (const [fragment, target] of ALIASES) {
+    if (key.includes(fragment)) {
+      const matched = VERTICAL_IMAGERY[target];
+      if (matched) return matched;
+    }
+  }
+
+  return FALLBACK;
+}
+
+/**
+ * True when a vertical has no vocabulary of its own and will be briefed
+ * generically. Surfaced so a check can report it rather than it going unnoticed
+ * for five verticals at a time, which is how this module's own bug survived.
+ */
+export function usesFallbackImagery(categoryName: string | null | undefined): boolean {
+  return verticalImageryFor(categoryName) === FALLBACK;
 }

@@ -10,6 +10,7 @@ import {
   normalizeTemplateLabel,
   TEMPLATE_LABEL_MAX,
 } from '@/lib/template-label';
+import { verticalImageryFor } from '@/lib/ai/vertical-vocabulary';
 
 /**
  * Bulk content-calendar import — sheet parsing and the wire contract.
@@ -1128,50 +1129,96 @@ function truncate(value: string, max: number): string {
  * and shows the operator the exact spelling to copy, which is the best defence
  * there is against the strict rule feeling arbitrary.
  */
-const TEMPLATE_ROWS = [
+/**
+ * Skeleton for the two example days, minus everything industry-specific.
+ *
+ * The caption, hashtags and image prompt are composed per vertical by
+ * `sampleRowsFor` below. What stays fixed is the poster block, because its rules
+ * are structural rather than editorial — the headline is 2-4 hand-broken lines,
+ * the accent line is 1-based, features are parallel noun phrases — and those
+ * read the same in any industry.
+ */
+const TEMPLATE_SKELETON = [
   {
     day: '1',
-    caption:
-      'Rain does not pause a deadline — it exposes the crews who planned for it. Our pre-monsoon drainage audit is now open for the season: silt traps cleared, pump capacity verified, access roads graded before the first downpour. Book a site walkthrough this week and start the rains on schedule.',
-    hashtags: '#construction #sitesafety #monsoonprep #infrastructure',
-    imagePrompt:
-      'An active construction site at dawn under heavy grey cloud, two engineers in high-visibility jackets reviewing a plan beside freshly cut drainage channels, subject grouped to the lower right, clear overcast sky filling the upper left as an unbroken low-detail area, cool desaturated blues with a single warm amber safety light, calm and prepared mood, documentary photography, natural light',
-    headline: 'READY BEFORE | THE FIRST | DOWNPOUR',
+    headline: 'BUILT FOR | WHAT YOU | ACTUALLY DO',
     accentLine: '2',
-    eyebrow: 'PRE-MONSOON AUDIT',
+    eyebrow: 'NOW BOOKING',
     posterBody:
-      'A graded site drains itself. We clear, verify and grade before the season turns, so your schedule never waits on the weather.',
+      'One short paragraph in sentence case. Three to five lines when it is typeset, so keep it under about forty words.',
     features: [
-      { icon: 'shieldCheck', label: 'Drainage audit', body: 'Silt traps cleared and pump capacity verified on site.' },
-      { icon: 'stopwatch', label: 'Season timing', body: 'Works completed before the first heavy rainfall.' },
-      { icon: 'hardHat', label: 'Trained crews', body: 'Wet-weather protocol briefed to every team on site.' },
+      { icon: 'shieldCheck', label: 'First benefit', body: 'One short sentence saying what the client gets.' },
+      { icon: 'stopwatch', label: 'Second benefit', body: 'Labels read as parallel noun phrases, not sentences.' },
+      { icon: 'award', label: 'Third benefit', body: 'Three items is the count most layouts are built for.' },
     ],
-    callLabel: 'BOOK A WALKTHROUGH',
+    callLabel: 'CALL US TODAY',
     websiteLabel: 'VISIT OUR WEBSITE',
     headlinePeriod: 'yes',
   },
   {
     day: '2',
-    caption:
-      'Every beam we set carries a mill certificate and a name. Third-party tested, batch-traced, and logged against the drawing before it leaves the yard — because the cheapest steel on a quote is the most expensive line in a retrofit. Ask us for the traceability file on your next structural package.',
-    hashtags: '#structuralsteel #qualityassurance #engineering #buildright',
-    imagePrompt:
-      'A steel I-beam suspended from a tower crane at blue hour, beam and weld seam sharp along the right edge of the frame, deep uncluttered dusk sky occupying the entire left two thirds, industrial greys against cold blue, shallow depth of field, precise and confident mood, high-contrast editorial photography',
-    headline: 'EVERY BEAM | CARRIES | A NAME',
+    headline: 'THE DETAIL | NOBODY ELSE | CHECKS',
     accentLine: '2',
     eyebrow: '',
     posterBody:
-      'Mill-certified, batch-traced and logged against the drawing before it leaves the yard. Ask for the traceability file.',
+      'A second example, with the eyebrow left blank and no full stop on the headline. Both are optional.',
     features: [
-      { icon: 'award', label: 'Mill certified', body: 'Third-party tested against the specified grade.' },
-      { icon: 'blueprint', label: 'Drawing matched', body: 'Each batch logged against its structural drawing.' },
-      { icon: 'building', label: 'Retrofit ready', body: 'Full traceability file supplied with every package.' },
+      { icon: 'award', label: 'Proof point', body: 'Something specific enough to be checked.' },
+      { icon: 'people', label: 'Who does it', body: 'The person or team behind the promise.' },
+      { icon: 'star', label: 'What it means', body: 'The outcome the reader actually cares about.' },
     ],
     callLabel: 'TALK TO OUR TEAM',
     websiteLabel: 'VISIT OUR WEBSITE',
     headlinePeriod: 'no',
   },
 ] as const;
+
+/**
+ * The two example days, written for the vertical the sheet is being downloaded
+ * for.
+ *
+ * These used to be two fully-worked construction days, sent to every vertical.
+ * That is precisely the defect `vertical-vocabulary.ts` was written to fix for
+ * the photo brief — "a dental clinic was briefed as a building site" — and it
+ * had simply reappeared here. A café operator downloading a sheet about
+ * pre-monsoon drainage audits reasonably concludes the tool is broken, and one
+ * who imports it unchanged sends their customers a WhatsApp about silt traps.
+ *
+ * The caption and hashtags are now self-describing placeholders rather than
+ * plausible prose. That is deliberate: a sample sheet has to survive being
+ * imported as-is, and a day whose caption reads "replace this" is obviously
+ * wrong in the ledger, where a fluent caption for the wrong industry is not.
+ *
+ * The image prompt stays a genuinely worked example, because it is the one field
+ * whose rules cannot be guessed — no text or logos in frame, and the subject
+ * pushed aside to reserve a low-detail region for the type. It is built from the
+ * vertical's own subject and lighting vocabulary so the example is copyable
+ * rather than merely illustrative.
+ */
+function sampleRowsFor(categoryName: string | null | undefined) {
+  const imagery = verticalImageryFor(categoryName);
+  const subjects = imagery.subjects.split(',').map((subject) => subject.trim());
+  const industry = (categoryName ?? 'your industry').trim() || 'your industry';
+
+  const prompts = [
+    `${subjects[0] ?? 'the product or service in use'}, subject grouped to the lower right, ` +
+      `an unbroken low-detail area filling the upper left for the poster type to sit on, ` +
+      `${imagery.lighting.split('.')[0] ?? 'natural light'}, no text, letters or logos anywhere in frame`,
+    `${subjects[1] ?? 'a close detail of the tools of the trade'}, held tight to the right edge of ` +
+      `the frame with the left two thirds left deliberately empty, shallow depth of field, ` +
+      `${imagery.lighting.split('.')[0] ?? 'natural light'}, no text, letters or logos anywhere in frame`,
+  ];
+
+  return TEMPLATE_SKELETON.map((row, index) => ({
+    ...row,
+    caption:
+      `Replace this with the caption sent alongside day ${row.day}'s poster. It is the ` +
+      `WhatsApp message body, so write it for a reader rather than for the poster — ` +
+      `10 to 2000 characters. This example row is for ${industry}.`,
+    hashtags: '#replace #these #tags',
+    imagePrompt: prompts[index] ?? (prompts[0] as string),
+  }));
+}
 
 /** RFC-4180 quoting: wrap in quotes and double any quote inside. */
 function csvCell(value: string): string {
@@ -1180,6 +1227,7 @@ function csvCell(value: string): string {
 
 function buildTemplate(
   templates: readonly ImportTemplate[],
+  categoryName: string | null | undefined,
   includePoster: boolean,
 ): string {
   const header = includePoster
@@ -1192,7 +1240,7 @@ function buildTemplate(
   const nameFor = (index: number): string =>
     templates[index % Math.max(1, templates.length)]?.label ?? 'NAME AN APPROVED TEMPLATE HERE';
 
-  const lines = TEMPLATE_ROWS.map((row, index) => {
+  const lines = sampleRowsFor(categoryName).map((row, index) => {
     const content = [row.day, nameFor(index), row.caption, row.hashtags, row.imagePrompt];
     if (!includePoster) return content.map(csvCell).join(',');
 
@@ -1223,13 +1271,15 @@ function buildTemplate(
  */
 export function buildCalendarImportTemplate(
   templates: readonly ImportTemplate[],
+  categoryName: string | null | undefined,
 ): string {
-  return buildTemplate(templates, false);
+  return buildTemplate(templates, categoryName, false);
 }
 
 /** Content columns plus the whole hand-authored poster text layer. */
 export function buildCalendarImportTemplateFull(
   templates: readonly ImportTemplate[],
+  categoryName: string | null | undefined,
 ): string {
-  return buildTemplate(templates, true);
+  return buildTemplate(templates, categoryName, true);
 }

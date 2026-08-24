@@ -12,6 +12,7 @@
  * Run: npm run check:import
  */
 import { parseCalendarImport, buildCalendarImportTemplate } from '@/lib/calendar-parse';
+import { usesFallbackImagery, verticalImageryFor } from '@/lib/ai/vertical-vocabulary';
 
 const TEMPLATES = [
   { id: 't1', label: 'Grand Opening Split' },
@@ -64,13 +65,63 @@ t('empty catalogue explains itself',
   p.rows[0]?.issues.some(i => i.includes('no approved template')) === true, JSON.stringify(p.rows[0]?.issues));
 
 // 8. the downloadable CSV round-trips
-const csv = buildCalendarImportTemplate(TEMPLATES);
+const csv = buildCalendarImportTemplate(TEMPLATES, 'Restaurants and cafes');
 const rt = parseCalendarImport(csv, opts);
 t('generated CSV imports cleanly',
   rt.rows.length > 0 && rt.rows.every(r => r.issues.length === 0 && r.templateId !== null),
   JSON.stringify(rt.rows.map(r => r.issues)));
 t('generated CSV varies the template across rows',
   new Set(rt.rows.map(r => r.templateId)).size === 2);
+
+// The worked example must be written in the caller's industry. This is the bug
+// `vertical-vocabulary.ts` fixed for photo briefs, reappearing in the sheet: a
+// cafe downloading a template full of construction copy reads as broken.
+t('sample image prompt uses the vertical vocabulary, not construction',
+  /espresso|plated dish|chef|latte|dining room|oven|ingredients/i.test(csv) &&
+    !/construction site|tower crane|high-visibility|drainage/i.test(csv),
+  csv.split(String.fromCharCode(13,10))[1]?.slice(0, 140));
+
+// ---------------------------------------------------------------------------
+// Every vertical's downloaded sheet, not just the one that was being tested
+// ---------------------------------------------------------------------------
+//
+// The vocabulary lookup was an exact match on names nobody types. Production
+// held "Contructions" (sic), "Medicals", "Interiors" and "Automation and
+// Software"; five of seven verticals fell through to generic imagery, in the
+// module written to stop exactly that. These names are the real ones plus the
+// content library's canonical spellings, so a rename in either direction is
+// caught here rather than by a client receiving the wrong photograph.
+const VERTICALS = [
+  'Automation and Software', 'Contructions', 'Interiors', 'Medicals',
+  'Real estate', 'Restaurants and cafes', 'Heavy Construction', 'Interior Design',
+  'Healthcare & Dental Clinics', 'Fitness & Gyms', 'Education & Coaching',
+  'Beauty Salon', 'Automotive Sales & Service', 'Legal & Financial Services',
+];
+
+// Not an industry — a neutral brief is the right answer, so it is listed as an
+// expected fallback rather than left to look like an oversight.
+const EXPECTED_FALLBACK = new Set(['Individuals']);
+
+console.log('');
+for (const vertical of [...VERTICALS, ...EXPECTED_FALLBACK]) {
+  const shouldFallBack = EXPECTED_FALLBACK.has(vertical);
+  t(`${vertical}: ${shouldFallBack ? 'neutral brief' : 'has its own imagery'}`,
+    usesFallbackImagery(vertical) === shouldFallBack);
+
+  const sheet = buildCalendarImportTemplate(TEMPLATES, vertical);
+  const parsed = parseCalendarImport(sheet, opts);
+
+  t(`${vertical}: downloaded sheet imports cleanly`,
+    parsed.error === null && parsed.rows.length > 0 &&
+      parsed.rows.every((r) => r.issues.length === 0 && r.templateId !== null),
+    parsed.error ?? JSON.stringify(parsed.rows.map((r) => r.issues)));
+
+  // The worked example has to carry this vertical's own nouns, or the sheet is
+  // teaching the wrong photograph.
+  const firstSubject = verticalImageryFor(vertical).subjects.split(',')[0]!.trim();
+  t(`${vertical}: sample prompt uses its own subject vocabulary`,
+    sheet.includes(firstSubject), firstSubject);
+}
 
 process.exitCode = bad ? 1 : 0;
 console.log(bad ? `\n${bad} failed` : '\nall import checks passed');

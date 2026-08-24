@@ -487,6 +487,7 @@ export default async function ClientDetailPage({
             seededDays={seededDays}
             lockedDays={lockedDays}
             templates={approvedTemplates}
+            categoryName={client.category.name}
           />
         </CardContent>
       </Card>

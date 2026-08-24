@@ -92,6 +92,7 @@ export function CalendarImportPanel({
   seededDays,
   lockedDays,
   templates,
+  categoryName,
 }: {
   clientId: string;
   companyName: string;
@@ -106,6 +107,11 @@ export function CalendarImportPanel({
    * as a rejected import — while the server resolves again against a fresh read.
    */
   templates: Array<{ id: string; label: string }>;
+  /**
+   * The client's vertical, so the downloaded sheet's worked example is written
+   * in their industry rather than in construction.
+   */
+  categoryName: string;
 }) {
   const importRows = useAction(importCalendarEntries);
   const fileInput = React.useRef<HTMLInputElement>(null);
@@ -185,8 +191,8 @@ export function CalendarImportPanel({
     const blob = new Blob(
       [
         withPoster
-          ? buildCalendarImportTemplateFull(templates)
-          : buildCalendarImportTemplate(templates),
+          ? buildCalendarImportTemplateFull(templates, categoryName)
+          : buildCalendarImportTemplate(templates, categoryName),
       ],
       { type: 'text/csv;charset=utf-8' },
     );
