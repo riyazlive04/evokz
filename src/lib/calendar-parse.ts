@@ -1228,19 +1228,39 @@ function csvCell(value: string): string {
 function buildTemplate(
   templates: readonly ImportTemplate[],
   categoryName: string | null | undefined,
+  maxRows: number,
   includePoster: boolean,
 ): string {
   const header = includePoster
     ? [...Object.values(CONTENT_COLUMN_LABELS), ...POSTER_COLUMN_LABELS]
     : Object.values(CONTENT_COLUMN_LABELS);
 
-  // Vary the named template across the sample rows where the vertical has more
-  // than one, so the file demonstrates that days may differ rather than implying
-  // a campaign is one layout repeated.
+  /*
+   * One row per approved template, not two rows for the whole vertical.
+   *
+   * The sheet used to be a fixed pair of example days, so a vertical with five
+   * approved layouts demonstrated two of them and the other three appeared
+   * nowhere — an operator adding a template had no way to learn its name from
+   * the file that exists to teach them the names.
+   *
+   * Bounded by the plan's duration as well as by the library, because a day
+   * number past `durationDays` is rejected on import: a seventeen-template
+   * vertical on a seven-day plan would otherwise emit a sheet that cannot be
+   * imported, which is worse than one that omits a name. Where the two collide
+   * the console's own list is the complete reference.
+   *
+   * Floors at two so a single-template vertical still shows the eyebrow-present
+   * and eyebrow-absent variants that the second skeleton exists to demonstrate.
+   */
+  const rowCount = Math.max(2, Math.min(templates.length, Math.max(1, maxRows)));
+  const samples = sampleRowsFor(categoryName);
+
   const nameFor = (index: number): string =>
     templates[index % Math.max(1, templates.length)]?.label ?? 'NAME AN APPROVED TEMPLATE HERE';
 
-  const lines = sampleRowsFor(categoryName).map((row, index) => {
+  const lines = Array.from({ length: rowCount }, (_, index) => {
+    // The two skeletons cycle under however many templates there are.
+    const row = { ...samples[index % samples.length]!, day: String(index + 1) };
     const content = [row.day, nameFor(index), row.caption, row.hashtags, row.imagePrompt];
     if (!includePoster) return content.map(csvCell).join(',');
 
@@ -1272,14 +1292,16 @@ function buildTemplate(
 export function buildCalendarImportTemplate(
   templates: readonly ImportTemplate[],
   categoryName: string | null | undefined,
+  maxRows: number,
 ): string {
-  return buildTemplate(templates, categoryName, false);
+  return buildTemplate(templates, categoryName, maxRows, false);
 }
 
 /** Content columns plus the whole hand-authored poster text layer. */
 export function buildCalendarImportTemplateFull(
   templates: readonly ImportTemplate[],
   categoryName: string | null | undefined,
+  maxRows: number,
 ): string {
-  return buildTemplate(templates, categoryName, true);
+  return buildTemplate(templates, categoryName, maxRows, true);
 }

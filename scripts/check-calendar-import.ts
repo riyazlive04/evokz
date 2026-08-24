@@ -65,7 +65,7 @@ t('empty catalogue explains itself',
   p.rows[0]?.issues.some(i => i.includes('no approved template')) === true, JSON.stringify(p.rows[0]?.issues));
 
 // 8. the downloadable CSV round-trips
-const csv = buildCalendarImportTemplate(TEMPLATES, 'Restaurants and cafes');
+const csv = buildCalendarImportTemplate(TEMPLATES, 'Restaurants and cafes', 30);
 const rt = parseCalendarImport(csv, opts);
 t('generated CSV imports cleanly',
   rt.rows.length > 0 && rt.rows.every(r => r.issues.length === 0 && r.templateId !== null),
@@ -108,7 +108,7 @@ for (const vertical of [...VERTICALS, ...EXPECTED_FALLBACK]) {
   t(`${vertical}: ${shouldFallBack ? 'neutral brief' : 'has its own imagery'}`,
     usesFallbackImagery(vertical) === shouldFallBack);
 
-  const sheet = buildCalendarImportTemplate(TEMPLATES, vertical);
+  const sheet = buildCalendarImportTemplate(TEMPLATES, vertical, 30);
   const parsed = parseCalendarImport(sheet, opts);
 
   t(`${vertical}: downloaded sheet imports cleanly`,
@@ -121,6 +121,40 @@ for (const vertical of [...VERTICALS, ...EXPECTED_FALLBACK]) {
   const firstSubject = verticalImageryFor(vertical).subjects.split(',')[0]!.trim();
   t(`${vertical}: sample prompt uses its own subject vocabulary`,
     sheet.includes(firstSubject), firstSubject);
+}
+
+// ---------------------------------------------------------------------------
+// A template added later must reach the sheet
+// ---------------------------------------------------------------------------
+//
+// The sheet used to be a fixed pair of example days, so a vertical with five
+// approved layouts named two of them and the rest appeared nowhere — the file
+// that exists to teach an operator the names silently omitted most of them.
+console.log('');
+for (const count of [1, 2, 3, 5, 12]) {
+  const many = Array.from({ length: count }, (_, i) => ({ id: `t${i}`, label: `Layout ${i + 1}` }));
+  const sheet = buildCalendarImportTemplate(many, 'Medicals', 30);
+  const missing = many.filter((tpl) => !sheet.includes(tpl.label)).map((tpl) => tpl.label);
+
+  t(`${count} approved template(s): every one appears in the sheet`,
+    missing.length === 0, `missing: ${missing.join(', ')}`);
+
+  const parsed = parseCalendarImport(sheet, { maxDay: 30, templates: many });
+  t(`${count} approved template(s): the sheet still imports cleanly`,
+    parsed.error === null && parsed.rows.length > 0 &&
+      parsed.rows.every((r) => r.issues.length === 0 && r.templateId !== null),
+    parsed.error ?? JSON.stringify(parsed.rows.flatMap((r) => r.issues)));
+}
+
+// A short plan must not emit day numbers it will then reject on import. This is
+// the collision that makes "every template appears" a bounded promise.
+{
+  const many = Array.from({ length: 17 }, (_, i) => ({ id: `t${i}`, label: `Med-${i + 1}` }));
+  const sheet = buildCalendarImportTemplate(many, 'Medicals', 7);
+  const parsed = parseCalendarImport(sheet, { maxDay: 7, templates: many });
+  t('17 templates on a 7-day plan: sheet is capped and still imports',
+    parsed.rows.length === 7 && parsed.rows.every((r) => r.issues.length === 0),
+    `${parsed.rows.length} rows, issues: ${JSON.stringify(parsed.rows.flatMap((r) => r.issues))}`);
 }
 
 process.exitCode = bad ? 1 : 0;

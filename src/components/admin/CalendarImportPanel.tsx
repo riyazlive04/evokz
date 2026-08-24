@@ -191,8 +191,8 @@ export function CalendarImportPanel({
     const blob = new Blob(
       [
         withPoster
-          ? buildCalendarImportTemplateFull(templates, categoryName)
-          : buildCalendarImportTemplate(templates, categoryName),
+          ? buildCalendarImportTemplateFull(templates, categoryName, totalDays)
+          : buildCalendarImportTemplate(templates, categoryName, totalDays),
       ],
       { type: 'text/csv;charset=utf-8' },
     );
@@ -282,7 +282,7 @@ export function CalendarImportPanel({
           variant="ghost"
           size="sm"
           onClick={() => handleTemplate(false)}
-          title="Day plus the four content fields"
+          title="One row per approved template, up to the plan’s day count"
         >
           <Download className="h-4 w-4" />
           Content template
@@ -327,10 +327,13 @@ export function CalendarImportPanel({
           a name that does not match stops the whole import rather than guessing.{' '}
           {templates.length > 0 ? (
             <>
+              {/* Every name, never truncated. The downloaded sheet can only carry
+                  as many rows as the plan has days, so for a large library this
+                  list is the complete reference and hiding part of it would put a
+                  template beyond reach of the operator writing the sheet. */}
               Available here:{' '}
               <span className="font-mono">
-                {templates.slice(0, 8).map((template) => template.label).join(', ')}
-                {templates.length > 8 ? ` (+${templates.length - 8} more)` : ''}
+                {templates.map((template) => template.label).join(', ')}
               </span>
               .
             </>
