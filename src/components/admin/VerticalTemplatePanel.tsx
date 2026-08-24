@@ -190,6 +190,26 @@ export function VerticalTemplatePanel({
   );
 }
 
+/**
+ * The shape a poster drawn from this template will actually be delivered at.
+ *
+ * Worth a line on every card because the client's "Creative output size" stopped
+ * controlling shape: it sets the resolution, and the template sets the
+ * proportions. Without this, an operator who picks "Feed landscape" and receives
+ * a square poster has no way to see why — the setting they changed still says
+ * landscape.
+ *
+ * Named shapes rather than pixels, because the pixel height depends on the
+ * client's preset width and this card knows nothing about any client.
+ */
+function describeDelivery(width: number, height: number): string {
+  const aspect = width / height;
+  if (Math.abs(aspect - 1) < 0.02) return 'square';
+  if (Math.abs(aspect - 0.5625) < 0.02) return '9:16';
+  if (Math.abs(aspect - 0.8) < 0.02) return '4:5';
+  return aspect > 1 ? `${aspect.toFixed(2)}:1 landscape` : `1:${(1 / aspect).toFixed(2)} portrait`;
+}
+
 function TemplateCard({ template }: { template: VerticalTemplateRow }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const remove = useAction(deleteVerticalTemplate);
@@ -246,8 +266,11 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
           <span className="block truncate text-xs text-foreground">{template.label}</span>
           <span className="block font-mono text-[10px] text-muted-foreground">
             {template.width && template.height
-              ? `${template.width}×${template.height}`
-              : 'size unknown'}
+              ? `${template.width}×${template.height} · delivers ${describeDelivery(
+                  template.width,
+                  template.height,
+                )}`
+              : 'size unknown · delivers at the client’s output preset'}
           </span>
         </span>
 

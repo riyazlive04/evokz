@@ -13,13 +13,14 @@ import {
   resolveSpecPhotoRequests,
   type PhotoRequest,
 } from '@/lib/poster/photo-request';
+import { resolvePosterCanvas } from '@/lib/poster/canvas';
 import { renderPoster } from '@/lib/poster/render';
 import { prisma } from '@/lib/prisma';
 import { describeDelay, nextSendDelay } from '@/lib/send-jitter';
 import { parseBrandGuideline } from '@/lib/types/brand';
 import { describeCopyShape } from '@/lib/types/layout-spec';
 import { pickForDay } from '@/lib/types/poster';
-import { recordImageUsage, recordWhatsAppUsage } from '@/lib/usage';
+import { recordCutoutUsage, recordImageUsage, recordWhatsAppUsage } from '@/lib/usage';
 
 /**
  * The central transaction router for one ContentCalendar row.
@@ -249,7 +250,17 @@ export async function runCreativePipeline(
         );
       }
 
-      const photoRequests = resolveSpecPhotoRequests(layout.spec, sizePreset);
+      /*
+       * The template's own shape decides the canvas; the preset only decides how
+       * many pixels of it the client gets. Resolved here, before the photo
+       * requests, because those estimate each cell's proportions against the
+       * canvas the layout is actually drawn onto — sizing them against the
+       * preset would ask fal for a 9:16 frame to fill a cell in a square poster.
+       */
+      const canvas = resolvePosterCanvas(layout.spec, sizePreset);
+      console.info(`[ace:pipeline] day ${entry.dayNumber} canvas — ${canvas.reason}`);
+
+      const photoRequests = resolveSpecPhotoRequests(layout.spec, canvas);
 
       // ---- Step 1: Flux.1 via fal.ai --------------------------------------
       stage = 'generate';
@@ -270,7 +281,9 @@ export async function runCreativePipeline(
       const photos: Buffer[] = [];
       for (const request of photoRequests) {
         const frame = await generateCreativeAsset(
-          entry.imagePrompt,
+          request.kind === 'subject'
+            ? `${entry.imagePrompt}${SUBJECT_PROMPT_SUFFIX}`
+            : entry.imagePrompt,
           request,
           falCredentials,
         );
@@ -284,6 +297,35 @@ export async function runCreativePipeline(
           { clientId: client.id, calendarId: entry.id },
           falCredentials.source,
         );
+
+        /*
+         * A `subject` cell wants a figure standing on the poster's own colour,
+         * so the diffusion backdrop is matted out before the frame reaches the
+         * renderer. Billed separately and at its own rate — see
+         * `recordCutoutUsage`.
+         *
+         * A miss is logged and carried on from. The renderer's `subject` branch
+         * still contains rather than crops it, so an un-matted frame lands as a
+         * letterboxed photograph: visibly not the template, and still a poster
+         * the client receives.
+         */
+        if (request.kind === 'subject') {
+          const cut = await removeBackground(frame, falCredentials);
+          if (cut) {
+            await recordCutoutUsage(
+              getFalCutoutEndpoint(),
+              { clientId: client.id, calendarId: entry.id },
+              falCredentials.source,
+            );
+            photos.push(cut.body);
+            continue;
+          }
+
+          console.warn(
+            `[ace:pipeline] day ${entry.dayNumber} wanted a cut-out subject but the ` +
+              'matte did not arrive; compositing the frame with its own background.',
+          );
+        }
 
         photos.push(frame.body);
       }
@@ -311,8 +353,8 @@ export async function runCreativePipeline(
           whatsappNumber: client.whatsappNumber,
         },
         photos,
-        width: sizePreset.width,
-        height: sizePreset.height,
+        width: canvas.width,
+        height: canvas.height,
       });
 
       /*
@@ -633,6 +675,112 @@ function decodeDataUri(dataUri: string): GeneratedAsset {
   }
 
   return { body, mimeType: mimeType ?? 'image/png' };
+}
+
+/**
+ * The fal endpoint that removes a rendered frame's background.
+ *
+ * Separate from `FAL_MODEL_ENDPOINT` because it is a different kind of model —
+ * segmentation, not diffusion — and pointing the fleet's renderer at it to get a
+ * cut-out would simply stop producing photographs.
+ *
+ * Set to an empty string to turn cut-outs off entirely; `subject` cells then
+ * render as ordinary photographs, with the diffusion backdrop and all.
+ */
+export function getFalCutoutEndpoint(): string {
+  return optionalEnv('FAL_CUTOUT_ENDPOINT', 'fal-ai/birefnet/v2');
+}
+
+/**
+ * What to append to a day's image prompt for a cut-out slot.
+ *
+ * Appended, never substituted: `imagePrompt` is the day's own brief and the
+ * subject of the poster: replacing it would render a stock figure with nothing
+ * to do with the caption beside it. This only adds the framing that makes the
+ * frame separable — a plain backdrop and a whole figure, so the matte has a
+ * clean edge to find and nothing important is cropped at the bottom.
+ */
+const SUBJECT_PROMPT_SUFFIX =
+  ', a single person, full body in frame, standing against a plain seamless ' +
+  'studio backdrop, evenly lit, no props, no furniture, no text';
+
+/**
+ * Removes the background from a rendered frame, or returns null.
+ *
+ * **Null is a degradation, not a failure.** A `subject` cell whose cut-out did
+ * not happen renders as an ordinary photograph — worse-looking, and far better
+ * than failing a paying client's day over a cosmetic stage. That is the opposite
+ * of how layout resolution fails, and deliberately: there the poster cannot be
+ * drawn at all, here it can, just not as well.
+ */
+async function removeBackground(
+  frame: GeneratedAsset,
+  credentials: FalCredentials,
+): Promise<GeneratedAsset | null> {
+  const endpoint = getFalCutoutEndpoint();
+  if (!endpoint) return null;
+
+  const timeoutMs = intEnv('FAL_TIMEOUT_MS', 120_000);
+  // One attempt fewer than a render: the frame already exists, so a slow retry
+  // loop here delays a poster that is going to ship either way.
+  const maxAttempts = Math.max(1, intEnv('FAL_CUTOUT_MAX_ATTEMPTS', 2));
+  const url = `https://fal.run/${endpoint.replace(/^\/+/, '')}`;
+
+  try {
+    const response = await withRetries(
+      'fal.ai background removal',
+      maxAttempts,
+      async () =>
+        fetchJson<FalResponse & { image?: { url?: string; content_type?: string } }>(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Key ${credentials.key}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            // Sent as a data URI so no intermediate upload is needed — the frame
+            // is already in memory and fal accepts either form.
+            image_url: `data:${frame.mimeType};base64,${frame.body.toString('base64')}`,
+            sync_mode: true,
+          }),
+          timeoutMs,
+          stage: 'generate',
+        }),
+      'generate',
+    );
+
+    // Segmentation endpoints differ on the shape: birefnet returns `image`,
+    // rembg returns `images[0]`. Both are accepted rather than pinning one, so
+    // swapping the endpoint does not need a code change.
+    const result = response.image ?? response.images?.[0];
+    if (!result?.url) return null;
+
+    const cut = result.url.startsWith('data:')
+      ? decodeDataUri(result.url)
+      : await (async () => {
+          const binary = await fetchBinary(result.url as string, timeoutMs, 'generate');
+          return {
+            body: binary.body,
+            mimeType: result.content_type ?? binary.mimeType,
+          };
+        })();
+
+    /*
+     * A matte with no alpha channel is the endpoint having returned the frame
+     * unchanged, which would put the diffusion backdrop back on the poster while
+     * having billed for the removal. Treated as a miss so the caller logs it.
+     */
+    if (!cut.mimeType.includes('png') && !cut.mimeType.includes('webp')) return null;
+
+    return cut;
+  } catch (error) {
+    console.warn(
+      `[ace:pipeline] background removal via ${endpoint} failed: ${describeError(error)} — ` +
+        'the frame will be composited with its own background.',
+    );
+    return null;
+  }
 }
 
 /** One word for a log line: whose account this render is being billed to. */

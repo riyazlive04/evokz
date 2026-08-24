@@ -1,5 +1,6 @@
 import { generateStructured } from '@/lib/ai/openai';
 import { optionalEnv } from '@/lib/env';
+import { measuredAspect } from '@/lib/poster/canvas';
 import {
   normalizeLayoutSpec,
   posterLayoutSpecSchema,
@@ -52,7 +53,18 @@ function visionModel(): string {
 const LAYOUT_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['reading', 'version', 'name', 'ground', 'featureCount', 'featureStyle', 'rows'],
+  required: [
+    'reading',
+    'version',
+    'name',
+    'ground',
+    'featureCount',
+    'featureStyle',
+    'ctaShape',
+    'headlineEmphasis',
+    'headlineCase',
+    'rows',
+  ],
   properties: {
     /*
      * A scratchpad, and the single most load-bearing field in this schema.
@@ -73,11 +85,18 @@ const LAYOUT_SCHEMA = {
       type: 'string',
       description:
         'Before answering: first count the photographic regions on this poster and ' +
-        'state the number. Then name the single largest block of type — that one is ' +
-        'the headline, and no other block is, however large. Then list the ' +
+        'state the number, and for each say whether it is a rectangular photograph ' +
+        'with visible edges, or a person or object cut out of its background and ' +
+        'standing directly on the poster\'s flat colour. Then count the buttons — ' +
+        'filled shapes with a short instruction inside them — and state the number. ' +
+        'Then name the single largest block of type — that one is ' +
+        'the headline, and no other block is, however large; say how many lines it ' +
+        'has and whether any of those lines is set noticeably heavier, lighter or in ' +
+        'a different colour from the others, and whether it is in capitals. Then list the ' +
         'horizontal bands from top to bottom, one short line each, saying what is in ' +
         'the band and — only where content truly sits side by side — how it splits. ' +
-        'Say "plain ground" for an empty side. Most posters have three to six bands. ' +
+        'Say "plain ground" for an empty side. Most posters have three to six bands, ' +
+        'but a wide banner may genuinely have only one or two. ' +
         'For each band that splits, say where the vertical boundary falls as a ' +
         'percentage of the width from the left edge, and say whether the type in ' +
         'that band is left-aligned, centred or right-aligned. ' +
@@ -107,6 +126,31 @@ const LAYOUT_SCHEMA = {
       enum: ['labelAndBody', 'labelOnly'],
       description:
         'labelAndBody when each feature item has a sentence of explanation under its label. labelOnly when the items are just an icon and one or two words, with no sentence.',
+    },
+    ctaShape: {
+      type: 'string',
+      enum: ['pill', 'rounded', 'square'],
+      description:
+        'The shape of the button, if the poster has one. "pill" is fully rounded ' +
+        'ends, like a capsule. "rounded" is a rectangle with softened corners. ' +
+        '"square" is a rectangle with sharp corners. Send "pill" if there is no button.',
+    },
+    headlineEmphasis: {
+      type: 'array',
+      description:
+        'One entry per headline line, top to bottom, saying how that line is set ' +
+        'relative to the others. "heavy" is a line in noticeably bolder type. ' +
+        '"plain" is a line in lighter or regular type. "accent" is a line in a ' +
+        'different colour from the rest of the headline. A headline set uniformly ' +
+        'is every line "heavy". Send an empty array only if you cannot see the ' +
+        'headline clearly enough to judge.',
+      items: { type: 'string', enum: ['plain', 'heavy', 'accent'] },
+    },
+    headlineCase: {
+      type: 'string',
+      enum: ['upper', 'sentence'],
+      description:
+        'upper when the headline is set in ALL CAPITALS. sentence when it is not.',
     },
     rows: {
       type: 'array',
@@ -138,7 +182,7 @@ const LAYOUT_SCHEMA = {
             items: {
               type: 'object',
               additionalProperties: false,
-              required: ['weight', 'fill', 'align', 'padded', 'slots'],
+              required: ['weight', 'fill', 'align', 'padded', 'photoKind', 'slots'],
               properties: {
                 weight: {
                   type: 'number',
@@ -167,6 +211,17 @@ const LAYOUT_SCHEMA = {
                   description:
                     'False only for a photo that bleeds to the poster edge.',
                 },
+                photoKind: {
+                  type: 'string',
+                  enum: ['scene', 'subject'],
+                  description:
+                    'What kind of photograph is in this cell. "scene" is a ' +
+                    'rectangular photographic region with visible edges — a room, a ' +
+                    'landscape, people at a table — that fills its area. "subject" is ' +
+                    'a person or object cut out of its background, standing directly ' +
+                    'on the poster\'s flat colour with no photographic edge behind ' +
+                    'them. Send "scene" for a cell with no photo in it.',
+                },
                 slots: {
                   type: 'array',
                   description: 'Contents of this cell, stacked top to bottom.',
@@ -179,6 +234,7 @@ const LAYOUT_SCHEMA = {
                       'accentRule',
                       'body',
                       'features',
+                      'cta',
                       'photo',
                       'contact',
                       'spacer',
@@ -206,6 +262,10 @@ Read the poster as horizontal bands stacked top to bottom. Split a band into cel
   accentRule a short horizontal bar used as a divider under the headline
   body       a sentence or two of running prose
   features   two or more short labelled items: offers, times, addresses, benefits
+  cta        a button: a filled shape with a short instruction inside it, such as
+             "Start investing now" or "Book a visit". A button is NOT the contact
+             bar and NOT a feature — many posters carry a button and no contact
+             details at all.
   photo      a photographic region; put it in a cell with copy to overlay them
   contact    a phone number, website, address or social handle, usually a bar
   spacer     a column that is deliberately empty
@@ -213,7 +273,9 @@ Read the poster as horizontal bands stacked top to bottom. Split a band into cel
 Rules that matter more than fidelity to the reference:
 
 1. Exactly one headline slot, on the whole poster. Posters routinely set a second block of large type further down — an offer, a price, a date, often in a different face — and it is NOT a second headline. Compare every large block against the largest: only the winner is the headline, and a runner-up belongs to "features" or "body" however big it looks on its own. Two headline slots makes the whole layout unusable.
-2. Where the reference sets copy directly on top of a photograph, put the photo and the copy in the SAME cell — the photo becomes that cell's background and the copy is drawn over it under a darkening wash. That is an overlay, and it is how a full-bleed hero with the headline on it is described. Only split them into separate cells when the photo and the copy genuinely sit side by side with a visible edge between them. One photo per overlay cell; a second would be hidden behind the first. A photograph that continues behind more than one band is still ONE photograph, and it is an overlay, not a column: put it in the band it mostly covers, together with that band's copy, and do not emit it again for the other bands it passes through. The test for a column is a visible edge where the photograph stops. A photograph that fades out, is cut out around a person, or simply runs on under the type has no such edge — that is an overlay.
+2. Where the reference sets copy directly on top of a photograph, put the photo and the copy in the SAME cell — the photo becomes that cell's background and the copy is drawn over it under a darkening wash. That is an overlay, and it is how a full-bleed hero with the headline on it is described. Only split them into separate cells when the photo and the copy genuinely sit side by side with a visible edge between them. One photo per overlay cell; a second would be hidden behind the first. A photograph that continues behind more than one band is still ONE photograph, and it is an overlay, not a column: put it in the band it mostly covers, together with that band's copy, and do not emit it again for the other bands it passes through. The test for a column is a visible edge where the photograph stops.
+
+2b. A CUT-OUT PERSON IS NOT AN OVERLAY. Judge every photographic region twice: first whether it is there, then what kind it is. A rectangular photograph with visible edges, filling its area, is "scene". A person or object silhouetted against the poster's own flat colour — no photographic backdrop behind them, the poster's background running continuously past their outline — is "subject", and it goes in its own cell beside the copy rather than underneath it. This is one of the commonest banner shapes there is: type and a button on the left, a cut-out figure standing on the right. Describing that figure as an overlay puts the headline on top of the person; describing it as a "scene" brings an invented backdrop onto a poster whose whole design is one flat colour. Set photoKind on the cell accordingly.
 3. Mark the largest photo row "flex". Text cannot reflow to fit a canvas, so one row must be able to give up space when the copy runs long. If there is no photo, mark the tallest row.
 4. Copy rows are "hug". A bar whose proportion is the point of it — a slim footer, a full-bleed contact strip — is "fixed" with its heightFraction.
 5. padded is true everywhere except a photo that bleeds to the poster edge.
@@ -223,7 +285,9 @@ Group small items generously. Three stacked lines each with a little icon are on
 
 Count that feature block and describe its shape, because the renderer draws exactly what you report. "featureCount" is how many items it holds — two, three or four. "featureStyle" is "labelOnly" when an item is an icon and one or two words and nothing else, and "labelAndBody" when a sentence sits under the label. Four label-only cards drawn as three labelled paragraphs is the single most common way a generated poster stops resembling the reference, and this is the only thing that prevents it. A poster with no feature block at all: send 3 and "labelAndBody", which is what the renderer already assumes.
 
-Emit one row for EVERY band, top edge to bottom edge, leaving no vertical gap between them. A poster that ends with a coloured footer strip has a row for that strip. Most posters are three to six rows; one row is almost always a misreading.
+Emit one row for EVERY band, top edge to bottom edge, leaving no vertical gap between them. A poster that ends with a coloured footer strip has a row for that strip.
+
+Most editorial posters are three to six rows, and for those one row is almost always a misreading — a footer strip or a headline band gone unnoticed. Wide and square banners are different: a great many are genuinely one or two bands, with everything sitting side by side inside them. Count the bands you can actually see a boundary for and emit those. Do not pad a two-band banner out to four, and do not collapse a five-band poster into one.
 
 EMPTY SPACE IS NOT A PHOTO. This is the mistake to guard against hardest. Where a band has copy on one side and plain background on the other, the empty side is a "spacer" cell — plain, unphotographed ground is the most common thing on the right of a headline. Only call a region "photo" if you can actually see a photograph in it: people, food, a room, a landscape. Count the photographs on the poster before you begin, and emit exactly that many photo slots. Many posters have one. Some have none.
 
@@ -233,7 +297,11 @@ When a band IS split, measure the boundary rather than reaching for a familiar p
 
 Read alignment the same way, per cell. Type that starts at a common left edge is "start"; type centred about an axis with both edges ragged is "center". A centred headline reported as "start" moves the whole block to one side of the poster.
 
-Two worked examples, to show the range — do not carry their proportions or their names over to the poster you are given, which is neither of them:
+Read the headline's own setting, line by line, into "headlineEmphasis" — one entry per line, top to bottom. References very often set one line of a three-line headline heavier than the other two, or in the brand colour, and that contrast is most of what makes the headline look like the headline rather than three lines of the same type. A line in noticeably bolder type is "heavy"; a line in lighter or regular type is "plain"; a line in a different colour from its neighbours is "accent". A headline set uniformly is every line "heavy". You are reporting relative weight and whether a colour changes, never which colour — the poster's palette is replaced.
+
+Where a single WORD inside a line is emphasised rather than the whole line, report the line by whichever setting most of it carries. The words on this poster are discarded and rewritten, so there is nothing for a word-level mark to attach to.
+
+Three worked examples, to show the range — do not carry their proportions or their names over to the poster you are given, which is none of them:
 
   A. Photo beside a big headline, a dark strip of prose, an offer panel beside a
      second photograph, a slim coloured footer.
@@ -247,6 +315,12 @@ Two worked examples, to show the range — do not carry their proportions or the
        row 2  flex         1 cell : photo (bleed)
        row 3  hug          1 cell : features, dark fill
        row 4  fixed ~0.10  1 cell : contact, accent fill
+
+  C. A square banner: flat ground, type and a button on the left, a person cut
+     out of their background standing on the right. One band, no contact bar,
+     no features, no logo.
+       row 1  flex         2 cells: headline + cta, padded, "start"   (about 55%)
+                                  | photo, photoKind "subject"        (about 45%)
 
 Name the composition from what you actually see — its own shape, in your own words.`;
 
@@ -275,6 +349,20 @@ export async function extractLayoutSpec(input: {
   mimeType: string;
   /** Falls back to the template's filename when the model returns a poor name. */
   label: string;
+  /**
+   * The stored file's own pixel dimensions, which become the spec's `aspect` and
+   * therefore the shape of every poster drawn from this template.
+   *
+   * **Measured by the caller, never asked of the model.** The schema above has
+   * no aspect field on purpose: a ratio is a property of the bytes that
+   * `prepareTemplateImage` already knows exactly, and asking a vision model to
+   * estimate a number we hold is how a 600×600 reference becomes "about 1.1:1".
+   *
+   * Null when the header could not be parsed, which leaves `aspect` at 0 and
+   * falls the poster back to the client's output preset.
+   */
+  width: number | null;
+  height: number | null;
   /** Attribution for the spend ledger. */
   bill?: UsageContext;
 }): Promise<ExtractedLayout> {
@@ -321,6 +409,9 @@ export async function extractLayoutSpec(input: {
   const spec = normalizeLayoutSpec({
     ...parsed.data,
     name: parsed.data.name.trim() || input.label,
+    // Overwritten unconditionally, not merged: the model has no aspect field to
+    // fill, and the measurement is authoritative.
+    aspect: measuredAspect(input.width, input.height),
   });
 
   return {

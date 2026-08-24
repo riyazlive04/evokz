@@ -79,6 +79,8 @@ async function main() {
         bytes,
         mimeType: dimensions?.mimeType ?? 'image/png',
         label,
+        width: dimensions?.width ?? null,
+        height: dimensions?.height ?? null,
       });
 
       console.log(`  model:  ${result.model}`);

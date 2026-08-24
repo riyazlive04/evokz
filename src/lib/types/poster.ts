@@ -129,6 +129,21 @@ export const posterCopySchema = z.object({
   /** Contact-bar imperatives, e.g. "CALL US TODAY" / "VISIT OUR WEBSITE". */
   callLabel: z.string().trim().min(1).max(28).default('CALL US TODAY'),
   websiteLabel: z.string().trim().min(1).max(28).default('VISIT OUR WEBSITE'),
+  /**
+   * The CTA button's words, e.g. "START INVESTING NOW".
+   *
+   * Shorter than the contact labels because it is set inside a button rather
+   * than across a bar: past about twenty-four characters the pill either
+   * outgrows its column or the type shrinks below the surrounding copy, and both
+   * read as a mistake.
+   *
+   * Written per day rather than held on the client, so a 365-day campaign varies
+   * its ask — "book a site visit" in one week, "download the brochure" the next
+   * — instead of repeating one imperative for a year. Only drawn where the
+   * template has a `cta` slot; elsewhere it is stored and unused, exactly like
+   * `body` under a template with no body slot.
+   */
+  ctaLabel: z.string().trim().min(1).max(24).default('LEARN MORE'),
   /** The trailing-full-stop tic seen in 5/12 references. */
   headlinePeriod: z.boolean().default(false),
 });
@@ -224,6 +239,11 @@ export function coercePosterCopy(raw: unknown): PosterCopy | null {
     callLabel: truncateWords(asString(source.callLabel), 28) || 'CALL US TODAY',
     websiteLabel:
       truncateWords(asString(source.websiteLabel), 28) || 'VISIT OUR WEBSITE',
+    // Repaired rather than fatal, like the two labels above it: a day whose
+    // template draws no button will often come back with this empty, and losing
+    // the whole day's copy over a field nothing was going to draw is the trade
+    // `coercePosterCopy` exists to refuse.
+    ctaLabel: truncateWords(asString(source.ctaLabel), 24) || 'LEARN MORE',
     headlinePeriod: source.headlinePeriod === true,
   };
 

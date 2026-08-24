@@ -98,7 +98,13 @@ export async function renderPoster(
   input: RenderPosterInput,
 ): Promise<RenderedPoster> {
   const theme = resolvePosterTheme(input.guideline);
-  const metrics = resolveMetrics(input.width, input.height);
+  /*
+   * The spec's measured aspect is passed so the design can be re-proportioned to
+   * the template's own shape rather than fitted to a 9:16 frame it was never
+   * drawn at. `resolveMetrics` ignores it unless the canvas actually matches —
+   * see the note there for why that gate is load-bearing rather than defensive.
+   */
+  const metrics = resolveMetrics(input.width, input.height, input.layoutSpec.aspect);
   assertRenderableCanvas(metrics, input.width, input.height);
 
   /*
@@ -205,27 +211,36 @@ export async function renderPoster(
   }
 
   /*
-   * The archetypes reported which slots an off-brand canvas forced them to drop.
-   * A spec drops nothing — it renders its own grid at whatever aspect it is
-   * given — but it is not therefore unaffected: `resolveMetrics` scales a
-   * `wide` or `letterbox` canvas against a much shorter reference and every row
-   * compresses. Reporting an empty `dropped` array would have retired the only
-   * signal an operator ever got that their preset was degrading the poster, so
-   * the mode is reported instead.
+   * Warn only when the canvas disagrees with the template it is drawing.
    *
-   * It used to say the layout "was authored for a portrait frame", which nothing
-   * anywhere enforces and which was simply false for four live templates: square
-   * 600x600 references drawn onto a 9:16 canvas, where the reference's modest
-   * plain-ground margins became half-poster voids. A spec carries no record of
-   * the aspect it was read from, so this reports the canvas and stops there
-   * rather than asserting something it cannot know. `check:fleet` is where the
-   * reference-versus-preset mismatch is actually caught.
+   * This used to fire on any canvas that was not `tall`, which was the best it
+   * could do while a spec carried no record of the shape it was read from — and
+   * which is now both wrong and noisy, since a square template drawn at 1:1 is
+   * the correct outcome rather than a degraded one.
+   *
+   * A spec now stores its measured `aspect`, so the real question is answerable:
+   * is this poster being drawn at the proportions its reference had? It is not
+   * only when the spec predates the field (aspect 0, so `resolvePosterCanvas`
+   * fell back to the client's preset) — which is exactly the case an operator
+   * should be told about, because the fix is to re-read the template.
    */
-  if (metrics.mode !== 'tall') {
+  const spec = input.layoutSpec;
+  const canvasAspect = input.width / input.height;
+
+  if (spec.aspect > 0) {
+    if (Math.abs(canvasAspect - spec.aspect) > ASPECT_TOLERANCE) {
+      console.warn(
+        `[ace:poster] layout "${spec.name}" was read from a ${spec.aspect.toFixed(2)}:1 ` +
+          `reference but is being drawn at ${input.width}×${input.height} ` +
+          `(${canvasAspect.toFixed(2)}:1); rows will compress. This should not happen — ` +
+          'the canvas is meant to be resolved by `resolvePosterCanvas`.',
+      );
+    }
+  } else if (metrics.mode !== 'tall') {
     console.warn(
       `[ace:poster] ${input.width}×${input.height} is a "${metrics.mode}" canvas and ` +
-        `layout "${input.layoutSpec.name}" is being drawn onto it; rows will compress. ` +
-        'Check the reference this layout was read from is the same shape.',
+        `layout "${spec.name}" carries no measured aspect, so it is being drawn at the ` +
+        'output preset\'s shape. Re-read the template so its own proportions are stored.',
     );
   }
 
@@ -254,6 +269,13 @@ function slugify(name: string): string {
  * room for a future preset, while still refusing anything genuinely extreme.
  */
 const MAX_RENDERABLE_ASPECT = 4;
+
+/**
+ * How far a canvas may drift from its spec's measured aspect before it is worth
+ * a line in the log. Wide enough to absorb `clampEven`'s rounding on a small
+ * canvas, narrow enough that a genuine mismatch always reports.
+ */
+const ASPECT_TOLERANCE = 0.02;
 
 /** Below this the slot skeleton has no room on either axis. */
 const MIN_RENDERABLE_EDGE = 240;

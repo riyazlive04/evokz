@@ -107,6 +107,63 @@ export function createPlaceholderPhoto(
   return encodePng(width, height, pixels);
 }
 
+/**
+ * A stand-in for a background-removed subject: an opaque figure on transparent
+ * ground.
+ *
+ * The scene placeholder above cannot serve here. It is fully opaque, so a
+ * `subject` cell previewed with it shows a rectangle of sky exactly where
+ * production shows a person standing on the poster's own colour — which is the
+ * one thing an operator is looking at the preview to check.
+ *
+ * Crude on purpose. It has to establish three things and nothing else: that the
+ * cell is transparent around the figure, that the figure is bottom-anchored, and
+ * roughly how much of the column it fills. Rendering anything more lifelike would
+ * be a lot of hand-rolled drawing code on a preview-only path.
+ */
+export function createPlaceholderSubject(width: number, height: number): Buffer {
+  const pixels = Buffer.alloc(width * height * 4); // zero-filled: transparent.
+
+  const centreX = width * 0.5;
+  // Head, shoulders and torso as three primitives, sized off the short edge so
+  // the figure keeps its proportions in a wide cell or a narrow one.
+  const headRadius = Math.min(width, height) * 0.13;
+  const headY = height * 0.17;
+  const shoulderY = headY + headRadius * 1.7;
+  const bodyHalfWidth = headRadius * 1.85;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+
+      const dx = x - centreX;
+      const inHead = Math.sqrt(dx * dx + (y - headY) ** 2) < headRadius;
+
+      /*
+       * The torso widens from the shoulders down, so the silhouette reads as a
+       * person rather than a column — and it runs to the bottom edge rather than
+       * stopping short, which is how a cut-out figure sits on a poster.
+       */
+      const shoulderProgress = (y - shoulderY) / Math.max(1, height - shoulderY);
+      const inBody =
+        y >= shoulderY &&
+        Math.abs(dx) < bodyHalfWidth * (0.72 + shoulderProgress * 0.55);
+
+      if (!inHead && !inBody) continue;
+
+      // Mid-grey, lit slightly from the left, so it is clearly a placeholder
+      // while still showing whether the poster's ground reads behind it.
+      const shade = clampByte(150 - (dx / Math.max(1, width)) * 90);
+      pixels[offset] = shade;
+      pixels[offset + 1] = shade;
+      pixels[offset + 2] = clampByte(shade + 12);
+      pixels[offset + 3] = 255;
+    }
+  }
+
+  return encodePng(width, height, pixels, 4);
+}
+
 interface Palette {
   zenith: [number, number, number];
   horizon: [number, number, number];
@@ -150,21 +207,30 @@ function clampByte(value: number): number {
  * filtering is applied because zlib already compresses these smooth gradients well
  * and a filter pass would only add CPU to a preview-only path.
  */
-function encodePng(width: number, height: number, rgb: Buffer): Buffer {
+function encodePng(
+  width: number,
+  height: number,
+  rgb: Buffer,
+  // 3 for the scene placeholder, 4 for the cut-out subject, which needs a real
+  // alpha channel: the renderer's `subject` branch composites it onto the
+  // poster's own fill, and an opaque preview would show a box where production
+  // shows a figure.
+  channels: 3 | 4 = 3,
+): Buffer {
   const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr.writeUInt8(8, 8); // bit depth
-  ihdr.writeUInt8(2, 9); // colour type: truecolour
+  ihdr.writeUInt8(channels === 4 ? 6 : 2, 9); // colour type: truecolour (+alpha)
   ihdr.writeUInt8(0, 10); // compression: deflate
   ihdr.writeUInt8(0, 11); // filter method: adaptive
   ihdr.writeUInt8(0, 12); // interlace: none
 
   // Each scanline is prefixed with its filter byte, so the raw stream is
-  // height * (1 + width * 3) bytes.
-  const stride = width * 3;
+  // height * (1 + width * channels) bytes.
+  const stride = width * channels;
   const raw = Buffer.allocUnsafe(height * (stride + 1));
   for (let y = 0; y < height; y += 1) {
     const target = y * (stride + 1);

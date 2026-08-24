@@ -29,6 +29,32 @@ export type CanvasMode = 'tall' | 'wide' | 'letterbox';
 const WIDE_ABOVE_ASPECT = 0.82;
 const LETTERBOX_ABOVE_ASPECT = 2.2;
 
+/**
+ * Widest reference frame the design will be fitted against.
+ *
+ * Past this the derived reference height is so short that a headline block
+ * authored at 300 reference px is taller than the frame containing it. Clamping
+ * means an extreme canvas is typeset at 4:1 proportions and simply has slack at
+ * the sides, rather than resolving a scale that overflows the rows.
+ */
+const MAX_REFERENCE_ASPECT = 4;
+
+/**
+ * How closely a canvas must match the template's own aspect before the design is
+ * re-proportioned to it. Wide enough to absorb `clampEven`'s rounding.
+ */
+const ASPECT_MATCH_TOLERANCE = 0.02;
+
+/**
+ * Ceiling on the reference-to-output multiplier.
+ *
+ * A canvas whose short edge is very large relative to `REFERENCE_WIDTH` would
+ * otherwise set every measurement several times over — see the note in
+ * `resolveMetrics`. Two is a 1880px-wide poster at reference proportions, past
+ * which nothing gains from scaling further.
+ */
+const MAX_SCALE = 2;
+
 export function resolveCanvasMode(width: number, height: number): CanvasMode {
   const aspect = width / height;
   if (aspect > LETTERBOX_ABOVE_ASPECT) return 'letterbox';
@@ -74,6 +100,13 @@ export interface PosterMetrics {
     value: number;
     tracking: number;
   };
+  cta: {
+    height: number;
+    paddingX: number;
+    label: number;
+    tracking: number;
+    radius: number;
+  };
   /**
    * Vertical space left over after the reference design is scaled to fit. A tall,
    * narrow canvas (9:20 phone wallpaper) has a lot; archetypes hand it to
@@ -90,29 +123,70 @@ export interface PosterMetrics {
  * 1440×3120 phone canvas, scaling by width alone would make the design 3418 px
  * tall and push the contact bar off a 3120 px poster.
  */
-export function resolveMetrics(width: number, height: number): PosterMetrics {
+export function resolveMetrics(
+  width: number,
+  height: number,
+  /**
+   * The aspect the layout being drawn was authored at, from the spec's measured
+   * `aspect`. Zero, or absent, means unknown.
+   */
+  referenceAspect = 0,
+): PosterMetrics {
   // Advisory only — see `resolveCanvasMode`. Nothing below branches on it.
   const mode = resolveCanvasMode(width, height);
 
   /*
-   * Always fitted against the full reference, on both axes.
+   * The reference frame follows the template's own shape — but only when the
+   * canvas actually has that shape.
    *
-   * The mode used to change this: `wide` fitted the design to 52% of the width
-   * and `letterbox` to 62% of it against a 320px reference height, because the
-   * archetypes answered an off-brand canvas by switching to a component that
-   * laid its slots out in a ROW. Nothing does that any more — a layout spec is a
-   * vertical stack of rows at every aspect — so those factors stopped describing
-   * anything and became actively dangerous.
+   * `REFERENCE_HEIGHT` was pinned at 1568 on both axes, which was right while
+   * every poster was 9:16 and silently wrong the moment one was not: a 1080×1080
+   * canvas resolved `min(1080/940, 1080/1568)` = 0.689, so a square poster was
+   * typeset at the size a 648px-wide poster would get. Type, margins and the
+   * accent rule all came out around a third too small on a canvas with room to
+   * spare — a poster that renders, looks deliberate, and does not resemble the
+   * template it was read from.
    *
-   * How dangerous: at 3440×1440 the letterbox branch resolved a scale of 2.27,
-   * so every measurement was set at more than double size on a canvas 1440px
-   * tall. The rows overflowed far enough to drive a width negative, and resvg
-   * panicked in Rust — which aborts the Node process outright rather than
-   * throwing, taking a whole dispatch sweep with it. Caught by
-   * `npm run check:layouts`, which renders each fixture at `desktop-ultrawide`
-   * for exactly this reason.
+   * Re-proportioning the reference to the canvas fixes that, and would be
+   * actively dangerous applied unconditionally. The design is a vertical stack,
+   * and how much height it *needs* is a property of its rows, not of the frame:
+   * a four-row editorial spec genuinely wants ~1568 units at 940 wide. Fitting
+   * that stack to a 1080×566 letterbox reference resolves 1.149 rather than
+   * 0.361, the rows overflow far enough to drive a width negative, and resvg
+   * panics in Rust — which aborts the Node process outright rather than
+   * throwing, taking a whole dispatch sweep with it.
+   *
+   * So the re-proportioning is gated on the one case where it is known safe: the
+   * canvas matching the aspect the layout was read from, which is what
+   * `resolvePosterCanvas` arranges for every spec that has a measured one. There
+   * the stack's content was authored for exactly these proportions. Everywhere
+   * else — a v1 spec with no measured aspect, a fixture rendered at a deliberately
+   * hostile preset — the original conservative fit applies unchanged.
+   *
+   * Verified by `npm run check:layouts`, which renders each fixture at
+   * `desktop-ultrawide` for exactly this reason.
    */
-  const scale = Math.min(width / REFERENCE_WIDTH, height / REFERENCE_HEIGHT);
+  const matchesReference =
+    referenceAspect > 0 &&
+    Number.isFinite(referenceAspect) &&
+    Math.abs(width / height - referenceAspect) <= ASPECT_MATCH_TOLERANCE;
+
+  const referenceHeight = matchesReference
+    ? clamp(
+        REFERENCE_WIDTH / referenceAspect,
+        REFERENCE_WIDTH / MAX_REFERENCE_ASPECT,
+        REFERENCE_HEIGHT,
+      )
+    : REFERENCE_HEIGHT;
+
+  /*
+   * MAX_SCALE is a backstop on the matched path, where the two ratios agree and
+   * the `min` therefore protects nothing. A genuinely ultrawide template would
+   * otherwise resolve 3.66 and set every measurement at more than triple size.
+   * It never binds on the unmatched path — no preset in the catalogue reaches it
+   * through the height term.
+   */
+  const scale = Math.min(width / REFERENCE_WIDTH, height / referenceHeight, MAX_SCALE);
 
   const s = (referenceValue: number): number =>
     Math.round(referenceValue * scale * 100) / 100;
@@ -182,7 +256,17 @@ export function resolveMetrics(width: number, height: number): PosterMetrics {
       tracking: s(22) * 0.06,
     },
 
-    slack: Math.max(0, height - REFERENCE_HEIGHT * scale),
+    cta: {
+      height: s(96),
+      paddingX: s(46),
+      label: s(28),
+      tracking: s(28) * 0.08,
+      // The `rounded` corner. `pill` resolves to half the button's height at
+      // render, and `square` to zero — neither needs a number here.
+      radius: s(14),
+    },
+
+    slack: Math.max(0, height - referenceHeight * scale),
   };
 }
 

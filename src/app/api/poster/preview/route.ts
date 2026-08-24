@@ -9,7 +9,11 @@ import {
   describeLayoutFailure,
   resolveDayLayout,
 } from '@/lib/poster/layout-library';
-import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
+import {
+  createPlaceholderPhoto,
+  createPlaceholderSubject,
+} from '@/lib/poster/placeholder-photo';
+import { resolvePosterCanvas } from '@/lib/poster/canvas';
 import { resolveSpecPhotoRequests } from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
 import { SAMPLE_LAYOUT_SPEC } from '@/lib/poster/sample-layout';
@@ -156,10 +160,26 @@ export async function GET(request: NextRequest) {
     // heap and kill the process mid-request. Only the aspect ratio matters for
     // judging a layout, so the long edge is bounded and the production path — which
     // uses the real photo at full size — is untouched.
-    const requests = resolveSpecPhotoRequests(resolved, preset);
+    /*
+     * Resolved exactly as the pipeline resolves it, so the operator reviewing a
+     * template sees the shape the client will actually receive. A preview drawn
+     * at the preset's aspect while production draws at the template's would make
+     * the approval step worse than useless — it would show a poster nobody gets.
+     */
+    const canvas = resolvePosterCanvas(resolved, preset);
+
+    const requests = resolveSpecPhotoRequests(resolved, canvas);
 
     const photos = requests.map((request, index) => {
       const placeholder = capLongEdge(request.width, request.height, 1280);
+
+      // A subject cell gets a transparent silhouette rather than a landscape, so
+      // the preview shows what production shows: a figure standing on the
+      // poster's own colour, not a rectangle of sky.
+      if (request.kind === 'subject') {
+        return createPlaceholderSubject(placeholder.width, placeholder.height);
+      }
+
       // Alternating tone across a multi-photo spec: two identical procedural
       // frames make it impossible to tell which cell received which request,
       // which is exactly what this preview exists to show.
@@ -173,8 +193,8 @@ export async function GET(request: NextRequest) {
       guideline: context?.guideline ?? EMPTY_BRAND_GUIDELINE,
       identity: context?.identity ?? SAMPLE_IDENTITY,
       photos,
-      width: preset.width,
-      height: preset.height,
+      width: canvas.width,
+      height: canvas.height,
     });
 
     return new NextResponse(poster.body as unknown as BodyInit, {
@@ -187,6 +207,10 @@ export async function GET(request: NextRequest) {
         // template apart from the built-in sample without reading the pixels.
         'X-Poster-Layout': poster.layoutName,
         'X-Poster-Canvas-Mode': poster.canvasMode,
+        // The resolved size and why, so a caller can tell a template-driven
+        // canvas from a preset-driven one without measuring the PNG.
+        'X-Poster-Canvas': `${canvas.width}x${canvas.height}`,
+        'X-Poster-Canvas-Reason': canvas.reason,
       },
     });
   } catch (error) {
@@ -316,6 +340,7 @@ const SAMPLE_COPY: PosterCopy = {
   ],
   callLabel: 'CALL US TODAY',
   websiteLabel: 'VISIT OUR WEBSITE',
+  ctaLabel: 'GET STARTED TODAY',
   headlinePeriod: false,
 };
 

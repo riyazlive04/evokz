@@ -25,6 +25,15 @@ export interface RateCard {
   openAiOutputPerMTok: number;
   /** USD per generated image. */
   falPerImage: number;
+  /**
+   * USD per background-removal call.
+   *
+   * Its own rate rather than reusing `falPerImage`, because segmentation is an
+   * order of magnitude cheaper than diffusion and pricing it as a full render
+   * would report a cut-out poster as costing twice what it does — on the ledger
+   * that the monthly budget alerts read.
+   */
+  falPerCutout: number;
   /** USD per WhatsApp message. Zero for a self-hosted Evolution instance. */
   whatsAppPerMessage: number;
   /** Rupees per US dollar, used for display only. */
@@ -37,6 +46,7 @@ export function getRateCard(): RateCard {
     openAiCachedInputPerMTok: floatEnv('PRICE_OPENAI_CACHED_INPUT_PER_MTOK', 0.075),
     openAiOutputPerMTok: floatEnv('PRICE_OPENAI_OUTPUT_PER_MTOK', 0.6),
     falPerImage: floatEnv('PRICE_FAL_PER_IMAGE', 0.003),
+    falPerCutout: floatEnv('PRICE_FAL_PER_CUTOUT', 0.0004),
     whatsAppPerMessage: floatEnv('PRICE_WHATSAPP_PER_MESSAGE', 0),
     usdInr: floatEnv('USD_INR_RATE', 88),
   };
@@ -70,6 +80,10 @@ export function priceOpenAiCall(usage: TokenUsage, rates = getRateCard()): numbe
 
 export function priceImages(count: number, rates = getRateCard()): number {
   return toMicros(Math.max(count, 0) * rates.falPerImage);
+}
+
+export function priceCutouts(count: number, rates = getRateCard()): number {
+  return toMicros(Math.max(count, 0) * rates.falPerCutout);
 }
 
 export function priceMessages(count: number, rates = getRateCard()): number {

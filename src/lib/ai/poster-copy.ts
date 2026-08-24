@@ -29,7 +29,9 @@ import {
 // `Industry:` line, which keeps this prefix constant and therefore cacheable.
 const SYSTEM_PROMPT = `You are the Content Director for Evokz ACE, writing the text layer for one client poster.
 
-The poster is a background photograph with a typographic layer composited on top: a logo lockup, a stacked all-caps headline, a short body paragraph, a row of icon features, and a contact bar. You are writing only that text layer. You are not writing a caption and not describing the photograph.
+The poster is a background photograph with a typographic layer composited on top: a logo lockup, a stacked all-caps headline, a short body paragraph, a row of icon features, a call-to-action button, and a contact bar. You are writing only that text layer. You are not writing a caption and not describing the photograph.
+
+Which of those a given poster actually draws depends on the template the day is laid out in, and you will be told. Every field is required whether or not it is drawn.
 
 ${POSTER_COPY_RULES}`;
 
@@ -196,6 +198,26 @@ function describeLayoutFit(shape: LayoutCopyShape): string {
     shape.hasEyebrow
       ? '- eyebrow: this layout shows one. A short all-caps kicker is worth writing.'
       : '- eyebrow: this layout has no eyebrow. Send an empty string.',
+  );
+
+  /*
+   * Phrased as "still required, still worth writing, simply not drawn", exactly
+   * like the body note below and for the reason recorded there: told plainly
+   * that a slot is absent, gpt-4o sends an empty string, and an empty string
+   * fails `coercePosterCopy`'s repair for a field it cannot invent.
+   *
+   * `ctaLabel` is the milder case — its repair falls back to a default rather
+   * than failing the day — but a poster carrying "LEARN MORE" because the prompt
+   * implied the field was optional is a worse poster than one carrying the ask
+   * the model would have written.
+   */
+  notes.push(
+    shape.hasCta
+      ? '- ctaLabel: this layout draws a button. Write the instruction that belongs ' +
+        'on it for this day — two to four words, at most 24 characters.'
+      : '- ctaLabel: this layout has no button, but the field is still required. ' +
+        'Write a short instruction anyway — it is stored, and is used if this day ' +
+        'is later laid out in a template that draws one.',
   );
 
   if (!shape.hasBody) {

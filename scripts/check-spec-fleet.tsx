@@ -19,7 +19,11 @@ import { Prisma, PrismaClient } from '@prisma/client';
 import { getImageSizePreset } from '@/lib/image-sizes';
 import { headlineColumnWidth } from '@/lib/poster/layout-render';
 import { AVERAGE_CAP_ADVANCE, fitHeadline, resolveMetrics } from '@/lib/poster/metrics';
-import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
+import { resolvePosterCanvas } from '@/lib/poster/canvas';
+import {
+  createPlaceholderPhoto,
+  createPlaceholderSubject,
+} from '@/lib/poster/placeholder-photo';
 import { resolveSpecPhotoRequests } from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
 import { EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
@@ -62,6 +66,7 @@ const COPY: PosterCopy = {
   ],
   callLabel: 'CONTACT US TODAY',
   websiteLabel: 'FOLLOW OUR SOCIAL MEDIA',
+  ctaLabel: 'BOOK A SITE VISIT',
   headlinePeriod: true,
 };
 
@@ -142,46 +147,52 @@ async function main() {
     if (problems.length > 0) continue;
 
     /*
-     * The reference and the canvas must be the same shape.
+     * Does this spec know its own shape?
      *
-     * A spec records band order and column splits, never the aspect it was read
-     * from, and `resolveMetrics` sizes type against a fixed portrait reference.
-     * So a square 600x600 template drawn onto a 9:16 canvas keeps its type at
-     * reference size while the frame grows 42% taller, and every plain-ground
-     * margin the reference had — a tasteful gutter at 1:1 — opens into a
-     * half-poster void. Four live Individuals templates were doing exactly this
-     * while passing every other check in this file.
+     * This block used to compare the reference's aspect against the presets the
+     * vertical's clients were set to, and report the mismatch — because a spec
+     * recorded band order and column splits but never the aspect it was read
+     * from, so a square 600x600 template drawn onto a 9:16 canvas kept its type
+     * at reference size while the frame grew 42% taller, and every plain-ground
+     * margin the reference had opened into a half-poster void. Four live
+     * Individuals templates were doing exactly that.
      *
-     * Compared against the presets this vertical's clients are actually set to,
-     * not against every preset: a square reference is perfectly correct for a
-     * client delivering square, and calling that an error would be noise.
+     * The mismatch is no longer possible for a spec that carries `aspect`:
+     * `resolvePosterCanvas` gives it its own proportions and the preset only
+     * sets the resolution. So the finding moved one step earlier — the fault is
+     * now a spec with *no* stored aspect, which still falls back to the client's
+     * preset and can still open those holes. The fix is to re-read the template,
+     * which is a sentence an operator can act on rather than a ratio comparison.
      */
-    if (row.width && row.height) {
-      const reference = row.width / row.height;
-      const wanted = new Map<string, number>();
-      for (const client of row.category.clients) {
-        // Null means the client never chose one and takes the app default, which
-        // is resolved at render time — nothing to compare against here.
-        if (!client.imageSizePreset) continue;
-        const preset = getImageSizePreset(client.imageSizePreset);
-        if (preset) wanted.set(client.imageSizePreset, preset.width / preset.height);
-      }
-      for (const [id, aspect] of wanted) {
-        // 15% apart is roughly 4:5 against 9:16 — close enough that the bands
-        // stretch without opening holes. Beyond it they open holes.
-        if (Math.abs(reference - aspect) / aspect > 0.15) {
-          note(
-            `reference is ${row.width}x${row.height} (${reference.toFixed(2)}:1) but ` +
-              `clients here deliver at "${id}" (${aspect.toFixed(2)}:1) — ` +
-              'the layout will stretch and leave empty bands.',
-          );
-        }
+    if (spec.aspect <= 0) {
+      const reference =
+        row.width && row.height
+          ? `${row.width}x${row.height} (${(row.width / row.height).toFixed(2)}:1)`
+          : 'an unmeasurable file';
+      note(
+        `no stored aspect — this spec predates template-shaped canvases, so its ` +
+          `posters are drawn at whatever preset each client is set to rather than at ` +
+          `${reference}. Re-read and re-approve it.`,
+      );
+    } else if (row.width && row.height) {
+      // The spec's aspect is written from these columns at extraction, so a
+      // disagreement means the file was replaced without re-reading it.
+      const measured = row.width / row.height;
+      if (Math.abs(measured - spec.aspect) / measured > 0.02) {
+        note(
+          `stored aspect ${spec.aspect.toFixed(2)}:1 disagrees with the file's own ` +
+            `${measured.toFixed(2)}:1 — re-read it.`,
+        );
       }
     }
 
     for (const presetId of PRESETS) {
       const preset = getImageSizePreset(presetId)!;
-      const metrics = resolveMetrics(preset.width, preset.height);
+      // The canvas production would actually draw on: the template's shape at
+      // the preset's resolution. Checking the raw preset would test a poster no
+      // client receives.
+      const canvas = resolvePosterCanvas(spec, preset);
+      const metrics = resolveMetrics(canvas.width, canvas.height, spec.aspect);
 
       // The fault this script exists for: a headline sliced by its own column.
       const room = headlineColumnWidth(spec, metrics);
@@ -199,13 +210,18 @@ async function main() {
       }
 
       try {
-        const requests = resolveSpecPhotoRequests(spec, preset);
+        const requests = resolveSpecPhotoRequests(spec, canvas);
         const photos = requests.map((request, index) =>
-          createPlaceholderPhoto(
-            Math.min(request.width, 1024),
-            Math.min(request.height, 1024),
-            index % 2 === 0 ? 'daylight' : 'dusk',
-          ),
+          request.kind === 'subject'
+            ? createPlaceholderSubject(
+                Math.min(request.width, 1024),
+                Math.min(request.height, 1024),
+              )
+            : createPlaceholderPhoto(
+                Math.min(request.width, 1024),
+                Math.min(request.height, 1024),
+                index % 2 === 0 ? 'daylight' : 'dusk',
+              ),
         );
         const poster = await renderPoster({
           layoutSpec: spec,
@@ -221,13 +237,13 @@ async function main() {
           },
           photos:
             photos.length > 0 ? photos : [createPlaceholderPhoto(1024, 1024, 'daylight')],
-          width: preset.width,
-          height: preset.height,
+          width: canvas.width,
+          height: canvas.height,
         });
         rendered += 1;
         if (outDir) {
           const slug = `${vertical}-${row.label}`.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-          await writeFile(`${outDir}/${slug}-${preset.width}x${preset.height}.png`, poster.body);
+          await writeFile(`${outDir}/${slug}-${canvas.width}x${canvas.height}.png`, poster.body);
         }
       } catch (error) {
         note(

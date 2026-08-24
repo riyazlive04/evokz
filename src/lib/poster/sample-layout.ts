@@ -22,12 +22,28 @@ import { normalizeLayoutSpec, type PosterLayoutSpec } from '@/lib/types/layout-s
 export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
   version: 1,
   name: 'Built-in sample',
+  /*
+   * Zero, so the thumbnail keeps whatever shape the caller asked for.
+   *
+   * A real template pins the poster to its own proportions. This one has no
+   * proportions to pin — it was never read from an image — and the brand panel
+   * that renders it wants a thumbnail at the size it requested, not one this
+   * module chose.
+   */
+  aspect: 0,
   ground: 'light',
   // Stated rather than defaulted: this spec is hand-authored, and a reader
   // comparing it against a rendered thumbnail should not have to know what the
   // schema fills in.
   featureCount: 3,
   featureStyle: 'labelAndBody',
+  ctaShape: 'pill',
+  // Empty, so the headline renders through the legacy `accentLineIndex` path —
+  // one accent line, everything heavy. This preview is about colour and type,
+  // and an emphasis pattern here would be a claim about a template that does
+  // not exist.
+  headlineEmphasis: [],
+  headlineCase: 'upper',
   rows: [
     {
       // Logo, eyebrow, headline, rule and body — the full copy stack, so every
@@ -41,6 +57,7 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
           fill: 'inherit',
           align: 'start',
           padded: true,
+          photoKind: 'scene',
           slots: ['logo', 'eyebrow', 'headline', 'accentRule', 'body'],
         },
       ],
@@ -52,7 +69,14 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
       heightFraction: 0,
       fill: 'inherit',
       cells: [
-        { weight: 100, fill: 'inherit', align: 'center', padded: false, slots: ['photo'] },
+        {
+          weight: 100,
+          fill: 'inherit',
+          align: 'center',
+          padded: false,
+          photoKind: 'scene',
+          slots: ['photo'],
+        },
       ],
     },
     {
@@ -63,7 +87,14 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
       heightFraction: 0,
       fill: 'dark',
       cells: [
-        { weight: 100, fill: 'dark', align: 'center', padded: true, slots: ['features'] },
+        {
+          weight: 100,
+          fill: 'dark',
+          align: 'center',
+          padded: true,
+          photoKind: 'scene',
+          slots: ['features'],
+        },
       ],
     },
     {
@@ -71,7 +102,14 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
       heightFraction: 0.1,
       fill: 'accent',
       cells: [
-        { weight: 100, fill: 'accent', align: 'center', padded: false, slots: ['contact'] },
+        {
+          weight: 100,
+          fill: 'accent',
+          align: 'center',
+          padded: false,
+          photoKind: 'scene',
+          slots: ['contact'],
+        },
       ],
     },
   ],

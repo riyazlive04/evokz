@@ -1887,7 +1887,7 @@ export async function uploadVerticalTemplate(
       new Set(category.templates.map((existing) => normalizeTemplateLabel(existing.label))),
       uploaded.fileId.slice(0, 8),
     );
-    const draft = await readLayoutQuietly(stored.body, stored.mimeType, label);
+    const draft = await readLayoutQuietly(stored.body, stored.mimeType, label, stored);
 
     const created = await prisma.categoryTemplate.create({
       data: {
@@ -1934,9 +1934,25 @@ async function readLayoutQuietly(
   bytes: Buffer,
   mimeType: string,
   label: string,
+  /**
+   * The stored file's measured dimensions, which become the spec's `aspect` and
+   * therefore the shape of every poster drawn from this template.
+   *
+   * Passed in rather than re-measured here so the number that reaches the spec
+   * is the same one stored on `CategoryTemplate.width/height` — a spec claiming
+   * a different ratio from the row beside it would be impossible to debug from
+   * the console, which shows both.
+   */
+  dimensions: { width: number | null; height: number | null },
 ): Promise<LayoutDraft> {
   try {
-    const result = await extractLayoutSpec({ bytes, mimeType, label });
+    const result = await extractLayoutSpec({
+      bytes,
+      mimeType,
+      label,
+      width: dimensions.width,
+      height: dimensions.height,
+    });
     const problems = result.problems.map(
       (problem) => `${problem.path} ${problem.message}`,
     );
@@ -1977,7 +1993,13 @@ export async function extractTemplateLayout(
 
     const template = await prisma.categoryTemplate.findUnique({
       where: { id },
-      select: { gDriveFileId: true, mimeType: true, label: true },
+      select: {
+        gDriveFileId: true,
+        mimeType: true,
+        label: true,
+        width: true,
+        height: true,
+      },
     });
     if (!template) return failure('That template no longer exists.');
 
@@ -1994,7 +2016,20 @@ export async function extractTemplateLayout(
       );
     }
 
-    const draft = await readLayoutQuietly(bytes, template.mimeType, template.label);
+    /*
+     * Re-measured from the bytes just read back, falling back to the stored
+     * columns.
+     *
+     * The row's dimensions were written at upload and are almost always right,
+     * but a template uploaded before those columns were populated carries nulls
+     * — and a null there would leave the re-read spec with no aspect, which is
+     * exactly the state re-reading is meant to fix.
+     */
+    const measured = readImageDimensions(bytes);
+    const draft = await readLayoutQuietly(bytes, template.mimeType, template.label, {
+      width: measured?.width ?? template.width,
+      height: measured?.height ?? template.height,
+    });
     if (!draft.spec) {
       await prisma.categoryTemplate.update({
         where: { id },

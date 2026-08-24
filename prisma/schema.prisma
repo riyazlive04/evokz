@@ -86,7 +86,16 @@ model CategoryTemplate {
   gDriveViewUrl String
 
   mimeType String
-  // Null when the header could not be parsed. Display-only — never load-bearing.
+  /// The stored file's pixel dimensions, measured by `prepareTemplateImage`.
+  ///
+  /// **Load-bearing, and the console's size badge is the least of it.** These
+  /// two numbers become `layoutSpec.aspect` at extraction, and the aspect
+  /// decides the shape of every poster drawn from this template — a square
+  /// reference delivers a square poster even to a client whose output preset is
+  /// 9:16. See `resolvePosterCanvas` in src/lib/poster/canvas.ts.
+  ///
+  /// Null when the header could not be parsed, which leaves the spec's aspect at
+  /// 0 and falls that template's posters back to the client's preset.
   width    Int?
   height   Int?
 

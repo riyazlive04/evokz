@@ -55,6 +55,7 @@ const COPY: PosterCopy = {
   ],
   callLabel: 'TASTE IT TODAY',
   websiteLabel: 'FOLLOW OUR SOCIAL MEDIA',
+  ctaLabel: 'BOOK A SITE VISIT',
   headlinePeriod: true,
 };
 

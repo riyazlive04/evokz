@@ -7,6 +7,7 @@ import {
   fitHeadline,
   type PosterMetrics,
 } from '@/lib/poster/metrics';
+import type { LayoutCtaShape, LayoutEmphasis } from '@/lib/types/layout-spec';
 import type {
   CopyAlign,
   PosterCopy,
@@ -403,18 +404,36 @@ export interface HeadlineProps extends SlotBase {
   lines: string[];
   accentLineIndex: number;
   trailingPeriod: boolean;
+  /**
+   * How each line is set, from the template's own spec, indexed by line.
+   *
+   * **Empty means "the template was never measured for this"**, and the whole
+   * array falls back to `accentLineIndex` — one accent-coloured line, every line
+   * at the heaviest weight, which is what this component did before emphasis
+   * existed and therefore what every stored v1 spec means. A non-empty array
+   * overrides it completely.
+   */
+  emphasis: LayoutEmphasis[];
+  /** Whether the template sets its headline in capitals. */
+  textCase: 'upper' | 'sentence';
   /** Column the headline must fit inside. */
   availableWidth: number;
 }
 
 /**
- * The dominant slot. One line takes the accent colour; the rest take the ground's
- * text colour (§2 — never two accent lines).
+ * The dominant slot.
  *
  * Each line is its own element so that the 0.96 line-height applies between lines
- * without satori also applying it inside a wrapped line, and so the accent can be
+ * without satori also applying it inside a wrapped line, and so emphasis can be
  * scoped to exactly one of them. The authored line breaks are preserved: they are
  * a copywriting decision, and re-wrapping them would undo it.
+ *
+ * **Emphasis is weight *and* colour, taken from the template.** The original
+ * rule — every line heaviest, one line accent-coloured — described the twelve
+ * editorial references it was written from and nothing else. A great many
+ * banner references set two light lines against one heavy one in the same
+ * colour, and drawing that as three heavy lines with a coloured middle is the
+ * most visible way a generated headline stops looking like its reference.
  */
 export function Headline({
   metrics,
@@ -423,6 +442,8 @@ export function Headline({
   align = 'start',
   lines,
   accentLineIndex,
+  emphasis,
+  textCase,
   trailingPeriod,
   availableWidth,
 }: HeadlineProps) {
@@ -431,6 +452,23 @@ export function Headline({
   // an out-of-range value would leave the poster with no accent at all.
   const accentIndex = Math.min(Math.max(accentLineIndex, 0), lines.length - 1);
   const lastIndex = lines.length - 1;
+
+  /*
+   * The spec's pattern wins where it exists; otherwise the legacy one is
+   * synthesised from `accentLineIndex`, so a v1 spec renders byte-identically.
+   *
+   * A pattern shorter than the headline is normal rather than an error: the copy
+   * stage writes 2-4 lines knowing nothing about which template the day landed
+   * in. An unmeasured line is `plain`, and `plain` in a measured pattern is a
+   * genuinely lighter line — which is the whole point of the field.
+   */
+  const measured = emphasis.length > 0;
+  const emphasisFor = (index: number): LayoutEmphasis =>
+    measured
+      ? (emphasis[index] ?? 'plain')
+      : index === accentIndex
+        ? 'accent'
+        : 'heavy';
 
   return (
     /*
@@ -449,25 +487,131 @@ export function Headline({
         alignItems: FLEX_ALIGN[align],
       }}
     >
-      {lines.map((line, index) => (
-        <div
-          key={index}
-          style={{
-            fontFamily: theme.headingFont.family,
-            fontSize: size,
-            fontWeight: heaviestWeight(theme.headingFont),
-            lineHeight: metrics.headline.lineHeight,
-            letterSpacing: size * -0.01,
-            textTransform: 'uppercase',
-            color: index === accentIndex ? ground.accentText : ground.text,
-            ...(wrap
-              ? { maxWidth: availableWidth, textAlign: TEXT_ALIGN[align] }
-              : { whiteSpace: 'nowrap' as const }),
-          }}
-        >
-          {index === lastIndex && trailingPeriod ? `${line}.` : line}
-        </div>
-      ))}
+      {lines.map((line, index) => {
+        const mark = emphasisFor(index);
+        return (
+          <div
+            key={index}
+            style={{
+              fontFamily: theme.headingFont.family,
+              fontSize: size,
+              /*
+               * A `plain` line is set at the family's lightest available weight
+               * rather than merely one step down, because the contrast is the
+               * point: the references pair a genuinely light line against a
+               * genuinely heavy one. `lightestWeight` falls back to the only
+               * weight a single-weight face has (Archivo Black, Anton), where
+               * the distinction simply does not render — correct, since those
+               * faces have no light cut to set it in.
+               */
+              fontWeight:
+                mark === 'plain'
+                  ? lightestWeight(theme.headingFont)
+                  : heaviestWeight(theme.headingFont),
+              lineHeight: metrics.headline.lineHeight,
+              letterSpacing: size * -0.01,
+              ...(textCase === 'upper' ? { textTransform: 'uppercase' as const } : {}),
+              color: mark === 'accent' ? ground.accentText : ground.text,
+              ...(wrap
+                ? { maxWidth: availableWidth, textAlign: TEXT_ALIGN[align] }
+                : { whiteSpace: 'nowrap' as const }),
+            }}
+          >
+            {index === lastIndex && trailingPeriod ? `${line}.` : line}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 3b. CTA button
+// ---------------------------------------------------------------------------
+
+export interface CtaButtonProps extends SlotBase {
+  label: string;
+  shape: LayoutCtaShape;
+  /** Column the button must fit inside. */
+  availableWidth: number;
+}
+
+/**
+ * A filled button carrying one imperative.
+ *
+ * Distinct from `ContactBar`, which is a full-bleed strip of phone number and
+ * website. This is the mark a banner is built around: type on the left, a cut-out
+ * figure on the right, and a coloured pill saying what to do next.
+ *
+ * **Painted in the brand accent, not the reference's colour.** The three
+ * references this was built from carry a red, a blue and an orange button, and
+ * all three become the client's own accent — the same rule that turns a
+ * template's orange footer into `accent` and lets one spec serve every tenant.
+ *
+ * Hugs its label rather than filling the column (`alignSelf` on the cross axis),
+ * because a button stretched to the width of its cell stops reading as a button.
+ */
+export function CtaButton({
+  metrics,
+  theme,
+  ground,
+  align = 'start',
+  label,
+  shape,
+  availableWidth,
+}: CtaButtonProps) {
+  const text = label.toUpperCase();
+
+  /*
+   * Set down when the label is long or the column narrow, exactly as the contact
+   * bar's cells are. Both edges are `nowrap` — a wrapped CTA is two half
+   * sentences in a coloured box — so shrinking the type is the only way the
+   * button can respond to a column it does not fit.
+   */
+  const room = Math.max(1, availableWidth - metrics.cta.paddingX * 2);
+  const natural = metrics.cta.label;
+  const size = Math.min(
+    natural,
+    Math.max(natural * 0.62, room / Math.max(1, text.length * AVERAGE_CAP_ADVANCE)),
+  );
+
+  const height = Math.max(metrics.cta.height * (size / natural), metrics.cta.height * 0.7);
+
+  const radius =
+    shape === 'pill' ? height / 2 : shape === 'rounded' ? metrics.cta.radius : 0;
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        alignSelf: FLEX_ALIGN[align],
+        minHeight: height,
+        paddingLeft: metrics.cta.paddingX,
+        paddingRight: metrics.cta.paddingX,
+        borderRadius: radius,
+        backgroundColor: ground.accentFill,
+        /*
+         * Resolved against the fill the button actually paints, not against the
+         * ground it sits on.
+         *
+         * `ground.accentFill` is the brand accent on a normal surface and the
+         * *contrasting* colour on an accent-filled row — see `groundForFill`,
+         * where accent-on-accent is deliberately collapsed. Measuring the label
+         * against whichever of the two it turned out to be is what keeps the
+         * button readable in both cases; `theme.onAccent` would be right only in
+         * the first.
+         */
+        color: bestTextOn(ground.accentFill),
+        fontFamily: theme.bodyFont.family,
+        fontSize: size,
+        fontWeight: heaviestWeight(theme.bodyFont),
+        letterSpacing: size * 0.08,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {text}
     </div>
   );
 }

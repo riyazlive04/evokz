@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "name": "Banner, photo over a coloured band",
+  "aspect": 1,
+  "ground": "light",
+  "ctaShape": "rounded",
+  "headlineEmphasis": ["accent", "accent", "heavy"],
+  "headlineCase": "upper",
+  "rows": [
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "center",
+          "padded": false,
+          "photoKind": "scene",
+          "slots": [
+            "photo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "dark",
+      "cells": [
+        {
+          "weight": 60,
+          "fill": "dark",
+          "align": "start",
+          "padded": true,
+          "photoKind": "scene",
+          "slots": [
+            "headline"
+          ]
+        },
+        {
+          "weight": 40,
+          "fill": "dark",
+          "align": "center",
+          "padded": true,
+          "photoKind": "scene",
+          "slots": [
+            "cta"
+          ]
+        }
+      ]
+    }
+  ]
+}

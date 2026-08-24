@@ -43,9 +43,9 @@ import { z } from 'zod';
  * What a cell can contain.
  *
  * Deliberately the slot skeleton of docs/creative-style-spec.md §2 and nothing
- * else. A spec chooses *where* the eight slots go and, through `featureCount`
- * and `featureStyle`, how densely one of them is drawn; it can neither invent a
- * ninth slot nor restyle one, which is what keeps every poster in a campaign
+ * else. A spec chooses *where* the slots go and, through `featureCount`,
+ * `featureStyle` and `ctaShape`, how one of them is drawn; it can neither invent
+ * a new slot nor restyle one, which is what keeps every poster in a campaign
  * recognisably the same system however many templates a vertical accumulates.
  *
  * A cell holding a photo *and* text is the one layering the model allows: the
@@ -56,6 +56,13 @@ import { z } from 'zod';
  * template with a deliberately empty column — the wide left gutter that a lot of
  * editorial layouts use — can say so, rather than the extractor being forced to
  * put something there.
+ *
+ * `cta` is the second, and it is a different mark from `contact` rather than a
+ * variation on it. A contact bar is a full-bleed strip carrying a phone number
+ * and a website; a CTA is a filled button with one imperative inside it. Whole
+ * families of reference poster — web banners especially — are built around the
+ * button and carry no contact bar at all, and describing one as the other put a
+ * phone number where the reference had "Start investing now".
  */
 export const LAYOUT_SLOTS = [
   'logo',
@@ -64,6 +71,7 @@ export const LAYOUT_SLOTS = [
   'accentRule',
   'body',
   'features',
+  'cta',
   'photo',
   'contact',
   'spacer',
@@ -122,6 +130,59 @@ export type LayoutAlign = (typeof LAYOUT_ALIGNS)[number];
 
 export const layoutAlignSchema = z.enum(LAYOUT_ALIGNS);
 
+/**
+ * What a photograph in a cell actually is.
+ *
+ * `scene` is a photographic region — a room, a landscape, people at a table —
+ * that fills its cell edge to edge. Everything before this field was one.
+ *
+ * `subject` is a person or object with the background removed, standing on the
+ * cell's own fill. It is the shape a great many banner references use: flat
+ * ground, type on the left, a cut-out figure on the right. Rendering one as a
+ * `scene` brings the diffusion model's own invented backdrop onto a poster whose
+ * whole design is a flat colour, which reads as a photograph pasted over the
+ * artwork rather than as the reference it came from.
+ *
+ * On the cell rather than the spec because a template may legitimately hold one
+ * of each — a scene band above, a cut-out figure beside the headline.
+ */
+export const LAYOUT_PHOTO_KINDS = ['scene', 'subject'] as const;
+
+export type LayoutPhotoKind = (typeof LAYOUT_PHOTO_KINDS)[number];
+
+export const layoutPhotoKindSchema = z.enum(LAYOUT_PHOTO_KINDS);
+
+/**
+ * The button's silhouette. Purely presentational, and the only thing about a CTA
+ * a spec is allowed to carry — its colour comes from the client's accent and its
+ * words from the day's copy, exactly like every other slot.
+ */
+export const LAYOUT_CTA_SHAPES = ['pill', 'rounded', 'square'] as const;
+
+export type LayoutCtaShape = (typeof LAYOUT_CTA_SHAPES)[number];
+
+export const layoutCtaShapeSchema = z.enum(LAYOUT_CTA_SHAPES);
+
+/**
+ * How one headline line is set against its siblings.
+ *
+ * A structural property of the template, not of the day's words: references
+ * routinely set one line of a three-line headline heavier or in the brand
+ * colour, and reproducing that is most of what makes a generated headline look
+ * like the reference's headline.
+ *
+ * **Per line, deliberately, and never per word.** A reference emphasising a
+ * single word inside a line ("making you RICH") cannot be honoured, because the
+ * template's words are discarded and replaced by the copy stage — a per-word
+ * emphasis map would have nothing to attach to on the generated poster. The line
+ * is the finest unit that survives word replacement.
+ */
+export const LAYOUT_EMPHASES = ['plain', 'heavy', 'accent'] as const;
+
+export type LayoutEmphasis = (typeof LAYOUT_EMPHASES)[number];
+
+export const layoutEmphasisSchema = z.enum(LAYOUT_EMPHASES);
+
 // ---------------------------------------------------------------------------
 // Shape
 // ---------------------------------------------------------------------------
@@ -142,6 +203,16 @@ export const layoutCellSchema = z.object({
    * edge — so normalisation forces it on for any cell with a text slot in it.
    */
   padded: z.boolean(),
+  /**
+   * What a `photo` slot in this cell is. Ignored when the cell holds no photo,
+   * exactly as `heightFraction` is ignored unless a row is `fixed` — Structured
+   * Outputs permit no optional properties, so a field that only applies
+   * sometimes is a field that is always present and sometimes unread.
+   *
+   * Defaults to `scene`, which is what every spec stored before this field
+   * existed meant and the only behaviour the renderer had.
+   */
+  photoKind: layoutPhotoKindSchema.default('scene'),
   /** Stacked top to bottom, in this order. */
   slots: z.array(layoutSlotSchema),
 });
@@ -171,6 +242,22 @@ export const posterLayoutSpecSchema = z.object({
   version: z.literal(1),
   /** Operator-facing, shown in the console next to the template it came from. */
   name: z.string().min(1).max(80),
+  /**
+   * The reference template's own width ÷ height, and therefore the shape of
+   * every poster drawn from it.
+   *
+   * **Measured from the uploaded file, never read off the image by the vision
+   * model.** The extractor is asked about geometry it has to judge; an aspect
+   * ratio is a property of the bytes, and `prepareTemplateImage` already knows
+   * it exactly. Asking a model to estimate a number we hold is how a square
+   * reference becomes "about 1.1:1".
+   *
+   * **Zero means unknown**, and unknown falls back to the client's output preset
+   * — which is what every spec stored before this field existed carries, and why
+   * adding this changes nothing for a template until it is re-read. See
+   * `resolvePosterCanvas` in src/lib/poster/canvas.ts for what honours it.
+   */
+  aspect: z.number().min(0).finite().default(0),
   /** The canvas behind every `inherit` row. */
   ground: z.enum(['light', 'dark']),
   /**
@@ -198,6 +285,34 @@ export const posterLayoutSpecSchema = z.object({
    * one fails validation and takes the whole day's copy with it.
    */
   featureStyle: z.enum(['labelAndBody', 'labelOnly']).default('labelAndBody'),
+  /**
+   * The CTA button's silhouette.
+   *
+   * On the spec rather than the cell for the same reason as `featureCount`:
+   * `validateLayoutSpec` caps a spec at one `cta`, so there is nowhere else it
+   * could apply.
+   */
+  ctaShape: layoutCtaShapeSchema.default('pill'),
+  /**
+   * How each headline line is set, indexed by line.
+   *
+   * **Empty is not "all plain" — it is "not measured", and it falls the renderer
+   * back to `PosterCopy.accentLineIndex`.** That distinction is what lets every
+   * spec stored before this field existed keep drawing the headline it always
+   * drew. A newly extracted spec carries a real pattern and overrides it.
+   *
+   * May be shorter or longer than the day's headline: the copy stage writes 2-4
+   * lines and knows nothing about which template the day landed in. The renderer
+   * indexes into it and treats a missing entry as `plain`.
+   */
+  headlineEmphasis: z.array(layoutEmphasisSchema).max(4).default([]),
+  /**
+   * Whether the template sets its headline in capitals.
+   *
+   * Defaults to `upper`, which is what the renderer hardcoded before this field
+   * and therefore what every stored spec means.
+   */
+  headlineCase: z.enum(['upper', 'sentence']).default('upper'),
   rows: z.array(layoutRowSchema).min(1),
 });
 
@@ -215,6 +330,7 @@ const TEXT_SLOTS: ReadonlySet<LayoutSlot> = new Set<LayoutSlot>([
   'accentRule',
   'body',
   'features',
+  'cta',
   'contact',
 ]);
 
@@ -282,7 +398,7 @@ export function validateLayoutSpec(spec: PosterLayoutSpec): LayoutSpecProblem[] 
     });
   }
 
-  for (const slot of ['contact', 'logo', 'body', 'features'] as const) {
+  for (const slot of ['contact', 'logo', 'body', 'features', 'cta'] as const) {
     const seen = counts.get(slot) ?? 0;
     if (seen > 1) {
       problems.push({
@@ -504,6 +620,8 @@ export interface LayoutCopyShape {
   hasEyebrow: boolean;
   hasBody: boolean;
   hasFeatures: boolean;
+  /** Whether a CTA button will be drawn, and so whether its label is seen. */
+  hasCta: boolean;
   /** How many feature items the template has room for. */
   featureCount: number;
   /** False when the cards are label-only, so bodies are written but never drawn. */
@@ -530,6 +648,7 @@ export function describeCopyShape(spec: PosterLayoutSpec): LayoutCopyShape {
     hasEyebrow: slots.has('eyebrow'),
     hasBody: slots.has('body'),
     hasFeatures: slots.has('features'),
+    hasCta: slots.has('cta'),
     featureCount: spec.featureCount,
     featureBodies: spec.featureStyle === 'labelAndBody',
     headlineWidthShare,

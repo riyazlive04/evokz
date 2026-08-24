@@ -42,6 +42,7 @@ export const POSTER_SCHEMA = {
     },
     callLabel: { type: 'string' },
     websiteLabel: { type: 'string' },
+    ctaLabel: { type: 'string' },
     headlinePeriod: { type: 'boolean' },
   },
   required: [
@@ -52,6 +53,7 @@ export const POSTER_SCHEMA = {
     'features',
     'callLabel',
     'websiteLabel',
+    'ctaLabel',
     'headlinePeriod',
   ],
   additionalProperties: false,
@@ -69,6 +71,7 @@ export const POSTER_COPY_RULES = `### poster rules
 - body: 12-30 words, sentence case, one or two short clauses. It sets to 3-5 narrow lines.
 - features: 3 items (4 only when they are genuinely parallel). Each has an icon chosen from the fixed list below, a label of 1-3 words as a noun phrase, and a body of one short sentence under 90 characters. Labels must be grammatically parallel to each other.
 - callLabel / websiteLabel: short all-caps imperatives for the contact bar, e.g. "CALL US TODAY", "VISIT OUR WEBSITE", "TALK TO OUR TEAM".
+- ctaLabel: the words inside the poster's button. Two to four words, an instruction rather than a description: "BOOK A SITE VISIT", "GET YOUR FREE QUOTE", "START INVESTING NOW". At most 24 characters — it is set inside a button, not across a bar. Make it follow from the day's subject, so a campaign's ask varies across the month instead of repeating one line for a year.
 - headlinePeriod: true to end the final headline line with a full stop. A deliberate stylistic tic — use it on roughly a third of the days.
 - Available icon names (use these exact strings): ${POSTER_ICONS.join(', ')}.
 

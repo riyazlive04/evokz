@@ -2,6 +2,7 @@ import { UsageKeySource, UsageProvider } from '@prisma/client';
 
 import { prisma } from '@/lib/prisma';
 import {
+  priceCutouts,
   priceImages,
   priceMessages,
   priceOpenAiCall,
@@ -27,6 +28,12 @@ export type UsageOperation =
   | 'calendar'
   | 'brand-tokenizer'
   | 'image'
+  // Background removal on a rendered frame, for a layout cell that wants a
+  // cut-out subject rather than a photographic region. Distinct from `image`
+  // because it is priced an order of magnitude lower and because a client
+  // accruing these is one whose vertical uses cut-out templates — which is worth
+  // being able to see in the ledger without inferring it from the volume.
+  | 'image-cutout'
   // Single-day poster-copy repair. Separate from `calendar` so the ledger shows
   // backfill spend distinctly — a client accruing these is one whose batch seeding
   // is returning unusable poster blocks, which is a prompt problem worth seeing.
@@ -121,6 +128,35 @@ export async function recordImageUsage(
     // never added up — see `toAttributedTotals` in cost-report — but recording it
     // keeps the ledger a faithful statement of what the render was worth.
     costUsdMicros: priceImages(count),
+    keySource,
+  });
+}
+
+/**
+ * One background-removal call against a frame fal has already rendered.
+ *
+ * A separate recorder rather than a flag on `recordImageUsage`, because the two
+ * differ in both of the things that matter downstream: the operation string the
+ * cost report groups on, and the rate. Segmentation is roughly a tenth the price
+ * of diffusion, so folding it into `image` would report every cut-out poster as
+ * costing twice what it does — on the same ledger the monthly budget alerts read.
+ *
+ * Still `imageCount`, and deliberately: the column counts billable fal units, and
+ * a cut-out is one. What separates it from a render is `operation` and the money.
+ */
+export async function recordCutoutUsage(
+  endpoint: string,
+  context: UsageContext,
+  keySource: UsageKeySource,
+  count = 1,
+): Promise<void> {
+  await record({
+    provider: UsageProvider.FAL,
+    operation: 'image-cutout',
+    context,
+    model: endpoint,
+    imageCount: count,
+    costUsdMicros: priceCutouts(count),
     keySource,
   });
 }

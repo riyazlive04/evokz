@@ -4,6 +4,7 @@ import {
   AccentRule,
   BodyCopy,
   ContactBar,
+  CtaButton,
   Eyebrow,
   FeatureList,
   FeatureStrip,
@@ -18,6 +19,7 @@ import type {
   LayoutAlign,
   LayoutCell,
   LayoutFill,
+  LayoutPhotoKind,
   LayoutRow,
   LayoutSlot,
   PosterLayoutSpec,
@@ -303,8 +305,20 @@ function Cell({
    * which is why it is pulled out of the slot list rather than rendered in it.
    * Everything else in the cell draws normally on top.
    */
+  /*
+   * A cut-out subject is never an overlay, whatever else shares its cell.
+   *
+   * An overlay darkens a photographic region so copy can be read on top of it.
+   * A `subject` photo has no region to darken — it is a figure on transparent
+   * ground — so the treatment would wash the cell's own fill and leave the
+   * person floating in a grey box. Copy sharing a cell with a subject stacks
+   * above it instead, which is what a banner with a headline over a cut-out
+   * figure actually looks like.
+   */
   const isOverlay =
-    cell.slots.includes('photo') && cell.slots.some((slot) => !SELF_BLEEDING.has(slot));
+    cell.photoKind === 'scene' &&
+    cell.slots.includes('photo') &&
+    cell.slots.some((slot) => !SELF_BLEEDING.has(slot));
   const drawnSlots = isOverlay ? cell.slots.filter((slot) => slot !== 'photo') : cell.slots;
 
   const bleeds = drawnSlots.every((slot) => SELF_BLEEDING.has(slot));
@@ -355,6 +369,7 @@ function Cell({
           align={cell.align}
           width={contentWidth}
           effectiveFill={effectiveFill}
+          photoKind={cell.photoKind}
           photoIndexAt={photoIndexAt}
         />
       </div>
@@ -495,6 +510,7 @@ function Slot({
   align,
   width,
   effectiveFill,
+  photoKind,
   photoIndexAt,
 }: {
   slot: LayoutSlot;
@@ -503,6 +519,7 @@ function Slot({
   align: LayoutAlign;
   width: number;
   effectiveFill: LayoutFill;
+  photoKind: LayoutPhotoKind;
   photoIndexAt: () => number;
 }) {
   const { spec, copy, theme, identity, metrics, photos, logoDimensions, logoInkLuminance } =
@@ -550,7 +567,22 @@ function Slot({
           align={copyAlign}
           lines={copy.headlineLines}
           accentLineIndex={copy.accentLineIndex}
+          emphasis={spec.headlineEmphasis}
+          textCase={spec.headlineCase}
           trailingPeriod={copy.headlinePeriod}
+          availableWidth={width}
+        />
+      );
+
+    case 'cta':
+      return (
+        <CtaButton
+          metrics={metrics}
+          theme={theme}
+          ground={ground}
+          align={copyAlign}
+          label={copy.ctaLabel}
+          shape={spec.ctaShape}
           availableWidth={width}
         />
       );
@@ -644,6 +676,34 @@ function Slot({
       const photo = photos[index] ?? photos[photos.length - 1];
       if (!photo) return null;
 
+      /*
+       * Two ways a photograph occupies a cell, and they are not variations on
+       * each other.
+       *
+       * `scene` covers: the frame is a photographic region and any part of it
+       * that does not fit the cell is cropped away. Centre-cropping a landscape
+       * is how that composition gives.
+       *
+       * `subject` contains: the frame is a figure on transparent ground standing
+       * on the cell's own fill, and cropping it would cut the person's head off
+       * to fill a box that was never meant to be filled.
+       *
+       * **A contained frame is centred, and cannot be moved.** satori 0.10.14
+       * ignores `object-position` outright, and its `background-size: contain`
+       * does not contain — both were measured rather than assumed. Anchoring a
+       * figure to the bottom edge therefore needs the image given explicit pixel
+       * dimensions, which needs the cell's height, which is settled by flex
+       * layout after this function has returned.
+       *
+       * So the slack is removed rather than pushed downward:
+       * `resolveSpecPhotoRequests` estimates a subject cell's own proportions and
+       * asks fal for a frame that shape, which leaves a contained fit with almost
+       * nothing to centre. Trying instead to crop the difference away would put
+       * the head outside the poster, which is the one failure worse than a figure
+       * sitting a few pixels high.
+       */
+      const isSubject = photoKind === 'subject';
+
       return (
         <div
           style={{
@@ -659,7 +719,7 @@ function Slot({
             alt=""
             width="100%"
             height="100%"
-            style={{ objectFit: 'cover' }}
+            style={{ objectFit: isSubject ? 'contain' : 'cover' }}
           />
         </div>
       );

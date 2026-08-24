@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "name": "Banner, cut-out subject and button",
+  "aspect": 1,
+  "ground": "light",
+  "ctaShape": "pill",
+  "headlineEmphasis": ["plain", "heavy", "plain"],
+  "headlineCase": "upper",
+  "rows": [
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 55,
+          "fill": "inherit",
+          "align": "start",
+          "padded": true,
+          "photoKind": "scene",
+          "slots": [
+            "headline",
+            "cta"
+          ]
+        },
+        {
+          "weight": 45,
+          "fill": "inherit",
+          "align": "center",
+          "padded": false,
+          "photoKind": "subject",
+          "slots": [
+            "photo"
+          ]
+        }
+      ]
+    }
+  ]
+}
