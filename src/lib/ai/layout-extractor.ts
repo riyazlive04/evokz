@@ -78,6 +78,9 @@ const LAYOUT_SCHEMA = {
         'horizontal bands from top to bottom, one short line each, saying what is in ' +
         'the band and — only where content truly sits side by side — how it splits. ' +
         'Say "plain ground" for an empty side. Most posters have three to six bands. ' +
+        'For each band that splits, say where the vertical boundary falls as a ' +
+        'percentage of the width from the left edge, and say whether the type in ' +
+        'that band is left-aligned, centred or right-aligned. ' +
         'Finally, if there is a row or column of small icon-and-label items, count ' +
         'them and say whether each carries a sentence underneath or is just a label.',
     },
@@ -140,13 +143,25 @@ const LAYOUT_SCHEMA = {
                 weight: {
                   type: 'number',
                   description:
-                    'Share of the row width relative to the other cells, e.g. 40 and 60.',
+                    'Where the boundary between cells falls, as a percentage of the ' +
+                    'poster width. Look at the edge and read off the position: a divide ' +
+                    'a third of the way across is 33 and 67. Weights in a row sum to 100. ' +
+                    'Do not round to a familiar pair — report what you measure.',
                 },
                 fill: {
                   type: 'string',
                   enum: ['inherit', 'light', 'dark', 'accent'],
                 },
-                align: { type: 'string', enum: ['start', 'center', 'end'] },
+                align: {
+                  type: 'string',
+                  enum: ['start', 'center', 'end'],
+                  description:
+                    'Where the content sits inside this cell. Judge it from the left ' +
+                    'edges of the lines: ragged-right lines that all begin at the same ' +
+                    'left edge are "start"; lines centred about a common axis, with both ' +
+                    'edges ragged, are "center"; lines ending at a common right edge are ' +
+                    '"end". A full-width band of centred type is "center", not "start".',
+                },
                 padded: {
                   type: 'boolean',
                   description:
@@ -198,7 +213,7 @@ Read the poster as horizontal bands stacked top to bottom. Split a band into cel
 Rules that matter more than fidelity to the reference:
 
 1. Exactly one headline slot, on the whole poster. Posters routinely set a second block of large type further down — an offer, a price, a date, often in a different face — and it is NOT a second headline. Compare every large block against the largest: only the winner is the headline, and a runner-up belongs to "features" or "body" however big it looks on its own. Two headline slots makes the whole layout unusable.
-2. Where the reference sets copy directly on top of a photograph, put the photo and the copy in the SAME cell — the photo becomes that cell's background and the copy is drawn over it under a darkening wash. That is an overlay, and it is how a full-bleed hero with the headline on it is described. Only split them into separate cells when the photo and the copy genuinely sit side by side with a visible edge between them. One photo per overlay cell; a second would be hidden behind the first.
+2. Where the reference sets copy directly on top of a photograph, put the photo and the copy in the SAME cell — the photo becomes that cell's background and the copy is drawn over it under a darkening wash. That is an overlay, and it is how a full-bleed hero with the headline on it is described. Only split them into separate cells when the photo and the copy genuinely sit side by side with a visible edge between them. One photo per overlay cell; a second would be hidden behind the first. A photograph that continues behind more than one band is still ONE photograph, and it is an overlay, not a column: put it in the band it mostly covers, together with that band's copy, and do not emit it again for the other bands it passes through. The test for a column is a visible edge where the photograph stops. A photograph that fades out, is cut out around a person, or simply runs on under the type has no such edge — that is an overlay.
 3. Mark the largest photo row "flex". Text cannot reflow to fit a canvas, so one row must be able to give up space when the copy runs long. If there is no photo, mark the tallest row.
 4. Copy rows are "hug". A bar whose proportion is the point of it — a slim footer, a full-bleed contact strip — is "fixed" with its heightFraction.
 5. padded is true everywhere except a photo that bleeds to the poster edge.
@@ -213,6 +228,10 @@ Emit one row for EVERY band, top edge to bottom edge, leaving no vertical gap be
 EMPTY SPACE IS NOT A PHOTO. This is the mistake to guard against hardest. Where a band has copy on one side and plain background on the other, the empty side is a "spacer" cell — plain, unphotographed ground is the most common thing on the right of a headline. Only call a region "photo" if you can actually see a photograph in it: people, food, a room, a landscape. Count the photographs on the poster before you begin, and emit exactly that many photo slots. Many posters have one. Some have none.
 
 Do not assume a poster is split into columns at all. Full-width stacked bands are just as common as side-by-side ones, and a band with a single cell is a perfectly good answer.
+
+When a band IS split, measure the boundary rather than reaching for a familiar pair. Find the vertical edge where one side stops and the other begins, and report its position as a percentage of the poster width — 33 and 67, 44 and 56, 28 and 72. Judging every split as half-and-half or 40-60 is the single most common way a described layout stops matching the poster it was read from, and a boundary you have actually looked at is almost never either of those.
+
+Read alignment the same way, per cell. Type that starts at a common left edge is "start"; type centred about an axis with both edges ragged is "center". A centred headline reported as "start" moves the whole block to one side of the poster.
 
 Two worked examples, to show the range — do not carry their proportions or their names over to the poster you are given, which is neither of them:
 

@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "name": "Overlay hero on light",
+  "ground": "light",
+  "featureCount": 4,
+  "featureStyle": "labelOnly",
+  "rows": [
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "center",
+          "padded": true,
+          "slots": ["logo"]
+        }
+      ]
+    },
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "start",
+          "padded": true,
+          "slots": ["headline", "accentRule", "features", "photo"]
+        }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.12,
+      "fill": "accent",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "accent",
+          "align": "center",
+          "padded": true,
+          "slots": ["contact"]
+        }
+      ]
+    }
+  ]
+}

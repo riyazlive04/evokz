@@ -198,41 +198,71 @@ export function headlineSize(metrics: PosterMetrics, lineCount: number): number 
   return metrics.s(referenceSize);
 }
 
+export interface HeadlineFit {
+  size: number;
+  /** True when `nowrap` had to be given up for the lines to fit. */
+  wrap: boolean;
+}
+
+/** Satori does the real shaping, so a 4% margin is kept on top of the estimate. */
+const SAFETY = 0.96;
+
 /**
- * Shrinks the headline further when a line is long enough to overflow the copy
- * column.
+ * Sizes the headline so it cannot be cut off, and says whether it had to wrap.
  *
- * Satori will not auto-fit text: an over-wide line wraps, and a headline whose
- * hand-authored line breaks are re-wrapped by the renderer stops looking
- * designed. The copy stage caps line length at 24 characters, but a 24-character
- * line in a condensed face at 96 px still exceeds a narrow column, so the size is
- * reduced until the longest line is predicted to fit.
+ * Satori will not auto-fit text, and `Headline` sets every line `nowrap` so the
+ * copy stage's hand-authored breaks survive. That pair is only safe while the
+ * type is small enough to fit: a `nowrap` line inside `Row`'s `overflow: hidden`
+ * is sliced mid-glyph, silently, and the poster still looks deliberate. Shipped
+ * that way — a 16-character headline in a 40% column lost 56% of itself.
+ *
+ * So there are two levers, used in order. Shrink first, because re-wrapping a
+ * headline someone wrote as three lines stops it looking designed. Wrap only
+ * when shrinking alone would take the type below the point where it still reads
+ * as a headline.
+ *
+ * When it does wrap, the fit is computed against the longest **word**, not the
+ * longest line. Wrapping cannot save a single word wider than its column, so a
+ * word is the real constraint once line breaks stop being fixed — and no floor
+ * applies there, because small type is always better than a cut word.
  *
  * `AVERAGE_CAP_ADVANCE` is the mean advance width of a heavy-grotesque capital
  * relative to its point size. It is measured from real output rather than assumed:
  * "COMMERCIAL" set at 98.8 px in Archivo Black rasterises to ~740 px, giving
  * 740 / (10 × 98.8) ≈ 0.75. An earlier 0.58 — a mixed-case figure — let headlines
  * run right up to the margin, and clipped them outright wherever the container had
- * `overflow: hidden`. Satori does the real shaping, so a 4% safety margin is kept
- * on top.
+ * `overflow: hidden`.
  */
-export function fittedHeadlineSize(
+export function fitHeadline(
   metrics: PosterMetrics,
   lines: string[],
   availableWidth: number,
-): number {
+): HeadlineFit {
   const base = headlineSize(metrics, lines.length);
-  const longest = lines.reduce((max, line) => Math.max(max, line.length), 0);
-  if (longest === 0) return base;
+  const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
+  if (longestLine === 0) return { size: base, wrap: false };
 
-  const SAFETY = 0.96;
-  const predicted = longest * base * AVERAGE_CAP_ADVANCE;
-  if (predicted <= availableWidth * SAFETY) return base;
+  const room = availableWidth * SAFETY;
+  const widthAt = (size: number, chars: number) => chars * size * AVERAGE_CAP_ADVANCE;
 
-  const fitted = (availableWidth * SAFETY) / (longest * AVERAGE_CAP_ADVANCE);
-  // Never below 55% of the intended size — past that the headline stops
-  // dominating and the composition reads as a body-copy block.
-  return Math.max(fitted, base * 0.55);
+  if (widthAt(base, longestLine) <= room) return { size: base, wrap: false };
+
+  // Below 55% the headline stops dominating and the composition reads as a
+  // body-copy block, so that is where shrinking stops and wrapping takes over.
+  const fitted = room / (longestLine * AVERAGE_CAP_ADVANCE);
+  if (fitted >= base * 0.55) return { size: fitted, wrap: false };
+
+  const longestWord = lines.reduce(
+    (max, line) =>
+      line.split(/\s+/).reduce((lineMax, word) => Math.max(lineMax, word.length), max),
+    0,
+  );
+  // `longestWord` is at most `longestLine`, so this is never smaller than the
+  // size rejected above — wrapping buys back the room that shrinking could not.
+  return {
+    size: Math.min(base, room / (Math.max(longestWord, 1) * AVERAGE_CAP_ADVANCE)),
+    wrap: true,
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -25,7 +25,9 @@ import type { PosterCopy } from '@/lib/types/poster';
 
 /** Realistic length, not lorem: a short headline hides every fitting fault. */
 const COPY: PosterCopy = {
-  headlineLines: ['GRAND', 'OPENING', 'PROMO'],
+  // Long enough to overflow a narrow column, so the fitter's shrink and wrap
+  // paths are exercised by the render suite and not only by arithmetic.
+  headlineLines: ['THE GRAND', 'OPENING CELEBRATION'],
   accentLineIndex: 1,
   eyebrow: 'NOW OPEN',
   body: "Celebrate our new journey at our restaurant's grand opening with special prices on all of our menu.",

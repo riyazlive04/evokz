@@ -401,10 +401,14 @@ export function normalizeLayoutSpec(spec: PosterLayoutSpec): PosterLayoutSpec {
  * Parses a stored `CategoryTemplate.layoutSpec`, or null if it is absent or no
  * longer readable.
  *
- * Null rather than throwing, matching `loadCategoryArchetypes`: the column is
- * free-form JSON, and a spec written by a build whose shape has since moved on
- * must degrade to the archetype path for that one template rather than fail
- * every render for the whole vertical.
+ * Null rather than throwing: the column is free-form JSON, and a spec written by
+ * a build whose shape has since moved on must take that one template out of its
+ * vertical's rotation rather than fail every render for the vertical.
+ *
+ * There is nothing behind it. The archetypes this once degraded to are gone —
+ * `resolveDayLayout` reports `pinned-unreadable` or `no-approved-templates` and
+ * the day fails with a message naming the fix, which is the honest outcome when
+ * the only description of the poster cannot be read.
  */
 export function parseLayoutSpec(value: unknown): PosterLayoutSpec | null {
   if (value === null || value === undefined) return null;
@@ -415,7 +419,7 @@ export function parseLayoutSpec(value: unknown): PosterLayoutSpec | null {
       `[ace:layout] stored spec is not readable by this build (${parsed.error.issues
         .slice(0, 3)
         .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
-        .join('; ')}) — falling back to the archetype.`,
+        .join('; ')}) — this template is out of rotation until it is re-read.`,
     );
     return null;
   }
@@ -426,7 +430,7 @@ export function parseLayoutSpec(value: unknown): PosterLayoutSpec | null {
     console.warn(
       `[ace:layout] stored spec "${normalized.name}" is structurally invalid ` +
         `(${problems.map((p) => `${p.path} ${p.message}`).join('; ')}) — ` +
-        'falling back to the archetype.',
+        'this template is out of rotation until it is re-read.',
     );
     return null;
   }

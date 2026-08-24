@@ -4,7 +4,7 @@ import { PosterIconGlyph } from '@/lib/poster/icons';
 import { containFit, type ImageDimensions } from '@/lib/poster/image-info';
 import {
   AVERAGE_CAP_ADVANCE,
-  fittedHeadlineSize,
+  fitHeadline,
   type PosterMetrics,
 } from '@/lib/poster/metrics';
 import type {
@@ -426,16 +426,22 @@ export function Headline({
   trailingPeriod,
   availableWidth,
 }: HeadlineProps) {
-  const size = fittedHeadlineSize(metrics, lines, availableWidth);
+  const { size, wrap } = fitHeadline(metrics, lines, availableWidth);
   // Clamped rather than trusted: `accentLineIndex` comes from a Json column, and
   // an out-of-range value would leave the poster with no accent at all.
   const accentIndex = Math.min(Math.max(accentLineIndex, 0), lines.length - 1);
   const lastIndex = lines.length - 1;
 
   return (
-    // Aligned on the container rather than with `textAlign`: every line is
-    // `nowrap`, so each shrinks to its own content and the flex alignment is what
-    // decides which edge the ragged side falls on.
+    /*
+     * Aligned on the container rather than with `textAlign`: while every line is
+     * `nowrap` each shrinks to its own content, and the flex alignment is what
+     * decides which edge the ragged side falls on.
+     *
+     * Wrapping breaks that. A wrapped line is as wide as the room it was given,
+     * not as wide as its glyphs, so the container has nothing left to align and
+     * `textAlign` has to place the ragged edge instead.
+     */
     <div
       style={{
         display: 'flex',
@@ -454,7 +460,9 @@ export function Headline({
             letterSpacing: size * -0.01,
             textTransform: 'uppercase',
             color: index === accentIndex ? ground.accentText : ground.text,
-            whiteSpace: 'nowrap',
+            ...(wrap
+              ? { maxWidth: availableWidth, textAlign: TEXT_ALIGN[align] }
+              : { whiteSpace: 'nowrap' as const }),
           }}
         >
           {index === lastIndex && trailingPeriod ? `${line}.` : line}

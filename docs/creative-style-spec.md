@@ -54,6 +54,15 @@ Sits directly under the logo lock. Present in 4/12.
   neutral. Never two accent lines, never a whole accent headline.
 - Size 76–96 px at reference scale; scales *down* as line count rises so total
   headline block height stays ~300–380 px.
+- **It also scales down to fit its column, and wraps rather than be cut.** The
+  hand-authored line breaks are kept while the type can shrink to hold them —
+  down to 55% of the intended size, past which the headline stops dominating and
+  the composition reads as a body-copy block. Below that the lines are allowed to
+  wrap, and the size is then fitted to the longest *word*, because wrapping cannot
+  save a word wider than its column. This is a floor on ugliness, not on
+  correctness: a headline is never clipped. A template that puts the headline in a
+  narrow column will get smaller, re-wrapped type — the fix is a shorter headline
+  from the copy stage, which `describeLayoutFit` already asks for below 45%.
 - Trailing full stop appears in 5/12 ("DOLOR SIT." / "ADIPISCING.") — a stylistic
   tic worth keeping as an option.
 
@@ -229,6 +238,14 @@ deliberate, and carries no phone number. That defect shipped in the hand-written
 A photo cell is the natural flex row: a photograph losing a slice of its frame is
 the only way a composition can give that is not a defect.
 
+The same reasoning applies horizontally, and was learned the same way. A `nowrap`
+headline inside a clipped row is sliced mid-glyph in silence: `narrow-copy-column`
+lost the "G" from "OPENING" from the day it was written, and a live template lost
+56% of its headline, both of them rendering cleanly and looking deliberate. The
+fitter now guarantees the horizontal fit the flex row guarantees vertically, and
+`check:layouts` asserts it over the whole input space rather than over the shapes
+someone thought to write a fixture for.
+
 ### Where specs come from
 
 Extracted from the uploaded image by a vision stage
@@ -239,8 +256,10 @@ render path stays a deterministic function of stored data.
 wrong the rest, and its confident mistakes are indistinguishable from its correct
 answers on the database side. `CategoryTemplate.layoutApprovedAt` is null until
 an operator has seen the spec *rendered as a poster*, and only approved specs
-enter a vertical's rotation. A template without one falls back to its mapped
-archetype, which is the behaviour that existed before specs.
+enter a vertical's rotation. A template without one is simply not chosen — there
+is nothing behind it since the archetypes were removed, so a vertical with no
+approved template fails every render with a message naming the fix rather than
+quietly drawing something nobody chose.
 
 Two failure modes are worth knowing when reading a bad draft:
 
@@ -272,8 +291,17 @@ Two failure modes are worth knowing when reading a bad draft:
   renders unchanged.
 
 Run `npm run check:layouts -- <spec.json...>` after touching this layer. It
-covers the validation rules, renders all fifteen archetypes as a regression, and
-renders any supplied specs at portrait and off-brand canvases.
+covers the validation rules, renders every fixture in `scripts/fixtures/` as a
+regression, sweeps the headline fitter over its whole input space, and renders any
+supplied specs at portrait and off-brand canvases.
+
+That proves the shapes someone thought to write down. To prove the shapes
+operators actually uploaded, run `DATABASE_URL=… npm run check:fleet` against a
+restored production dump: it renders every stored spec in every vertical at every
+preset and fails only on an **approved** template, since a draft that cannot be
+read is already out of rotation. Run it again after a round of re-extraction —
+extraction is non-deterministic, so a re-read is a change to every poster that
+template draws.
 
 ---
 

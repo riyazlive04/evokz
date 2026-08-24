@@ -1,5 +1,5 @@
 import { withAlpha } from '@/lib/poster/color';
-import { fittedHeadlineSize, type PosterMetrics } from '@/lib/poster/metrics';
+import { fitHeadline, type PosterMetrics } from '@/lib/poster/metrics';
 import {
   AccentRule,
   BodyCopy,
@@ -312,16 +312,23 @@ function Cell({
   const contentWidth = Math.max(1, width - padding * 2);
 
   /*
-   * Copy over a photograph is copy over an unknown image, so the ground is
-   * forced dark and a scrim laid under it. The archetypes solved this with
-   * three-stop gradients that kept one side of the frame clean; a spec says the
-   * same thing by splitting the row, so a flat wash is all that is needed here.
+   * Copy over a photograph is copy over an unknown image, so a scrim goes under
+   * it. The archetypes solved this with three-stop gradients that kept one side
+   * of the frame clean; a spec says the same thing by splitting the row, so a
+   * flat wash is all that is needed here.
    *
-   * 0.55 is enough for `onDark` body copy to clear 4.5:1 against a mid-tone
-   * photograph. It is a starting point measured against the placeholder, not a
-   * guarantee for every image.
+   * **Which way the wash goes follows the band, not the photograph.** Forcing
+   * every overlay dark inverted the templates this exists to reproduce: a white
+   * clinic poster with teal type came back as a dark band with white type, which
+   * is a different poster wearing the same grid. A light band gets a light wash
+   * and keeps its dark type; a dark or accent band keeps the dark treatment.
+   *
+   * 0.55 is enough for body copy to clear 4.5:1 against a mid-tone photograph in
+   * either direction. It is a starting point measured against the placeholder,
+   * not a guarantee for every image.
    */
-  const overlayGround = isOverlay ? groundFor(theme, true) : ground;
+  const overlayIsDark = effectiveFill === 'inherit' ? canvasIsDark : effectiveFill !== 'light';
+  const overlayGround = isOverlay ? groundFor(theme, overlayIsDark) : ground;
   const overlayPhoto = isOverlay ? photoIndexAt() : -1;
 
   const drawn = drawnSlots.map((slot, index) => {
@@ -381,7 +388,9 @@ function Cell({
           : {}),
       }}
     >
-      {isOverlay && <OverlayBackground props={props} photoIndex={overlayPhoto} />}
+      {isOverlay && (
+        <OverlayBackground props={props} photoIndex={overlayPhoto} dark={overlayIsDark} />
+      )}
 
       {/*
         * The padded wrapper exists only for an overlay cell, and deliberately.
@@ -427,9 +436,12 @@ function Cell({
 function OverlayBackground({
   props,
   photoIndex,
+  dark,
 }: {
   props: LayoutRenderProps;
   photoIndex: number;
+  /** Wash toward the dark neutral, rather than the light one. */
+  dark: boolean;
 }) {
   const { photos, theme } = props;
   const photo = photos[photoIndex] ?? photos[photos.length - 1];
@@ -469,7 +481,7 @@ function OverlayBackground({
           left: 0,
           width: '100%',
           height: '100%',
-          backgroundColor: withAlpha(theme.darkNeutral, 0.55),
+          backgroundColor: withAlpha(dark ? theme.darkNeutral : theme.lightNeutral, 0.55),
         }}
       />
     </div>
@@ -659,10 +671,10 @@ function Slot({
  * Longest headline line this spec can set without the type shrinking.
  *
  * Exported for the console's spec editor, which warns an operator when a
- * template's headline column is so narrow that `fittedHeadlineSize` will drive
- * the headline down to its 55% floor — a poster that renders correctly and
- * still looks wrong, which is the hardest kind of layout fault to notice in a
- * grid of thumbnails.
+ * template's headline column is so narrow that `fitHeadline` has to shrink the
+ * headline toward its 55% floor — a poster that renders correctly and still
+ * looks wrong, which is the hardest kind of layout fault to notice in a grid of
+ * thumbnails.
  */
 export function headlineColumnWidth(
   spec: PosterLayoutSpec,
@@ -679,12 +691,19 @@ export function headlineColumnWidth(
   return metrics.copyWidth;
 }
 
-/** True when the headline will be shrunk to fit this spec's column. */
+/**
+ * True when the headline will be shrunk, or wrapped, to fit this spec's column.
+ *
+ * Wrapping counts as cramped even where the resulting type is large: it means
+ * the copy stage's own line breaks were overridden, so what the operator sees is
+ * not the headline anyone wrote.
+ */
 export function headlineIsCramped(
   spec: PosterLayoutSpec,
   metrics: PosterMetrics,
   lines: string[],
 ): boolean {
   const width = headlineColumnWidth(spec, metrics);
-  return fittedHeadlineSize(metrics, lines, width) < metrics.s(86) * 0.8;
+  const fit = fitHeadline(metrics, lines, width);
+  return fit.wrap || fit.size < metrics.s(86) * 0.8;
 }

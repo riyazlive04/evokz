@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "name": "Narrow headline column",
+  "ground": "light",
+  "featureCount": 3,
+  "featureStyle": "labelAndBody",
+  "rows": [
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "center",
+          "padded": true,
+          "slots": ["logo"]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 35,
+          "fill": "inherit",
+          "align": "start",
+          "padded": true,
+          "slots": ["headline", "accentRule"]
+        },
+        {
+          "weight": 65,
+          "fill": "inherit",
+          "align": "end",
+          "padded": true,
+          "slots": ["spacer"]
+        }
+      ]
+    },
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 45,
+          "fill": "inherit",
+          "align": "start",
+          "padded": true,
+          "slots": ["features"]
+        },
+        {
+          "weight": 55,
+          "fill": "inherit",
+          "align": "end",
+          "padded": false,
+          "slots": ["photo"]
+        }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.12,
+      "fill": "accent",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "accent",
+          "align": "center",
+          "padded": true,
+          "slots": ["contact"]
+        }
+      ]
+    }
+  ]
+}

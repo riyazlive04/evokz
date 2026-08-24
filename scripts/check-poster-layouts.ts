@@ -22,6 +22,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 
 import { getImageSizePreset } from '@/lib/image-sizes';
+import { AVERAGE_CAP_ADVANCE, fitHeadline, resolveMetrics } from '@/lib/poster/metrics';
 import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
 import { resolveSpecPhotoRequests } from '@/lib/poster/photo-request';
 import { SAMPLE_LAYOUT_SPEC } from '@/lib/poster/sample-layout';
@@ -54,7 +55,9 @@ function check(name: string, condition: boolean, detail?: string): void {
 
 /** Realistic length: a short headline hides every fitting fault there is. */
 const COPY: PosterCopy = {
-  headlineLines: ['GRAND', 'OPENING', 'PROMO'],
+  // Long enough to overflow a narrow column, so the fitter's shrink and wrap
+  // paths are exercised by the render suite and not only by arithmetic.
+  headlineLines: ['THE GRAND', 'OPENING CELEBRATION'],
   accentLineIndex: 1,
   eyebrow: 'NOW OPEN',
   body: "Celebrate our new journey at our restaurant's grand opening with special prices on all of our menu.",
@@ -393,12 +396,96 @@ async function renderChecks(specs: Array<{ label: string; spec: PosterLayoutSpec
   }
 }
 
+// ---------------------------------------------------------------------------
+// Headline fitting
+// ---------------------------------------------------------------------------
+
+/**
+ * The headline must never be predicted to overflow its column.
+ *
+ * A property check rather than a fixture, because the fault this replaces was
+ * invisible to fixtures: `narrow-copy-column` had been clipping the "G" off
+ * "OPENING" since it was written, and nobody saw it in a grid of thumbnails.
+ * Fixtures only prove the shapes someone thought of. Sweeping the whole input
+ * space proves the guarantee for every spec that can ever be extracted — which
+ * is the only claim worth making about a renderer that runs unattended.
+ *
+ * Asserted against the same `AVERAGE_CAP_ADVANCE` estimate the fitter uses, so
+ * this proves internal consistency, not typographic truth. Satori does the real
+ * shaping; `SAFETY` is the margin between the two.
+ */
+function headlineFitChecks(): void {
+  console.log('\n=== headline fitting ===');
+
+  // Column shares from a full-width band down to a quarter-width one, against
+  // headlines from a single short word to a line no copy stage should emit.
+  const SHARES = [1, 0.6, 0.5, 0.45, 0.4, 0.35, 0.3, 0.25];
+  const LINE_SETS: string[][] = [
+    ['GRAND', 'OPENING', 'PROMO'],
+    ['MEDICAL SUPPLIES', 'YOU CAN TRUST'],
+    ['EXPERT CARE', 'FOR A', 'HEALTHIER YOU'],
+    ['COMPREHENSIVE', 'MULTISPECIALITY', 'CONSULTATION'],
+    // One unbreakable word longer than any column here: wrapping cannot help,
+    // so only fitting to the word itself keeps it whole.
+    ['OTORHINOLARYNGOLOGY'],
+    ['A'],
+  ];
+
+  let worst = { overflow: 0, detail: '' };
+  let wrapped = 0;
+  let total = 0;
+
+  for (const presetId of PRESETS) {
+    const preset = getImageSizePreset(presetId)!;
+    const metrics = resolveMetrics(preset.width, preset.height);
+
+    for (const share of SHARES) {
+      // What `Cell` hands the slot: the column less its padding on both sides.
+      const room = Math.max(1, preset.width * share - metrics.margin * 2);
+
+      for (const lines of LINE_SETS) {
+        total += 1;
+        const fit = fitHeadline(metrics, lines, room);
+        if (fit.wrap) wrapped += 1;
+
+        // Wrapping breaks lines at spaces, so the widest thing that must fit is
+        // the longest word; without it, the longest line.
+        const units = fit.wrap
+          ? lines.flatMap((line) => line.split(/\s+/))
+          : lines;
+        const longest = units.reduce((max, unit) => Math.max(max, unit.length), 0);
+        const predicted = longest * fit.size * AVERAGE_CAP_ADVANCE;
+
+        if (predicted - room > worst.overflow) {
+          worst = {
+            overflow: predicted - room,
+            detail:
+              `${presetId} @ ${Math.round(share * 100)}% column: ` +
+              `"${lines.join(' / ')}" needs ${Math.round(predicted)}px in ${Math.round(room)}px` +
+              `${fit.wrap ? ' (wrapped)' : ''}`,
+          };
+        }
+      }
+    }
+  }
+
+  check(
+    `no headline overflows its column (${total} combinations)`,
+    worst.overflow <= 0,
+    worst.detail,
+  );
+  // A guard on the guard: if nothing wrapped, the wrapping branch is untested
+  // and this suite would keep passing after it was deleted.
+  check('the narrow cases actually reach the wrapping branch', wrapped > 0);
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 async function main() {
   validationChecks();
+  headlineFitChecks();
 
   console.log('\n=== shipped sample layout ===');
   check(
