@@ -200,7 +200,19 @@ export function coercePosterCopy(raw: unknown): PosterCopy | null {
 
   if (features.length < 2) return null;
 
-  const body = truncateWords(asString(source.body), 240);
+  /*
+   * An empty body is repaired rather than fatal, for the same reason a
+   * two-item feature array is accepted above: discarding a whole day's copy
+   * over one field the layout may not even draw is the worse outcome.
+   *
+   * Six of seven live Medicals templates have no `body` slot, and a model told
+   * so will hand back an empty string. The repair reuses the first feature's
+   * sentence — copy this same call already wrote about this same day, not
+   * invented text — so the field is populated if the day is ever re-laid out in
+   * a template that does show it.
+   */
+  const body =
+    truncateWords(asString(source.body), 240) || truncateWords(features[0]!.body, 240);
   if (!body) return null;
 
   const candidate = {
@@ -217,6 +229,44 @@ export function coercePosterCopy(raw: unknown): PosterCopy | null {
 
   const result = posterCopySchema.safeParse(candidate);
   return result.success ? result.data : null;
+}
+
+/**
+ * Why `coercePosterCopy` rejected this payload, in one operator-readable clause.
+ *
+ * Lives beside it so the two cannot drift: every `return null` above has a
+ * matching branch here. The alternative — one message naming all three possible
+ * causes — meant the console said "no usable headline, body or feature set" for
+ * a payload with a perfectly good headline and three good features, and finding
+ * the real cause meant replaying the model call by hand.
+ */
+export function describePosterCopyGap(raw: unknown): string {
+  if (typeof raw !== 'object' || raw === null) {
+    return 'the model returned no object at all.';
+  }
+  const source = raw as Record<string, unknown>;
+
+  const lines = asStringArray(source.headlineLines).filter((line) => line.length > 0);
+  if (lines.length === 0) return 'the model returned no headline.';
+  if (lines.length === 1 && splitInTwo(lines[0]!).length < 2) {
+    return `the headline was one word ("${lines[0]}") and cannot be split into lines.`;
+  }
+
+  const features = asObjectArray(source.features).filter(
+    (feature) => asString(feature.label).length > 0 && asString(feature.body).length > 0,
+  );
+  if (features.length < 2) {
+    return (
+      `only ${features.length} of ${asObjectArray(source.features).length} feature(s) ` +
+      'had both a label and a body; at least 2 are needed.'
+    );
+  }
+
+  if (!asString(source.body) && !asString(features[0]!.body)) {
+    return 'the model returned an empty body and no feature text to fall back on.';
+  }
+
+  return 'the copy did not satisfy the poster schema.';
 }
 
 function asString(value: unknown): string {

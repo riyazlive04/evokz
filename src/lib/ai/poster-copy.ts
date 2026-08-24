@@ -3,7 +3,12 @@ import { POSTER_COPY_RULES, POSTER_SCHEMA } from '@/lib/ai/poster-prompt';
 import { prisma } from '@/lib/prisma';
 import type { LayoutCopyShape } from '@/lib/types/layout-spec';
 import { parseBrandGuideline, type BrandGuideline } from '@/lib/types/brand';
-import { coercePosterCopy, parsePosterCopy, type PosterCopy } from '@/lib/types/poster';
+import {
+  coercePosterCopy,
+  describePosterCopyGap,
+  parsePosterCopy,
+  type PosterCopy,
+} from '@/lib/types/poster';
 
 /**
  * Single-day poster-copy backfill.
@@ -119,9 +124,12 @@ export async function ensurePosterCopy(
 
   const copy = coercePosterCopy(generated);
   if (!copy) {
+    // Names the missing part. The previous message listed all three, so an
+    // operator — and whoever they ask — could not tell which one to chase, and
+    // finding out meant replaying the call by hand.
     throw new Error(
-      `Poster copy for day ${entry.dayNumber} could not be used: the model returned ` +
-        'no usable headline, body or feature set.',
+      `Poster copy for day ${entry.dayNumber} could not be used: ` +
+        describePosterCopyGap(generated),
     );
   }
 
@@ -191,7 +199,20 @@ function describeLayoutFit(shape: LayoutCopyShape): string {
   );
 
   if (!shape.hasBody) {
-    notes.push('- body: this layout has no body paragraph. Keep it to one short sentence.');
+    /*
+     * "This layout has no body paragraph" on its own reads as permission to skip
+     * it, and gpt-4o duly returned `body: ""` — which `coercePosterCopy` treats
+     * as unusable, failing the whole day. Six of seven live Medicals templates
+     * have no body slot, so that phrasing broke every one of them.
+     *
+     * Phrased like the label-only feature bodies above: still required, still
+     * worth writing, simply not drawn here.
+     */
+    notes.push(
+      '- body: this layout does not draw the body paragraph, but it is still ' +
+        'required. Write one short sentence — it is stored, and is used if this ' +
+        'day is later laid out in a template that shows it.',
+    );
   }
 
   // Below roughly a third of the canvas the headline column is narrow enough

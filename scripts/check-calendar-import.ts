@@ -13,6 +13,7 @@
  */
 import { parseCalendarImport, buildCalendarImportTemplate } from '@/lib/calendar-parse';
 import { usesFallbackImagery, verticalImageryFor } from '@/lib/ai/vertical-vocabulary';
+import { coercePosterCopy, describePosterCopyGap } from '@/lib/types/poster';
 
 const TEMPLATES = [
   { id: 't1', label: 'Grand Opening Split' },
@@ -155,6 +156,66 @@ for (const count of [1, 2, 3, 5, 12]) {
   t('17 templates on a 7-day plan: sheet is capped and still imports',
     parsed.rows.length === 7 && parsed.rows.every((r) => r.issues.length === 0),
     `${parsed.rows.length} rows, issues: ${JSON.stringify(parsed.rows.flatMap((r) => r.issues))}`);
+}
+
+// ---------------------------------------------------------------------------
+// Poster copy coercion
+// ---------------------------------------------------------------------------
+
+/*
+ * `coercePosterCopy` decides whether a day's copy is usable, and it fails by
+ * returning null — which the pipeline turns into a FAILED day with no poster.
+ * It had no coverage at all until an empty `body` took three live days down.
+ */
+{
+  const FEATURES = [
+    { icon: 'shieldCheck', label: 'Quality care', body: 'We hold the highest standards.' },
+    { icon: 'people', label: 'Expert team', body: 'Our professionals support you.' },
+    { icon: 'locationPin', label: 'Easy access', body: 'Find us at several locations.' },
+  ];
+  const GOOD = {
+    headlineLines: ['MEDICAL', 'SUPPLIES', 'FOR YOU'],
+    accentLineIndex: 1,
+    eyebrow: '',
+    body: 'A short sentence about the day.',
+    features: FEATURES,
+    callLabel: 'CONTACT US NOW',
+    websiteLabel: 'VISIT OUR WEBSITE',
+    headlinePeriod: true,
+  };
+
+  t('well-formed poster copy is accepted', coercePosterCopy(GOOD) !== null);
+
+  /*
+   * The regression. A layout with no `body` slot is told so, and the model
+   * answers with an empty string — which used to fail the whole day even though
+   * six of seven live templates never draw the body.
+   */
+  const noBody = coercePosterCopy({ ...GOOD, body: '' });
+  t(
+    'an empty body is repaired from the first feature, not rejected',
+    noBody !== null && noBody.body === FEATURES[0]!.body,
+    noBody === null ? 'rejected' : `body=${JSON.stringify(noBody.body)}`,
+  );
+
+  const nothing = coercePosterCopy({
+    ...GOOD,
+    body: '',
+    features: FEATURES.map((f) => ({ ...f, body: '' })),
+  });
+  t('copy with no body and no feature text is still rejected', nothing === null);
+
+  t('a single headline line is split rather than rejected',
+    coercePosterCopy({ ...GOOD, headlineLines: ['MEDICAL SUPPLIES FOR YOU'] }) !== null);
+  t('fewer than two usable features is rejected',
+    coercePosterCopy({ ...GOOD, features: FEATURES.slice(0, 1) }) === null);
+
+  // The message an operator reads must name the part that was missing; one
+  // message listing every possible cause is what made this cost a repro.
+  const gap = describePosterCopyGap({ ...GOOD, features: FEATURES.slice(0, 1) });
+  t('the failure message names the feature shortfall', gap.includes('feature'), gap);
+  t('the failure message does not blame the headline when the headline is fine',
+    !gap.includes('headline'), gap);
 }
 
 process.exitCode = bad ? 1 : 0;
