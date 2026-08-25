@@ -83,6 +83,96 @@ function eraserEndpoint(): string {
   return process.env.FAL_ERASER_ENDPOINT || 'fal-ai/bria/eraser';
 }
 
+function cutoutEndpoint(): string {
+  return process.env.FAL_CUTOUT_ENDPOINT || 'fal-ai/birefnet/v2';
+}
+
+/**
+ * Where the template's own model is standing, as a normalised box, or null.
+ *
+ * **The reason a plate can stop supplying its own person.** A plate keeps
+ * everything the designer put on it, so a template built around a photographed
+ * model hands that model to every client who ever draws it — a stethoscope is
+ * generic, a human face is not.
+ *
+ * Found with the same segmentation endpoint the pipeline already uses to matt
+ * generated frames, run backwards: birefnet returns the subject on transparency,
+ * so the pixels it *kept* are the person, and their extent is the box.
+ *
+ * Null when nothing salient is found, which is the right answer for a template
+ * that is artwork and type only — there is no figure to remove and none to
+ * generate.
+ */
+async function findSubject(
+  image: Buffer,
+  mimeType: string,
+  key: string,
+): Promise<{ x: number; y: number; w: number; h: number } | null> {
+  const response = await fetch(`https://fal.run/${cutoutEndpoint()}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Key ${key}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      image_url: `data:${mimeType};base64,${image.toString('base64')}`,
+      sync_mode: true,
+    }),
+  });
+  if (!response.ok) return null;
+
+  const json = (await response.json()) as {
+    image?: { url?: string };
+    images?: Array<{ url?: string }>;
+  };
+  const url = json.image?.url ?? json.images?.[0]?.url;
+  if (!url) return null;
+
+  const cut = url.startsWith('data:')
+    ? Buffer.from(url.split(',')[1] ?? '', 'base64')
+    : Buffer.from(await (await fetch(url)).arrayBuffer());
+
+  const { data, info } = await sharp(cut).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  let kept = 0;
+
+  for (let y = 0; y < info.height; y += 1) {
+    for (let x = 0; x < info.width; x += 1) {
+      // Well above the anti-aliased rim, so a soft edge does not inflate the box.
+      if ((data[(y * info.width + x) * 4 + 3] ?? 0) < 160) continue;
+      kept += 1;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (maxX < 0) return null;
+
+  /*
+   * Two guards against segmenting the wrong thing.
+   *
+   * Below 4% of the canvas it is an icon or a logo, not a person. Above 80% it
+   * has selected the whole poster — which birefnet does on artwork with no
+   * clear foreground — and erasing that would delete the template.
+   */
+  const share = kept / (info.width * info.height);
+  if (share < 0.04 || share > 0.8) return null;
+
+  return {
+    x: minX / info.width,
+    y: minY / info.height,
+    w: (maxX - minX + 1) / info.width,
+    h: (maxY - minY + 1) / info.height,
+  };
+}
+
 /** White where the type is, black everywhere else. */
 async function buildMask(
   width: number,
@@ -141,6 +231,14 @@ async function main() {
   const args = process.argv.slice(2);
   const replace = args.includes('--replace');
   const pad = padFrom(args);
+  /*
+   * Leaves the template's own photographed model in place.
+   *
+   * The default removes them, because a plate otherwise gives every client in
+   * the vertical the same face. Kept as an escape hatch for a template whose
+   * figure is the design rather than a stand-in.
+   */
+  const keepModel = args.includes('--keep-model');
 
   const labelsArg = args.find((a) => a.startsWith('--labels'));
   const labelValueIndex = labelsArg && !labelsArg.includes('=') ? args.indexOf(labelsArg) + 1 : -1;
@@ -256,7 +354,21 @@ async function main() {
       });
       if (draft.regions.length === 0) throw new Error('no type found to erase');
 
-      const mask = await buildMask(width, height, draft.regions, pad);
+      /*
+       * The template's own model is erased alongside its words, and a `subject`
+       * region is left where they stood so the generated figure takes their
+       * place — composited over the finished artwork, not behind a hole in it.
+       *
+       * Erased with a smaller pad than the type gets: a figure's outline is
+       * exactly where the background has to be reconstructed, and reaching too
+       * far takes the artwork around them with it.
+       */
+      const subject = keepModel ? null : await findSubject(reference, template.mimeType, credentials.key);
+      const eraseBoxes = subject
+        ? [...draft.regions, { ...subject, x: subject.x - 0.01, y: subject.y - 0.01, w: subject.w + 0.02, h: subject.h + 0.02 }]
+        : draft.regions;
+
+      const mask = await buildMask(width, height, eraseBoxes, pad);
       const erased = await erase(reference, template.mimeType, mask, credentials.key);
 
       const holes = await findPlateHoles(erased);
@@ -270,11 +382,20 @@ async function main() {
         publish: false,
       });
 
+      /*
+       * A measured hole is a scene showing through; the subject box is a figure
+       * standing on top. Both are photo regions and the renderer tells them
+       * apart by `kind`.
+       */
+      const photos = subject
+        ? [...holes.regions, { ...subject, kind: 'subject' as const, fit: 'contain' as const }].slice(0, 2)
+        : holes.regions;
+
       const spec = posterPlateSpecSchema.parse({
         version: 1,
         name: template.label,
         aspect: holes.width / holes.height,
-        photos: holes.regions,
+        photos,
         text: draft.regions,
         featureCount: draft.featureCount,
         featureStyle: draft.featureStyle,
@@ -307,6 +428,7 @@ async function main() {
       plated += 1;
       console.log(
         `plated — ${draft.regions.length} region(s), ${holes.regions.length} hole(s)` +
+          (subject ? ', model removed and replaced by a subject slot' : ', no model found') +
           (problems.length > 0
             ? `  NEEDS A FIX: ${problems.map((p) => p.message).join('; ')}`
             : ''),

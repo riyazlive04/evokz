@@ -95,13 +95,18 @@ export function renderPlateSpec(props: PlateRenderProps): React.ReactElement {
       }}
     >
       {/*
-       * Layer 0 — the photography, behind everything.
+       * Layer 0 — scene photography, behind everything.
        *
        * Drawn even where a region is partly covered by opaque plate: the plate's
        * alpha decides what survives, and second-guessing it here would mean
        * reimplementing the mask this design exists to avoid describing.
+       *
+       * **Only the scenes.** A `subject` is a person with their background
+       * removed, and a person belongs in front of the artwork rather than behind
+       * a hole cut in it — see `SubjectPhotos` below.
        */}
       {spec.photos.map((region, index) => {
+        if (region.kind === 'subject') return null;
         const photo = photos[index] ?? photos[photos.length - 1];
         if (!photo) return null;
 
@@ -158,6 +163,57 @@ export function renderPlateSpec(props: PlateRenderProps): React.ReactElement {
           objectFit: 'fill',
         }}
       />
+
+      {/*
+       * Layer 1b — cut-out subjects, in front of the artwork.
+       *
+       * **The layer that lets a template stop supplying its own model.** A plate
+       * keeps whatever the designer put on it, so a template built around a
+       * photographed person hands that person to every client who ever draws it.
+       * Cutting a hole where they stood does not help: the hole shows the canvas
+       * ground, not the artwork's own background, so the figure ends up standing
+       * in a rectangle of the wrong colour.
+       *
+       * The answer is order. Erase the original figure from the plate — the
+       * background reconstructs behind them — and composite the generated one
+       * *over* the finished artwork, which is where a cut-out belongs and what
+       * `photoKind: 'subject'` already means on the grid path.
+       *
+       * `contain` and bottom-anchored, always: cropping a person to fill a box
+       * removes their head, and people stand on the ground rather than floating
+       * in the middle of it.
+       */}
+      {spec.photos.map((region, index) => {
+        if (region.kind !== 'subject') return null;
+        const photo = photos[index] ?? photos[photos.length - 1];
+        if (!photo) return null;
+
+        return (
+          <div
+            key={`subject-${index}`}
+            style={{
+              display: 'flex',
+              position: 'absolute',
+              left: region.x * metrics.width,
+              top: region.y * metrics.height,
+              width: region.w * metrics.width,
+              height: region.h * metrics.height,
+              overflow: 'hidden',
+              alignItems: 'flex-end',
+              justifyContent: 'center',
+            }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={photo.dataUri}
+              alt=""
+              width="100%"
+              height="100%"
+              style={{ objectFit: 'contain' }}
+            />
+          </div>
+        );
+      })}
 
       {/* Layer 2 — the type. */}
       {spec.text.map((region, index) => (

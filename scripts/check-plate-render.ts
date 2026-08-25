@@ -438,6 +438,73 @@ async function main() {
     );
   }
 
+  /*
+   * A cut-out subject stands in FRONT of the artwork, not behind a hole in it.
+   *
+   * A plate keeps whatever the designer put on it, so a template built around a
+   * photographed person hands that person to every client. Erasing them and
+   * cutting a hole does not help — the hole shows the canvas ground rather than
+   * the artwork's own background. The figure has to go over the top.
+   */
+  console.log('\n=== a subject is composited over the plate ===');
+  {
+    // Fully opaque plate: nothing can show through it, so anything visible must
+    // have been drawn on top.
+    const opaque = await makePlate(600, { x: 0, y: 0, w: 0.001, h: 0.001 });
+
+    const subjectSpec = parsePlateSpec({
+      version: 1,
+      name: 'subject over plate',
+      aspect: 1,
+      photos: [{ x: 0.25, y: 0.25, w: 0.5, h: 0.5, kind: 'subject', fit: 'contain' }],
+      text: [
+        { x: 0.05, y: 0.02, w: 0.9, h: 0.12, slot: 'headline', align: 'center', valign: 'start', color: null },
+      ],
+    });
+
+    const sceneSpec = parsePlateSpec({
+      version: 1,
+      name: 'scene under plate',
+      aspect: 1,
+      photos: [{ x: 0.25, y: 0.25, w: 0.5, h: 0.5, kind: 'scene', fit: 'cover' }],
+      text: [
+        { x: 0.05, y: 0.02, w: 0.9, h: 0.12, slot: 'headline', align: 'center', valign: 'start', color: null },
+      ],
+    });
+
+    if (subjectSpec && sceneSpec) {
+      const draw = async (spec: NonNullable<typeof subjectSpec>) =>
+        renderPoster({
+          layoutSpec: FALLBACK_GRID,
+          copy: COPY,
+          guideline: EMPTY_BRAND_GUIDELINE,
+          identity: IDENTITY,
+          photos: [await flatPhoto(600)],
+          plate: { spec, bytes: opaque, mimeType: 'image/png', useTemplatePalette: false },
+          width: 600,
+          height: 600,
+        });
+
+      const withSubject = await draw(subjectSpec);
+      const withScene = await draw(sceneSpec);
+
+      const middleOfSubject = await pixelAt(withSubject.body, 300, 300);
+      const middleOfScene = await pixelAt(withScene.body, 300, 300);
+
+      check(
+        'a subject shows through an opaque plate, because it is drawn over it',
+        near(middleOfSubject, PHOTO_RGB),
+        JSON.stringify(middleOfSubject),
+      );
+      check(
+        'a scene stays hidden behind the same opaque plate',
+        near(middleOfScene, PLATE_RGB),
+        JSON.stringify(middleOfScene),
+      );
+    }
+  }
+
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed.`);
     process.exitCode = 1;
