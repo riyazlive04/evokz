@@ -20,6 +20,7 @@ import {
   resolveSpecPhotoRequests,
 } from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
+import { verticalKeyFor } from '@/lib/ai/vertical-vocabulary';
 import { SAMPLE_LAYOUT_SPEC } from '@/lib/poster/sample-layout';
 import { prisma } from '@/lib/prisma';
 import { parseBrandGuideline, EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
@@ -211,7 +212,7 @@ export async function GET(request: NextRequest) {
 
     const poster = await renderPoster({
       layoutSpec: resolved,
-      copy: context?.copy ?? SAMPLE_COPY,
+      copy: context?.copy ?? sampleCopyFor(draft?.categoryName),
       guideline: context?.guideline ?? EMPTY_BRAND_GUIDELINE,
       identity: context?.identity ?? SAMPLE_IDENTITY,
       photos,
@@ -279,10 +280,15 @@ function capLongEdge(
 async function loadTemplateLayout(templateId: string) {
   const template = await prisma.categoryTemplate.findUnique({
     where: { id: templateId },
-    select: { layoutSpec: true },
+    // The vertical comes along so the preview can stand the template up in its
+    // own trade's words rather than in commercial-property copy.
+    select: { layoutSpec: true, category: { select: { name: true } } },
   });
   if (!template) return null;
-  return parseLayoutDraft(template.layoutSpec);
+  return {
+    ...parseLayoutDraft(template.layoutSpec),
+    categoryName: template.category.name,
+  };
 }
 
 /**
@@ -362,8 +368,9 @@ async function loadClientContext(clientId: string, day: number | null) {
     guideline: parseBrandGuideline(client.brandGuideline),
     // Falls back to the sample rather than 404ing: an operator previewing a client
     // that has not been seeded yet still wants to see their palette and logo
-    // applied to the layout.
-    copy: stored ?? SAMPLE_COPY,
+    // applied to the layout. In the client's own vertical, so an unseeded clinic
+    // is not previewed in commercial-property words.
+    copy: stored ?? sampleCopyFor(client.category.name),
     identity: {
       companyName: client.companyName,
       logoUrl: client.logoUrl,
@@ -419,3 +426,88 @@ const SAMPLE_IDENTITY = {
   displayPhone: '+91 98765 43210',
   whatsappNumber: '919876543210',
 };
+
+/**
+ * Stand-in copy in the vertical's own words.
+ *
+ * `SAMPLE_COPY` above is commercial-property copy, and until this it was what
+ * every template previewed in — so an operator checking a *clinic* layout saw
+ * "PREMIUM COMMERCIAL SPACES" and "Strategic Locations" sitting in it and
+ * concluded, reasonably, that the wrong template was being drawn. It was not:
+ * the geometry was theirs and only the words were foreign. But a review surface
+ * that has to be explained before it can be trusted is not doing its job.
+ *
+ * Keyed by the same resolver the image briefs use, so "Medicals" and
+ * "Contructions" (sic) both land somewhere real rather than falling through.
+ * A vertical with no entry keeps `SAMPLE_COPY`, which is honest: generic copy is
+ * better than copy from the wrong trade.
+ *
+ * Word lengths are held close to the construction original on purpose. The
+ * preview exists to show whether a headline overflows its column, so sample copy
+ * that is shorter than production would hide the fault it is meant to reveal.
+ */
+const SAMPLE_COPY_BY_VERTICAL: Record<string, PosterCopy> = {
+  healthcaredentalclinics: {
+    headlineLines: ['GOOD HEALTH', 'HAPPIER LIFE'],
+    accentLineIndex: 1,
+    eyebrow: 'NOW ACCEPTING',
+    body: 'Consultation, diagnostics and therapy under one roof, with a team that follows up after the visit.',
+    features: [
+      {
+        icon: 'shieldCheck',
+        label: 'General Consultation',
+        body: 'Same-day appointments across every weekday morning.',
+      },
+      {
+        icon: 'chart',
+        label: 'Accurate Diagnostics',
+        body: 'Reported on site, so results come back the same day.',
+      },
+      {
+        icon: 'people',
+        label: 'Physiotherapy',
+        body: 'One-to-one sessions with a plan you take home.',
+      },
+    ],
+    callLabel: 'CALL US TODAY',
+    websiteLabel: 'VISIT OUR WEBSITE',
+    ctaLabel: 'BOOK AN APPOINTMENT',
+    headlinePeriod: false,
+  },
+  restaurantscafes: {
+    headlineLines: ['SLOW COOKED', 'EVERY MORNING'],
+    accentLineIndex: 1,
+    eyebrow: 'NOW SERVING',
+    body: 'A short menu cooked to order, with produce bought the same week and nothing sitting under a lamp.',
+    features: [
+      { icon: 'leaf', label: 'Fresh Produce', body: 'Bought weekly from growers we can name.' },
+      { icon: 'stopwatch', label: 'Cooked To Order', body: 'Nothing held warm, nothing reheated.' },
+      { icon: 'star', label: 'Small Menu', body: 'Fewer dishes, each one worth ordering.' },
+    ],
+    callLabel: 'CALL TO RESERVE',
+    websiteLabel: 'SEE THE MENU',
+    ctaLabel: 'BOOK A TABLE',
+    headlinePeriod: false,
+  },
+  interiordesign: {
+    headlineLines: ['ROOMS THAT', 'WORK HARDER'],
+    accentLineIndex: 1,
+    eyebrow: 'TAKING PROJECTS',
+    body: 'Drawings, materials and site supervision from one studio, so nobody is left coordinating three trades.',
+    features: [
+      { icon: 'blueprint', label: 'Measured Drawings', body: 'Every millimetre agreed before work starts.' },
+      { icon: 'houseInHand', label: 'Turnkey Delivery', body: 'One contract covering the whole fit-out.' },
+      { icon: 'award', label: 'Honest Materials', body: 'Specified to last, not to photograph.' },
+    ],
+    callLabel: 'CALL THE STUDIO',
+    websiteLabel: 'SEE OUR WORK',
+    ctaLabel: 'BOOK A CONSULTATION',
+    headlinePeriod: false,
+  },
+};
+
+/** The sample copy a template of this vertical should preview in. */
+function sampleCopyFor(categoryName: string | null | undefined): PosterCopy {
+  const key = verticalKeyFor(categoryName);
+  return (key && SAMPLE_COPY_BY_VERTICAL[key]) || SAMPLE_COPY;
+}

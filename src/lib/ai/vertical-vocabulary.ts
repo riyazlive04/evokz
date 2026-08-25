@@ -240,20 +240,35 @@ export function describeVerticalImagery(
  * a different hat.
  */
 export function verticalImageryFor(categoryName: string | null | undefined): VerticalImagery {
-  if (!categoryName) return FALLBACK;
+  const key = verticalKeyFor(categoryName);
+  return (key && VERTICAL_IMAGERY[key]) || FALLBACK;
+}
+
+/**
+ * The canonical vocabulary key an operator-typed vertical resolves to, or null.
+ *
+ * Exported because imagery is no longer the only thing that should follow the
+ * vertical. The poster preview stands a template up in sample copy, and until
+ * this it stood every template up in *construction* copy — so previewing a
+ * medical layout produced "PREMIUM COMMERCIAL SPACES" over a clinic template and
+ * read, entirely reasonably, as the wrong template being drawn.
+ *
+ * Sharing the resolver rather than copying the alias table is the whole point:
+ * that table exists because production holds "Contructions" (sic) and
+ * "Medicals", and a second copy of it would drift from the first exactly as the
+ * original exact-match lookup drifted from the data.
+ */
+export function verticalKeyFor(categoryName: string | null | undefined): string | null {
+  if (!categoryName) return null;
 
   const key = normalize(categoryName);
-  const exact = VERTICAL_IMAGERY[key];
-  if (exact) return exact;
+  if (VERTICAL_IMAGERY[key]) return key;
 
   for (const [fragment, target] of ALIASES) {
-    if (key.includes(fragment)) {
-      const matched = VERTICAL_IMAGERY[target];
-      if (matched) return matched;
-    }
+    if (key.includes(fragment) && VERTICAL_IMAGERY[target]) return target;
   }
 
-  return FALLBACK;
+  return null;
 }
 
 /**
