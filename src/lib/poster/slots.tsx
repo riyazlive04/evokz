@@ -438,6 +438,21 @@ export function Eyebrow({
 // 3. Headline
 // ---------------------------------------------------------------------------
 
+/**
+ * Terminal punctuation the copy stage may already have written.
+ *
+ * `trailingPeriod` asks for a full stop, and appending one unconditionally gave
+ * "MODERN CARE FOR YOU.." on a live poster — twice, on two different verticals,
+ * because the copy model ends a headline with a stop often enough that this was
+ * never going to stay theoretical. The request is "end this headline with a
+ * stop", and a headline that already ends with one is already satisfied.
+ *
+ * Question and exclamation marks count: "WHY WAIT?." is the same defect wearing
+ * different punctuation. An ellipsis is included for the same reason — the copy
+ * stage writes them, and "coming soon..." must not become "coming soon....".
+ */
+const ENDS_SENTENCE = /[.!?…]\s*$/;
+
 export interface HeadlineProps extends SlotBase {
   lines: string[];
   accentLineIndex: number;
@@ -555,7 +570,9 @@ export function Headline({
                 : { whiteSpace: 'nowrap' as const }),
             }}
           >
-            {index === lastIndex && trailingPeriod ? `${line}.` : line}
+            {index === lastIndex && trailingPeriod && !ENDS_SENTENCE.test(line)
+              ? `${line}.`
+              : line}
           </div>
         );
       })}
