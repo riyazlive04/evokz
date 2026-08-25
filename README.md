@@ -95,9 +95,22 @@ arrives from data instead.
 ### Layouts
 
 Every poster is drawn from a reference template an operator uploaded to the client's vertical,
-whose geometry was read by the vision extractor and **approved** by a human. There are no
+whose geometry the vision extractor read and whose `layoutApprovedAt` is set. There are no
 built-in compositions: a vertical with no approved template cannot generate at all, and says so
 as a `[compose]` failure naming the fix.
+
+**Approval is automatic when the extraction is clean.** Uploading a template approves it there
+and then, provided `validateLayoutSpec` found no structural fault — a draft with a fault is
+stored unapproved, because `parseLayoutSpec` refuses it at render time and approving it would
+put a template in the rotation that never draws. Two paths still leave a template withdrawn and
+both are re-reads: the console's *Read layout* button and `layouts:read --all`. A re-read
+replaces geometry that is already drawing live posters, with a non-deterministic result, and
+that is the case still worth a human.
+
+The cost of this is real and worth stating: nothing now sits between a misread layout and a
+client except your own sweep. Run `npm run check:fleet -- ./review` after a batch of uploads,
+look at the folder, and withdraw what is wrong. `npm run layouts:approve <vertical>` applies the
+same rule retroactively to templates uploaded before it existed.
 
 A calendar row may name its template in `posterTemplateId`, set only by an imported sheet.
 Otherwise the vertical's approved templates are walked by `dayNumber` using the smallest stride
@@ -123,6 +136,55 @@ photo in a landscape band, asked for a 9:16 portrait and cover-fitted into a sho
 discards most of the frame and usually decapitates the subject. A spec may declare up to two
 photo cells, and each is a separate billed render. See
 [src/lib/poster/photo-request.ts](src/lib/poster/photo-request.ts).
+
+### Clean plates — reproducing a template exactly
+
+The grid path above **rebuilds** a poster from a description of it, so it reproduces band
+structure and nothing else. Masks, rounded feature cards, curved footers, gradients and the
+reference's own palette are not in the layout vocabulary and are simply lost. Where a client
+wants their posters to look like the template they chose, the template needs a **clean plate**.
+
+A plate is the reference exported as a PNG with its own words erased and its photographic areas
+made transparent. The renderer then draws three layers — the generated photograph, the plate over
+it, the day's type on top — so every treatment survives as pixels because nothing describes it.
+See [src/lib/poster/plate-render.tsx](src/lib/poster/plate-render.tsx).
+
+Per template, in the vertical's console:
+
+1. **Erase.** In any image editor, remove every word the client's own copy replaces, and delete
+   the photography to transparency. What you leave on the plate is fixed for every client that
+   ever draws from it, so a baked-in wordmark must go. Three rules that decide whether a composite
+   reads as the template or as two posters on top of each other:
+   - **Erase what the renderer redraws.** A feature block is drawn complete — icon, label and any
+     sentence — so erase the reference's icons *and* labels but keep the cards they sit in. Same
+     for the CTA: the renderer draws the whole button, so erase the reference's pill and leave the
+     surface behind it, or the two buttons show as a ring around each other.
+   - **Keep what nothing describes.** Card chrome, curves, rules, gradients, the wave over a
+     footer: all of it survives untouched, and that is the entire reason for the plate.
+   - **Chrome follows the client, ink follows the plate.** Under `Colours: template's` the
+     *type* is set in the colours sampled from the reference, but marks the renderer fills —
+     the button, the feature icons — still take the client's accent. A template whose button must
+     stay its own colour should keep that button as artwork and carry no `cta` region.
+2. **Upload plate.** [findPlateHoles](src/lib/poster/plate-regions.ts) measures the transparent
+   regions; the count is reported so an export that flattened two holes into one is visible.
+3. **Place regions → Read regions from original.** The vision pass in
+   [src/lib/ai/plate-extractor.ts](src/lib/ai/plate-extractor.ts) proposes a box per block of
+   type, reading the *reference* — the plate no longer has the words on it — and measures each
+   block's ink colour from the pixels with
+   [sampleRegionInk](src/lib/poster/plate-ink.ts). Drag the boxes onto the artwork, re-sample the
+   ink for any box you moved far, and save. A box is the space the copy is *allowed*, not the size
+   of the reference's particular words: draw it tight and the client's headline is set two sizes
+   smaller.
+4. **See it composited**, then **Approve plate**. Approval is its own gate, separate from the
+   layout's, because a template can have a sound grid and a plate whose headline box sits across
+   somebody's face. Withdrawing it drops the template back to the grid.
+5. **Colours: template's** keeps the reference's own palette — normally what a plate wants, since
+   it is finished artwork in its designer's colours. The default resolves from the client's brand.
+
+A template still needs an **approved layout spec** as well: `loadCategoryLayouts` filters on
+`layoutApprovedAt` before it looks at the plate, and the grid is what a plate falls back to if its
+region map ever stops parsing. `npm run layouts:read <vertical>` reads a draft layout for every
+template in a vertical that has never had one — it approves nothing.
 
 ### Poster identity
 
@@ -427,5 +489,9 @@ the client is already generated.
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint (next/core-web-vitals) |
 | `npm run check:secret-box` | Fixture suite for the at-rest encryption — no database needed |
+| `npm run check:plate` | Compositing, hole detection and ink sampling for the clean-plate path |
+| `npm run layouts:read <vertical>` | Read a layout for every template in a vertical that has none, approving the clean ones. One vision call per template |
+| `npm run layouts:approve <vertical>` | Approve every stored layout in a vertical that would render. `--dry-run` to preview; never un-approves |
+| `npm run check:fleet -- ./review` | Render every stored spec, approved or not, to a folder. The review surface |
 | `npm run prisma:push` | Push schema without migrations |
 | `npm run prisma:studio` | Browse/seed data |

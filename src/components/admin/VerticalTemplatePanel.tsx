@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 
-import { ExternalLink, ImagePlus, Loader2, Trash2, Upload } from 'lucide-react';
+import { ExternalLink, ImagePlus, Loader2, SquareDashedMousePointer, Trash2, Upload } from 'lucide-react';
 
 import {
   deleteVerticalTemplate,
@@ -15,6 +15,7 @@ import {
   uploadTemplatePlate,
   uploadVerticalTemplate,
 } from '@/app/admin/dashboard/actions';
+import { PlateRegionEditor } from '@/components/admin/PlateRegionEditor';
 import { Button } from '@/components/ui/button';
 import { useAction } from '@/hooks/use-action';
 import { MAX_TEMPLATES_PER_CATEGORY } from '@/lib/template-limits';
@@ -69,6 +70,16 @@ export interface VerticalTemplateRow {
   hasPlate: boolean;
   /** Photo regions measured from the plate's transparency. */
   plateRegions: number;
+  /**
+   * Text regions an operator has placed on the plate.
+   *
+   * Reported separately from `plateRegions` because the two come from different
+   * places and fail differently: photo regions are measured and are right or
+   * absent, while text regions are placed and are the reason a plate cannot be
+   * approved — a plate with holes and no headline box is the state every plate
+   * starts in.
+   */
+  plateTextRegions: number;
   /** The plate's region map, pretty-printed, for the JSON editor. */
   plateSpec: string | null;
   /** Why the plate cannot composite yet. Empty when it is good to approve. */
@@ -172,6 +183,16 @@ export function VerticalTemplatePanel({
       <p className="text-[11px] text-muted-foreground/70">
         PNG, JPEG or WebP · up to 6 MB each · select several at once. Stored in this
         vertical&apos;s Drive folder.
+      </p>
+
+      {/* Said at the point of upload, because it changes what an upload *is*:
+          a template whose layout reads cleanly starts generating for clients
+          straight away, with nobody having looked at it. The render sweep is the
+          only remaining check, so it is named here rather than buried. */}
+      <p className="text-[11px] text-warning-ink">
+        Uploads go live automatically when the layout reads cleanly — no approval
+        step. Render the vertical afterwards (<code>npm run check:fleet</code>) and
+        withdraw anything wrong.
       </p>
 
       {full && (
@@ -444,7 +465,7 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
               ? 'Needs a correction before it can render:'
               : template.layoutApproved
                 ? 'Approved — this template’s own layout is in the rotation.'
-                : 'Draft — not used for generation until you approve it.'}
+                : 'Draft — not in the rotation. A clean extraction approves itself, so this one was either re-read or has a fault below.'}
           </p>
 
           {broken && (
@@ -601,9 +622,14 @@ function PlateReview({ template }: { template: VerticalTemplateRow }) {
   const palette = useAction(setTemplatePaletteSource);
 
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = React.useState(false);
   const busy = upload.pending || approve.pending || palette.pending;
   const error = upload.error ?? approve.error ?? palette.error;
   const broken = template.plateProblems.length > 0;
+  // The state every plate starts in: holes measured, nowhere for the type to go.
+  // Called out separately from `broken` because it is not a mistake to correct
+  // but a step not yet taken, and the fix is one button rather than a list.
+  const unplaced = template.hasPlate && template.plateTextRegions === 0;
 
   return (
     <div className="space-y-2 border-t border-border/60 px-3 py-2">
@@ -626,8 +652,15 @@ function PlateReview({ template }: { template: VerticalTemplateRow }) {
           }
         >
           {template.plateApproved
-            ? `Approved — posters are composited onto this plate. ${template.plateRegions} photo region(s).`
-            : `Uploaded, not approved. ${template.plateRegions} photo region(s) measured. Posters still use the grid.`}
+            ? `Approved — posters are composited onto this plate. ${template.plateRegions} photo region(s), ${template.plateTextRegions} text region(s).`
+            : `Uploaded, not approved. ${template.plateRegions} photo region(s) measured, ${template.plateTextRegions} text region(s) placed. Posters still use the grid.`}
+        </p>
+      )}
+
+      {unplaced && (
+        <p className="text-[11px] leading-relaxed text-warning-ink">
+          Nowhere for the copy to go yet. Open the regions editor and read them from the
+          original — a plate with no headline region cannot be approved.
         </p>
       )}
 
@@ -681,6 +714,18 @@ function PlateReview({ template }: { template: VerticalTemplateRow }) {
         {template.hasPlate && (
           <Button
             size="sm"
+            variant={unplaced ? 'default' : 'outline'}
+            disabled={busy}
+            onClick={() => setEditing(true)}
+          >
+            <SquareDashedMousePointer className="mr-1 h-3 w-3" />
+            Place regions
+          </Button>
+        )}
+
+        {template.hasPlate && (
+          <Button
+            size="sm"
             variant={template.plateApproved ? 'ghost' : 'default'}
             disabled={busy || (broken && !template.plateApproved)}
             onClick={() => void approve.run(template.id, !template.plateApproved)}
@@ -707,6 +752,18 @@ function PlateReview({ template }: { template: VerticalTemplateRow }) {
       </div>
 
       {error && <p className="text-[11px] text-destructive">{error}</p>}
+
+      {/* Mounted only while open, so each session starts from the stored spec
+          rather than from whatever the last one left in component state. */}
+      {editing && (
+        <PlateRegionEditor
+          templateId={template.id}
+          label={template.label}
+          specJson={template.plateSpec}
+          hasPlate={template.hasPlate}
+          onClose={() => setEditing(false)}
+        />
+      )}
     </div>
   );
 }

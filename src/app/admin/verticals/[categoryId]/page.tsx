@@ -119,6 +119,7 @@ export default async function VerticalDetailPage({
       return {
         hasPlate: template.plateDriveFileId !== null,
         plateRegions: draft.spec?.photos.length ?? 0,
+        plateTextRegions: draft.spec?.text.length ?? 0,
         plateSpec: draft.spec ? JSON.stringify(draft.spec, null, 2) : null,
         plateProblems: draft.problems.map((problem) => `${problem.path} ${problem.message}`),
         plateApproved: template.plateApprovedAt !== null,

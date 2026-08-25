@@ -20,6 +20,7 @@
  */
 import sharp from 'sharp';
 
+import { sampleRegionInk } from '@/lib/poster/plate-ink';
 import { findPlateHoles } from '@/lib/poster/plate-regions';
 import { renderPoster } from '@/lib/poster/render';
 import { EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
@@ -292,6 +293,112 @@ async function main() {
       if (data[i]! > 200 && data[i + 1]! < 60 && data[i + 2]! > 200) magenta += 1;
     }
     check('the sampled colour is used when the template palette wins', magenta > 200, `${magenta} px`);
+  }
+
+  /*
+   * Ink sampling.
+   *
+   * The colour in a plate spec's text region is what makes composited type match
+   * the type printed on the artwork around it, and it is measured rather than
+   * asked of the model — so it has to be measured *right*. Synthetic again: a
+   * white field with a crimson bar across a fifth of it is a case where the
+   * answer is known exactly, which a real poster never is.
+   */
+  console.log('\n=== ink sampling ===');
+
+  /** A white square with one horizontal bar of `ink` across its middle. */
+  async function makeInked(size: number, ink: { r: number; g: number; b: number }) {
+    const px = Buffer.alloc(size * size * 4);
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const i = (y * size + x) * 4;
+        const inBar = y > size * 0.45 && y < size * 0.55;
+        px[i] = inBar ? ink.r : 255;
+        px[i + 1] = inBar ? ink.g : 255;
+        px[i + 2] = inBar ? ink.b : 255;
+        px[i + 3] = 255;
+      }
+    }
+    return sharp(px, { raw: { width: size, height: size, channels: 4 } }).png().toBuffer();
+  }
+
+  {
+    const inked = await makeInked(400, PHOTO_RGB);
+
+    const sampled = await sampleRegionInk(inked, { x: 0.1, y: 0.3, w: 0.8, h: 0.4 });
+    const parsedInk = sampled
+      ? {
+          r: Number.parseInt(sampled.slice(1, 3), 16),
+          g: Number.parseInt(sampled.slice(3, 5), 16),
+          b: Number.parseInt(sampled.slice(5, 7), 16),
+        }
+      : null;
+
+    check(
+      'the ink colour is read, not the surface behind it',
+      parsedInk !== null && near(parsedInk, PHOTO_RGB, 24),
+      sampled ?? 'null',
+    );
+
+    // A box an operator dragged slightly off sits on flat artwork, and reporting
+    // the artwork's own colour would set the headline in its own background.
+    check(
+      'a region with no type in it reports no colour',
+      (await sampleRegionInk(inked, { x: 0.05, y: 0.05, w: 0.3, h: 0.2 })) === null,
+    );
+
+    // Boxes are allowed past the edge — see `boxSchema` — so the crop must
+    // clamp rather than throw.
+    check(
+      'a region running off the edge still samples',
+      (await sampleRegionInk(inked, { x: 0.8, y: 0.3, w: 0.5, h: 0.4 })) !== null,
+    );
+  }
+
+  {
+    /*
+     * The case that actually failed.
+     *
+     * A headline box dragged slightly low catches the top of the photograph
+     * under it. The pale element covers three times the area of the letterforms,
+     * so scoring ink by area alone reports the photograph — and the composited
+     * headline comes out pale grey on artwork whose own headline is teal. The
+     * fixture is that poster in miniature: a small crimson bar and a large pale
+     * blob in one box.
+     */
+    const size = 400;
+    const px = Buffer.alloc(size * size * 4);
+    const PALE = { r: 203, g: 213, b: 225 };
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const i = (y * size + x) * 4;
+        const inBar = y > size * 0.08 && y < size * 0.18;
+        const inBlob = y > size * 0.4;
+        const rgb = inBar ? PHOTO_RGB : inBlob ? PALE : { r: 255, g: 255, b: 255 };
+        px[i] = rgb.r;
+        px[i + 1] = rgb.g;
+        px[i + 2] = rgb.b;
+        px[i + 3] = 255;
+      }
+    }
+    const mixed = await sharp(px, { raw: { width: size, height: size, channels: 4 } })
+      .png()
+      .toBuffer();
+
+    const sampled = await sampleRegionInk(mixed, { x: 0, y: 0, w: 1, h: 1 });
+    const parsedInk = sampled
+      ? {
+          r: Number.parseInt(sampled.slice(1, 3), 16),
+          g: Number.parseInt(sampled.slice(3, 5), 16),
+          b: Number.parseInt(sampled.slice(5, 7), 16),
+        }
+      : null;
+
+    check(
+      'the type wins over a larger, lower-contrast neighbour',
+      parsedInk !== null && near(parsedInk, PHOTO_RGB, 24),
+      sampled ?? 'null',
+    );
   }
 
   if (failures > 0) {

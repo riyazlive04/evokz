@@ -42,6 +42,12 @@ export type UsageOperation =
   // from the per-day operations because it is the only spend here that scales
   // with the size of the template library rather than with the campaign.
   | 'layout-extract'
+  // Vision read of the same reference, asking where its blocks of type sit so a
+  // clean plate can have copy composited into them. Separate from
+  // `layout-extract` because the two are chosen rather than sequenced — a
+  // template is either rebuilt from its grid or composited onto its plate — and
+  // a vertical's split between the two is the thing worth seeing in the ledger.
+  | 'plate-regions'
   | 'whatsapp';
 
 async function record(data: {

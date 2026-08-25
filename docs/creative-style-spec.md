@@ -254,9 +254,17 @@ render path stays a deterministic function of stored data.
 
 **The extraction is a draft.** It is right most of the time and confidently
 wrong the rest, and its confident mistakes are indistinguishable from its correct
-answers on the database side. `CategoryTemplate.layoutApprovedAt` is null until
-an operator has seen the spec *rendered as a poster*, and only approved specs
-enter a vertical's rotation. A template without one is simply not chosen — there
+answers on the database side. `CategoryTemplate.layoutApprovedAt` gates the
+rotation: only approved specs are ever chosen.
+
+Until 2026-08-25 that column stayed null until an operator had seen the spec
+*rendered as a poster*. It is now set at upload whenever the extraction comes
+back structurally clean, a deliberate trade of that guarantee for the click it
+cost on every template. What the paragraph above says about confident mistakes is
+unchanged — the difference is only where they are caught, and the answer is now
+`npm run check:fleet` over a whole vertical rather than one card at a time. A
+re-read still withdraws the template, because it replaces geometry already
+drawing live posters. A template without one is simply not chosen — there
 is nothing behind it since the archetypes were removed, so a vertical with no
 approved template fails every render with a message naming the fix rather than
 quietly drawing something nobody chose.

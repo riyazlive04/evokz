@@ -26,6 +26,7 @@ import {
 import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
 import type { CalendarImportInput } from '@/lib/calendar-parse';
 import { extractLayoutSpec } from '@/lib/ai/layout-extractor';
+import { extractPlateRegions } from '@/lib/ai/plate-extractor';
 import {
   downloadDriveFile,
   ensureVerticalTemplateFolder,
@@ -41,9 +42,16 @@ import {
 import { readImageDimensions } from '@/lib/poster/image-info';
 import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key';
 import { BODY_FONT_OPTIONS, HEADING_FONT_OPTIONS } from '@/lib/poster/theme';
+import { sampleRegionInk } from '@/lib/poster/plate-ink';
 import { findPlateHoles } from '@/lib/poster/plate-regions';
 import { prepareTemplateImage, templateFileName } from '@/lib/template-image';
-import { parsePlateDraft, parsePlateSpec } from '@/lib/types/plate-spec';
+import {
+  normalizePlateSpec,
+  parsePlateDraft,
+  parsePlateSpec,
+  posterPlateSpecSchema,
+  validatePlateSpec,
+} from '@/lib/types/plate-spec';
 import {
   dedupeTemplateLabel,
   normalizeTemplateLabel,
@@ -1819,8 +1827,12 @@ export interface LogoOutcome {
  * **Extraction is best-effort and never fails the upload.** The file is already
  * in Drive by this point; refusing the row because a vision call timed out would
  * lose the operator's work to a fault that `extractTemplateLayout` can retry in
- * one click. A null spec simply means the template falls back to its archetype,
- * which is exactly the behaviour that existed before specs.
+ * one click. A null spec simply leaves the template out of the rotation until a
+ * layout is read from it — there is nothing behind it since the archetypes were
+ * removed.
+ *
+ * **A clean extraction is approved here, without a human.** See the note on
+ * `layoutApprovedAt` below for what that trades away and where it is caught.
  */
 export async function uploadVerticalTemplate(
   categoryId: string,
@@ -1902,9 +1914,31 @@ export async function uploadVerticalTemplate(
         height: stored.height,
         layoutSpec: draft.spec ?? Prisma.DbNull,
         layoutReading: draft.reading,
-        // Never set here. Approval means a human looked at the extraction
-        // rendered as a poster, and nobody has at this point.
-        layoutApprovedAt: null,
+        /*
+         * Approved on the spot when the extraction came back clean.
+         *
+         * This used to be unconditionally null, on the argument that approval
+         * means a human saw the layout rendered as a poster. That argument still
+         * holds and the risk it names is real — a vision model's confident
+         * mistakes are indistinguishable from its correct answers on the
+         * database side, and an auto-approved misread reaches a client on every
+         * poster that template ever draws. It is being traded away deliberately:
+         * a vertical is twenty templates and the gate was costing an approval
+         * click per upload with nothing in the loop to catch what the click was
+         * supposed to catch.
+         *
+         * **Only a clean draft.** `problems` non-empty means
+         * `validateLayoutSpec` found a structural fault, and `parseLayoutSpec`
+         * refuses that spec at render time — so approving one would put a
+         * template in the rotation that silently never draws. Those still land
+         * as drafts with their faults listed, which is the state an operator can
+         * act on.
+         *
+         * The review surface has not gone anywhere: `npm run check:fleet` renders
+         * every stored spec to a folder, and it is now the only thing standing
+         * between a misread and a client.
+         */
+        layoutApprovedAt: draft.spec && draft.problems.length === 0 ? new Date() : null,
       },
       select: { id: true, label: true },
     });
@@ -2226,6 +2260,252 @@ export async function setTemplatePlateApproval(
     return success({ approved });
   } catch (error) {
     return toFailure(error, 'Approving clean plate');
+  }
+}
+
+/**
+ * Proposes where the day's copy goes on a plate, by reading the reference it was
+ * cut from.
+ *
+ * **The step that makes the plate path usable at all.** A plate's photo regions
+ * are measured from its own transparency, but its text regions have nothing to
+ * measure — the words are erased from the plate by definition. Until this
+ * existed `uploadTemplatePlate` stored `text: []` and there was no way to fill
+ * it, so every plate failed `validatePlateSpec` on "must position exactly one
+ * headline, found 0" and could never be approved.
+ *
+ * Reads the **reference**, not the plate: the reference still has its type on
+ * it, and both images are the same composition, so normalised boxes carry across
+ * unchanged.
+ *
+ * **Replaces the whole text map, and says so in the console.** A merge would be
+ * kinder to an operator who has already dragged three boxes, but there is no
+ * honest way to reconcile a hand-placed headline with a proposed one — and the
+ * usual order is propose first, correct after, where there is nothing to lose.
+ * The measured `photos` and `aspect` are kept: those are properties of the plate
+ * file and this pass never sees it.
+ */
+export async function extractTemplatePlateRegions(
+  templateId: string,
+): Promise<
+  ActionResult<{ regions: number; spec: string; reading: string; problems: string[] }>
+> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+
+    const template = await prisma.categoryTemplate.findUnique({
+      where: { id },
+      select: {
+        label: true,
+        gDriveFileId: true,
+        mimeType: true,
+        plateSpec: true,
+        plateDriveFileId: true,
+      },
+    });
+    if (!template) return failure('That template no longer exists.');
+
+    if (!template.plateDriveFileId) {
+      return failure(
+        'Upload the clean plate first. The regions are stored on the plate, and its ' +
+          'transparency is what fixes the photo areas they sit around.',
+      );
+    }
+
+    // The stored spec carries the measured geometry this pass must not touch.
+    const previous = parsePlateDraft(template.plateSpec).spec;
+    if (!previous) {
+      return failure(
+        'This plate has no stored region map to update. Re-upload the plate, which ' +
+          'measures its photo areas again.',
+      );
+    }
+
+    let bytes: Buffer;
+    try {
+      bytes = await downloadDriveFile(template.gDriveFileId);
+    } catch (error) {
+      return failure(
+        'The reference template could not be read back from Drive — ' +
+          `${describeError(error)}. Check the service account still has access to the ` +
+          'vertical template folder.',
+      );
+    }
+
+    let draft: Awaited<ReturnType<typeof extractPlateRegions>>;
+    try {
+      draft = await extractPlateRegions({
+        bytes,
+        mimeType: template.mimeType,
+        label: template.label,
+      });
+    } catch (error) {
+      return failure(`The regions could not be read — ${describeError(error)}.`);
+    }
+
+    const spec = normalizePlateSpec({
+      ...previous,
+      text: draft.regions,
+      featureCount: draft.featureCount,
+      featureStyle: draft.featureStyle,
+      ctaShape: draft.ctaShape,
+      headlineEmphasis: draft.headlineEmphasis,
+      headlineCase: draft.headlineCase,
+    });
+
+    await prisma.categoryTemplate.update({
+      where: { id },
+      data: {
+        plateSpec: spec as unknown as Prisma.InputJsonValue,
+        // Same rule as everywhere else here: approval refers to the map that was
+        // replaced, and nobody has seen this one composited.
+        plateApprovedAt: null,
+      },
+    });
+
+    revalidateAdmin();
+    return success({
+      regions: spec.text.length,
+      /*
+       * The stored spec, serialised the same way the page serialises it.
+       *
+       * The editor is an open dialog holding its own copy of the boxes, and
+       * `revalidateAdmin` refreshes the card behind it rather than the dialog's
+       * state. Without this the operator would press "read regions", see the
+       * boxes not move, and press it again.
+       */
+      spec: JSON.stringify(spec, null, 2),
+      /*
+       * Returned rather than stored, unlike `layoutReading`.
+       *
+       * The reading is worth exactly one reading — it is read while correcting
+       * the boxes it produced, in the editor that is already open when this
+       * returns. A column for it would be a migration on every deployment for a
+       * string whose whole audience is the operator who pressed the button.
+       */
+      reading: draft.reading,
+      problems: validatePlateSpec(spec).map((problem) => `${problem.path} ${problem.message}`),
+    });
+  } catch (error) {
+    return toFailure(error, 'Reading plate regions');
+  }
+}
+
+/**
+ * Replaces a plate's region map with the operator's corrected version.
+ *
+ * Posts the whole spec rather than a patch, exactly as `setTemplateLayoutSpec`
+ * does and for the same reason.
+ *
+ * **Unlike the layout editor, this saves a spec that still has problems.** The
+ * two surfaces are used differently: a layout arrives whole from the extractor
+ * and is corrected in one pass, while a region map is built up box by box, and
+ * refusing to save until it is complete would mean an operator placing six boxes
+ * could not stop halfway. Storing an incomplete map is safe because approval is
+ * a separate gate — `setTemplatePlateApproval` re-parses strictly and refuses,
+ * and `readPlate` requires the approval before a plate composites at all — so
+ * the worst an unfinished draft can do is leave the template on the grid path.
+ * The problems come back with the result and are shown beside the boxes.
+ */
+export async function setTemplatePlateSpec(
+  templateId: string,
+  specJson: string,
+): Promise<ActionResult<{ problems: string[] }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(specJson);
+    } catch {
+      return failure('That is not valid JSON.');
+    }
+
+    const parsed = posterPlateSpecSchema.safeParse(raw);
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      return failure(
+        first
+          ? `${first.path.join('.') || 'spec'}: ${first.message}`
+          : 'That is not a readable plate spec.',
+      );
+    }
+
+    const template = await prisma.categoryTemplate.findUnique({
+      where: { id },
+      select: { plateDriveFileId: true },
+    });
+    if (!template) return failure('That template no longer exists.');
+    if (!template.plateDriveFileId) {
+      return failure('This template has no clean plate to place regions on.');
+    }
+
+    const spec = normalizePlateSpec(parsed.data);
+
+    await prisma.categoryTemplate.update({
+      where: { id },
+      data: {
+        plateSpec: spec as unknown as Prisma.InputJsonValue,
+        plateApprovedAt: null,
+      },
+    });
+
+    revalidateAdmin();
+    return success({
+      problems: validatePlateSpec(spec).map((problem) => `${problem.path} ${problem.message}`),
+    });
+  } catch (error) {
+    return toFailure(error, 'Saving plate regions');
+  }
+}
+
+/**
+ * Re-measures the ink colour inside one region, from the reference.
+ *
+ * The colour is sampled when the regions are proposed, and a proposal's boxes
+ * are then dragged — so by the time a box is where the operator wants it, the
+ * colour on it was measured somewhere else. That is not a rounding error: a
+ * headline box nudged up off a photograph carries the photograph's grey until
+ * this is pressed, and under `paletteSource: "template"` that grey is what the
+ * headline is set in.
+ *
+ * Takes the box rather than a region index because the editor's boxes are
+ * unsaved while they are being dragged, and making an operator save before they
+ * could see a colour would invert the order the panel is used in.
+ */
+export async function resampleTemplateRegionInk(
+  templateId: string,
+  box: { x: number; y: number; w: number; h: number },
+): Promise<ActionResult<{ color: string | null }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+    const region = z
+      .object({
+        x: z.number().min(-1).max(2).finite(),
+        y: z.number().min(-1).max(2).finite(),
+        w: z.number().positive().max(3).finite(),
+        h: z.number().positive().max(3).finite(),
+      })
+      .parse(box);
+
+    const template = await prisma.categoryTemplate.findUnique({
+      where: { id },
+      select: { gDriveFileId: true },
+    });
+    if (!template) return failure('That template no longer exists.');
+
+    let bytes: Buffer;
+    try {
+      bytes = await downloadDriveFile(template.gDriveFileId);
+    } catch (error) {
+      return failure(`The reference could not be read back — ${describeError(error)}.`);
+    }
+
+    // Null is a real answer, not a failure: a box over flat artwork has no ink
+    // in it, and the region falls back to the client's theme.
+    return success({ color: await sampleRegionInk(bytes, region) });
+  } catch (error) {
+    return toFailure(error, 'Sampling the ink colour');
   }
 }
 
