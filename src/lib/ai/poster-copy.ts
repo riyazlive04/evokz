@@ -230,7 +230,9 @@ function describeLayoutFit(shape: LayoutCopyShape): string {
   notes.push(
     shape.hasCta
       ? '- ctaLabel: this layout draws a button. Write the instruction that belongs ' +
-        'on it for this day — two to four words, at most 24 characters.'
+        'on it for this day — two to four words, at most 28 characters including ' +
+        'spaces. One character over and it is discarded for a generic fallback, so ' +
+        'count it.'
       : '- ctaLabel: this layout has no button, but the field is still required. ' +
         'Write a short instruction anyway — it is stored, and is used if this day ' +
         'is later laid out in a template that draws one.',
@@ -253,15 +255,73 @@ function describeLayoutFit(shape: LayoutCopyShape): string {
     );
   }
 
-  // Below roughly a third of the canvas the headline column is narrow enough
-  // that `fittedHeadlineSize` shrinks the type toward its floor, which reads as
-  // a smaller headline rather than a designed one. Shorter lines avoid it.
-  if (shape.headlineWidthShare < 0.45) {
+  /*
+   * The template's own line count, when it was measured.
+   *
+   * `headlineEmphasis` is indexed by line, so writing a different number of
+   * lines from the template's silently flattens the headline: a reference
+   * measured at three lines — accent, accent, heavy — handed two takes `accent`
+   * for both, and every line comes out the same colour. Seen on a live poster,
+   * where a headline designed around one emphasised line rendered as four
+   * identical blue ones.
+   */
+  if (shape.headlineLineCount > 0) {
     notes.push(
-      `- headline: the headline column is only ${Math.round(shape.headlineWidthShare * 100)}% ` +
-        'of the poster width. Keep every line to 12 characters or fewer, and prefer 3-4 short lines over 2 long ones.',
+      `- headline: write exactly ${shape.headlineLineCount} line(s). This template sets its ` +
+        `headline over ${shape.headlineLineCount}, and the emphasis on each line is measured ` +
+        'from it — a different count loses the contrast between them.',
+    );
+  }
+
+  /*
+   * Line length, scaled to the column rather than judged against one threshold.
+   *
+   * This used to fire only below 45% and then ask for 12 characters, which left
+   * everything between "narrow" and "full width" unadvised: a 60% column holds
+   * about eight capitals at headline size, and a 22-character line written for it
+   * wrapped to two visual lines apiece — the headline the copy stage authored as
+   * two lines rendered as four.
+   *
+   * `HEADLINE_CAPS_PER_COLUMN` is derived in reference space rather than measured
+   * here, because this module has no `PosterMetrics` — see the constant.
+   */
+  const budget = headlineCharBudget(shape.headlineWidthShare);
+  if (shape.headlineWidthShare < 0.85) {
+    notes.push(
+      `- headline: the headline column is ${Math.round(shape.headlineWidthShare * 100)}% of the ` +
+        `poster width. Keep every line to ${budget} characters or fewer — past that the ` +
+        'line wraps, which undoes the line breaks you chose.',
     );
   }
 
   return notes.join('\n');
+}
+
+/**
+ * Capitals that fit one headline line before it *wraps*.
+ *
+ * The threshold that matters is wrapping, not shrinking, and the two are far
+ * apart. `fitHeadline` sets a long line smaller — down to 55% of base — and only
+ * wraps once even that will not fit. A line set slightly small still reads as
+ * one deliberate line; a wrapped one destroys the line breaks the copywriter
+ * chose, which is the whole defect this note exists to prevent. Budgeting to the
+ * no-shrink point instead would demand about seven characters in a 60% column
+ * and produce telegraphese for no gain.
+ *
+ * Derived in the reference frame rather than the output canvas, which is the
+ * only option here — this runs in the copy stage, long before a canvas exists.
+ * Both scale together so the ratio holds: `REFERENCE_WIDTH` 940, the 48px canvas
+ * margin each side, `SAFETY` 0.96, a 3-line headline at 86px, the 0.55 shrink
+ * floor, and `AVERAGE_CAP_ADVANCE` 0.75 — the measured advance of a
+ * heavy-grotesque capital, see metrics.ts.
+ *
+ * Lands at ~23 for a full-width column, which is the schema's own 24-character
+ * cap arrived at independently — a good sign the arithmetic is right.
+ *
+ * Floored at 6: below that the advice stops being actionable, and a column that
+ * tight is a layout problem rather than a copy one.
+ */
+function headlineCharBudget(widthShare: number): number {
+  const columnPx = Math.max(0, widthShare * 940 - 96);
+  return Math.max(6, Math.round((columnPx * 0.96) / (0.55 * 86 * 0.75)));
 }

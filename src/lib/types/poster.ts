@@ -95,6 +95,16 @@ export const posterIconSchema = z.enum(POSTER_ICONS);
 // PosterCopy — the LLM's output
 // ---------------------------------------------------------------------------
 
+/**
+ * Ceiling on the CTA button's words, and the fallback when they exceed it.
+ *
+ * Exported so `coercePosterCopy` and the copy prompt cannot drift from the
+ * schema — the defect this pair replaces was exactly that kind of drift, a
+ * repair function truncating to a number the prompt never mentioned.
+ */
+export const CTA_LABEL_MAX = 28;
+export const DEFAULT_CTA_LABEL = 'LEARN MORE';
+
 export const posterFeatureSchema = z.object({
   icon: posterIconSchema,
   /** 1–3 words, noun phrase. Rendered in caps. */
@@ -133,9 +143,14 @@ export const posterCopySchema = z.object({
    * The CTA button's words, e.g. "START INVESTING NOW".
    *
    * Shorter than the contact labels because it is set inside a button rather
-   * than across a bar: past about twenty-four characters the pill either
-   * outgrows its column or the type shrinks below the surrounding copy, and both
-   * read as a mistake.
+   * than across a bar: past about thirty characters the pill either outgrows its
+   * column or the type shrinks below the surrounding copy, and both read as a
+   * mistake.
+   *
+   * **28, not 24.** At 24 the commonest natural CTA there is —
+   * "SCHEDULE YOUR APPOINTMENT", 25 characters — was one over, and
+   * `coercePosterCopy` cut it at a word boundary to "SCHEDULE YOUR". That
+   * shipped on a live poster: a button carrying a dangling possessive.
    *
    * Written per day rather than held on the client, so a 365-day campaign varies
    * its ask — "book a site visit" in one week, "download the brochure" the next
@@ -143,7 +158,7 @@ export const posterCopySchema = z.object({
    * template has a `cta` slot; elsewhere it is stored and unused, exactly like
    * `body` under a template with no body slot.
    */
-  ctaLabel: z.string().trim().min(1).max(24).default('LEARN MORE'),
+  ctaLabel: z.string().trim().min(1).max(CTA_LABEL_MAX).default(DEFAULT_CTA_LABEL),
   /** The trailing-full-stop tic seen in 5/12 references. */
   headlinePeriod: z.boolean().default(false),
 });
@@ -243,7 +258,7 @@ export function coercePosterCopy(raw: unknown): PosterCopy | null {
     // template draws no button will often come back with this empty, and losing
     // the whole day's copy over a field nothing was going to draw is the trade
     // `coercePosterCopy` exists to refuse.
-    ctaLabel: truncateWords(asString(source.ctaLabel), 24) || 'LEARN MORE',
+    ctaLabel: fitCtaLabel(asString(source.ctaLabel)),
     headlinePeriod: source.headlinePeriod === true,
   };
 
@@ -311,6 +326,27 @@ function clampIndex(value: unknown, length: number): number {
     return Math.min(1, length - 1);
   }
   return Math.min(Math.max(Math.trunc(value), 0), Math.max(0, length - 1));
+}
+
+/**
+ * The CTA's words, or the default — never a fragment of them.
+ *
+ * Deliberately *not* `truncateWords`. Cutting a button's label at a word
+ * boundary is the one place that repair produces something worse than the
+ * fallback: "SCHEDULE YOUR APPOINTMENT" became "SCHEDULE YOUR" and shipped, a
+ * dangling possessive set in a pill on a client's poster. Every other truncated
+ * field degrades into a shorter version of itself; an imperative degrades into
+ * nonsense, because the verb's object is the part that gets cut.
+ *
+ * So an over-long label is discarded whole. `DEFAULT_CTA_LABEL` is vaguer than
+ * what the model wrote, and vague is recoverable — the operator sees "LEARN
+ * MORE" on the preview and knows to look. "SCHEDULE YOUR" reads like a bug in
+ * the renderer.
+ */
+function fitCtaLabel(raw: unknown): string {
+  const value = asString(raw);
+  if (!value) return DEFAULT_CTA_LABEL;
+  return value.length <= CTA_LABEL_MAX ? value : DEFAULT_CTA_LABEL;
 }
 
 /** Cuts at the last word boundary inside `max`, never mid-word. */

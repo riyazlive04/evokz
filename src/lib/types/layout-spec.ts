@@ -629,6 +629,17 @@ export interface LayoutCopyShape {
   /** Share of the canvas width the headline column gets, 0–1. */
   headlineWidthShare: number;
   /**
+   * How many headline lines the template was measured to have. 0 when unknown.
+   *
+   * The emphasis pattern is indexed by line, so a mismatch between it and the
+   * copy silently flattens the headline: a template measured at three lines
+   * (`accent, accent, heavy`) handed two lines gives both of them `accent`, and
+   * the contrast that made the reference's headline look designed disappears
+   * entirely. The copy stage had no way to know the count and no reason to guess
+   * it right.
+   */
+  headlineLineCount: number;
+  /**
    * Share of the canvas width the feature block gets, 0–1.
    *
    * Reported for the same reason as the headline's: the block cannot reflow to
@@ -668,5 +679,8 @@ export function describeCopyShape(spec: PosterLayoutSpec): LayoutCopyShape {
     featureBodies: spec.featureStyle === 'labelAndBody',
     headlineWidthShare,
     featureWidthShare,
+    // Empty means the template was read before emphasis was measured, which is
+    // "unknown" rather than "zero lines" — see the field's own note.
+    headlineLineCount: spec.headlineEmphasis.length,
   };
 }
