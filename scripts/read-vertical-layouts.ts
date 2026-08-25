@@ -33,6 +33,12 @@
  *               approved — it clears their approval, and every calendar day
  *               pinned to one fails `pinned-unapproved` until it is approved
  *               again. See the note in the memory on re-reading.
+ *   --labels a,b re-read exactly these templates by name, whatever state they are
+ *               in. The surgical form of `--all`, and the one to reach for when a
+ *               named template has gone wrong: `--all` on a vertical of
+ *               seventeen would withdraw the fourteen that are fine along with
+ *               the three that are not, taking the whole rotation down to fix a
+ *               fifth of it.
  */
 import { Prisma, PrismaClient } from '@prisma/client';
 
@@ -46,9 +52,31 @@ const prisma = new PrismaClient();
 async function main() {
   const args = process.argv.slice(2);
   const all = args.includes('--all');
-  // Only a first read approves itself. See the header.
-  const approveClean = !all;
-  const name = args.filter((arg) => !arg.startsWith('--')).join(' ').trim();
+
+  const labelsArg = args.find((arg) => arg.startsWith('--labels'));
+  const labels = labelsArg
+    ? (labelsArg.includes('=') ? labelsArg.split('=').slice(1).join('=') : (args[args.indexOf(labelsArg) + 1] ?? ''))
+        .split(',')
+        .map((label) => label.trim())
+        .filter(Boolean)
+    : [];
+
+  /*
+   * Only a first read approves itself. See the header.
+   *
+   * A named re-read counts as a re-read: the template is already in the
+   * rotation, and the whole reason for naming it is that what it draws is wrong,
+   * so the last thing this should do is put a fresh unexamined spec straight
+   * back into production.
+   */
+  const approveClean = !all && labels.length === 0;
+  // The value of `--labels x,y` is a bare argument too; drop it before the rest
+  // is read as the vertical's name, or "Medicals Med-SM-12,Med-SM-13" is looked up.
+  const labelValueIndex = labelsArg && !labelsArg.includes('=') ? args.indexOf(labelsArg) + 1 : -1;
+  const name = args
+    .filter((arg, index) => !arg.startsWith('--') && index !== labelValueIndex)
+    .join(' ')
+    .trim();
 
   if (!name) {
     console.error(
@@ -76,10 +104,17 @@ async function main() {
   const templates = await prisma.categoryTemplate.findMany({
     where: {
       categoryId: category.id,
-      // `AnyNull`, not `DbNull`: the column is free-form Json, and a row whose
-      // extraction failed at upload carries a database NULL while one written by
-      // an older path may carry a JSON null. Both mean "never read".
-      ...(all ? {} : { layoutSpec: { equals: Prisma.AnyNull } }),
+      // Named templates are read whatever state they are in — that is the point
+      // of naming them.
+      ...(labels.length > 0
+        ? { label: { in: labels } }
+        : all
+          ? {}
+          : // `AnyNull`, not `DbNull`: the column is free-form Json, and a row
+            // whose extraction failed at upload carries a database NULL while one
+            // written by an older path may carry a JSON null. Both mean "never
+            // read".
+            { layoutSpec: { equals: Prisma.AnyNull } }),
     },
     orderBy: { createdAt: 'asc' },
     select: {
@@ -94,6 +129,18 @@ async function main() {
 
   if (templates.length === 0) {
     console.log(`${category.name}: nothing to read.`);
+    return;
+  }
+
+  // A typo in a label would otherwise read the templates that did match and say
+  // nothing about the one that did not, which on a three-template repair reads
+  // as success.
+  const missing = labels.filter(
+    (label) => !templates.some((template) => template.label === label),
+  );
+  if (missing.length > 0) {
+    console.error(`No template in ${category.name} called: ${missing.join(', ')}`);
+    process.exitCode = 1;
     return;
   }
 
