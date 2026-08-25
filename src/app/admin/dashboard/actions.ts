@@ -1838,7 +1838,9 @@ export interface LogoOutcome {
 export async function uploadVerticalTemplate(
   categoryId: string,
   formData: FormData,
-): Promise<ActionResult<{ id: string; label: string }>> {
+): Promise<
+  ActionResult<{ id: string; label: string; approved: boolean; reasons: string[] }>
+> {
   try {
     const id = z.string().uuid().parse(categoryId);
 
@@ -1948,7 +1950,29 @@ export async function uploadVerticalTemplate(
     });
 
     revalidateAdmin();
-    return success(created);
+
+    /*
+     * The verdict travels back with the row.
+     *
+     * An upload that reads badly is not an error — the file is in Drive, the row
+     * exists, and the action succeeded. But it is also not what the operator
+     * wanted, and before this the only sign of that was a card somewhere down a
+     * grid of twenty-four with an amber line on it. Somebody uploading a batch
+     * would never see it.
+     *
+     * So the reasons come back and the panel puts them in front of the operator
+     * next to a delete button, while they still have the file open in whatever
+     * they exported it from. A bad reference is usually a bad *file* — a
+     * screenshot with browser chrome, a poster saved at 300px, the wrong export
+     * — and the fix is nearly always to delete it and upload a better one.
+     */
+    return success({
+      ...created,
+      approved: Boolean(draft.spec) && draft.problems.length === 0 && draft.risks.length === 0,
+      // Problems first: a structural fault is the more concrete complaint, and
+      // an operator reading two lines should read that one first.
+      reasons: [...draft.problems, ...draft.risks],
+    });
   } catch (error) {
     return toFailure(error, 'Uploading template');
   }

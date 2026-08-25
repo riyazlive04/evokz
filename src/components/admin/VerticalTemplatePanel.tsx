@@ -117,6 +117,17 @@ export function VerticalTemplatePanel({
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [progress, setProgress] = React.useState<string | null>(null);
   const [problems, setProblems] = React.useState<string[]>([]);
+  /**
+   * Templates from this batch that uploaded fine and are not usable.
+   *
+   * Held in the panel rather than read off the cards, because the cards are the
+   * problem: a batch of twenty-four puts the one bad reference somewhere down a
+   * grid, and an operator who has just uploaded is looking at the button, not
+   * the grid. Cleared when the next batch starts.
+   */
+  const [rejected, setRejected] = React.useState<
+    { id: string; label: string; reasons: string[] }[]
+  >([]);
 
   const upload = useAction(uploadVerticalTemplate);
 
@@ -131,7 +142,9 @@ export function VerticalTemplatePanel({
     if (chosen.length === 0) return;
 
     setProblems([]);
+    setRejected([]);
     const failures: string[] = [];
+    const held: { id: string; label: string; reasons: string[] }[] = [];
     // Only as many as the vertical can still hold; the action enforces the same
     // cap, but stopping here avoids a run of guaranteed failures.
     const queue = chosen.slice(0, Math.max(0, remaining));
@@ -147,11 +160,26 @@ export function VerticalTemplatePanel({
       const body = new FormData();
       body.set('template', file);
       const result = await upload.run(categoryId, body);
-      if (!result.ok) failures.push(`${file.name}: ${result.error}`);
+      if (!result.ok) {
+        failures.push(`${file.name}: ${result.error}`);
+      } else if (!result.data.approved) {
+        held.push({
+          id: result.data.id,
+          label: result.data.label,
+          // An extraction that produced nothing at all reports no reasons, and
+          // "held back, no reason given" is the one message this panel must
+          // never show.
+          reasons:
+            result.data.reasons.length > 0
+              ? result.data.reasons
+              : ['no layout could be read from this image at all.'],
+        });
+      }
     }
 
     setProgress(null);
     setProblems(failures);
+    setRejected(held);
     if (fileRef.current) fileRef.current.value = '';
   }
 
@@ -204,6 +232,30 @@ export function VerticalTemplatePanel({
         step. Render the vertical afterwards (<code>npm run check:fleet</code>) and
         withdraw anything wrong.
       </p>
+
+      {rejected.length > 0 && (
+        <div className="space-y-2 rounded border border-warning-ink/40 bg-warning-ink/5 p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-warning-ink">
+            {rejected.length} of this batch did not go live
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            These uploaded and are stored, but nothing will draw from them. Usually the
+            file is the problem — a screenshot with browser chrome, a poster saved too
+            small, the wrong export — so the fix is to delete it and upload a better one
+            while you still have it open.
+          </p>
+
+          {rejected.map((template) => (
+            <RejectedUpload
+              key={template.id}
+              template={template}
+              onDeleted={() =>
+                setRejected((current) => current.filter((row) => row.id !== template.id))
+              }
+            />
+          ))}
+        </div>
+      )}
 
       {full && (
         <p className="text-[11px] text-warning-ink">
@@ -409,6 +461,78 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
         </p>
       )}
     </article>
+  );
+}
+
+/**
+ * One upload that landed and cannot be used, with the reason and a way out.
+ *
+ * The delete is labelled and single-click, unlike the icon on the card, and both
+ * of those are deliberate. The card's trash button guards against destroying a
+ * template someone has been working on for a week, so it asks twice and says
+ * nothing; this one acts on a file uploaded ten seconds ago that the panel has
+ * just finished explaining is unusable, where a second click is friction
+ * protecting nothing. The reason sits above it so the choice is informed rather
+ * than obedient — some of these are worth keeping and correcting by hand.
+ */
+function RejectedUpload({
+  template,
+  onDeleted,
+}: {
+  template: { id: string; label: string; reasons: string[] };
+  onDeleted: () => void;
+}) {
+  const remove = useAction(deleteVerticalTemplate);
+
+  return (
+    <div className="space-y-1.5 rounded border border-border bg-background p-2">
+      <div className="flex items-start justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">{template.label}</span>
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 shrink-0 px-2 text-[10px]"
+          disabled={remove.pending}
+          onClick={async () => {
+            const result = await remove.run(template.id);
+            // Dropped from the list only once the row and its Drive file are
+            // actually gone — a failed delete that vanished from the panel would
+            // leave an unusable template in the vertical with nothing pointing
+            // at it.
+            if (result.ok) onDeleted();
+          }}
+        >
+          {remove.pending ? (
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+          ) : (
+            <Trash2 className="mr-1 h-3 w-3" />
+          )}
+          Delete it
+        </Button>
+      </div>
+
+      <ul className="list-disc space-y-0.5 pl-3.5 text-[11px] text-warning-ink">
+        {template.reasons.map((reason) => (
+          <li key={reason}>{reason}</li>
+        ))}
+      </ul>
+
+      <a
+        href={`/api/poster/preview?templateId=${template.id}`}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="inline-block text-[11px] text-primary hover:underline"
+      >
+        See what it would draw
+      </a>
+
+      {remove.error && (
+        <p role="alert" className="text-[11px] text-danger-ink">
+          {remove.error}
+        </p>
+      )}
+    </div>
   );
 }
 
