@@ -32,6 +32,17 @@ export const queueSelect = {
   gDriveFileId: true,
   gDriveViewUrl: true,
   errorMessage: true,
+  /*
+   * Which template drew this poster.
+   *
+   * `posterTemplateId` is the pin and the relation is its label, and both are
+   * needed: the id being set is what distinguishes a day a sheet *named* a
+   * template for from one the rotation chose, and those answer different
+   * questions when a poster comes out wrong. A pinned day is fixed by editing
+   * the sheet; a rotated one is fixed by withdrawing the template.
+   */
+  posterTemplateId: true,
+  posterTemplate: { select: { label: true } },
   client: { select: { companyName: true, whatsappNumber: true, cronTime: true } },
 } as const;
 
@@ -49,6 +60,8 @@ export interface QueueRecord {
   gDriveFileId: string | null;
   gDriveViewUrl: string | null;
   errorMessage: string | null;
+  posterTemplateId: string | null;
+  posterTemplate: { label: string } | null;
   client: { companyName: string; whatsappNumber: string; cronTime: string };
 }
 
@@ -73,6 +86,14 @@ export function toQueueEntry(
     hashtags: entry.hashtags,
     scheduledLabel: formatDisplayDate(entry.scheduledDate, timeZone),
     status: entry.deliveryStatus,
+    /*
+     * Null on a day that has not been drawn yet, and on one whose template has
+     * since been deleted — `posterTemplateId` is `SetNull` on delete, so the
+     * relation goes with it. Both are honestly "unknown" rather than a name to
+     * invent, and the card says so.
+     */
+    templateLabel: entry.posterTemplate?.label ?? null,
+    templatePinned: entry.posterTemplateId !== null,
     // Only meaningful while the poster is waiting out its send delay. A row that
     // already went out has this cleared, and one that failed is described by its
     // errorMessage instead — so the label is never stale.

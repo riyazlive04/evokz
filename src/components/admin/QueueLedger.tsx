@@ -5,6 +5,7 @@ import {
   ExternalLink,
   EyeOff,
   ImageOff,
+  Layers,
   Maximize2,
   Send,
 } from 'lucide-react';
@@ -29,6 +30,18 @@ export interface QueueEntry {
   awaitingApproval: boolean;
   /** Approved but not yet booked to send, so the approval can still be taken back. */
   canWithdrawApproval: boolean;
+  /**
+   * The reference template this poster was drawn from, or null when no template
+   * is recorded — a day not yet generated, or one whose template was deleted.
+   *
+   * The single most-asked question about a finished poster and, until now, one
+   * the console could not answer at all: an operator looking at a creative that
+   * came out wrong had no way to get from it back to the template responsible,
+   * short of a database query.
+   */
+  templateLabel: string | null;
+  /** True when a sheet named that template for this day, rather than the rotation choosing it. */
+  templatePinned: boolean;
   /** Lightweight Drive thumbnail; falls back to the raw view URL. */
   thumbnailUrl: string | null;
   /**
@@ -183,6 +196,23 @@ function QueueCard({
             <Clock className="h-3 w-3" />
             {entry.scheduledLabel} · {entry.cronTime} · +{entry.whatsappNumber}
           </p>
+          {/* Which reference drew this. Rendered only once there is one, so a
+              day still waiting to generate does not claim a template it has not
+              been given — the pin is written by the import, but the rotation
+              picks at render time and a pending row genuinely has no answer.
+
+              "pinned" vs "rotation" is the actionable half: the same wrong
+              poster is fixed by editing the sheet in one case and by
+              withdrawing the template in the other. */}
+          {entry.templateLabel && (
+            <p className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+              <Layers className="h-3 w-3" />
+              {entry.templateLabel}
+              <span className="text-muted-foreground/60">
+                {entry.templatePinned ? '· pinned by sheet' : '· rotation'}
+              </span>
+            </p>
+          )}
           {/* Explains the otherwise-puzzling state of a poster that exists but
               has not been sent: it is waiting out its randomised send delay. */}
           {entry.sendAfterLabel && (
