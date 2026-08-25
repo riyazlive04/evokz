@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { prisma } from '@/lib/prisma';
+import { assessAutoApproval } from '@/lib/poster/layout-risk';
 import { parseLayoutDraft } from '@/lib/types/layout-spec';
 import { parsePlateDraft } from '@/lib/types/plate-spec';
 
@@ -108,6 +109,18 @@ export default async function VerticalDetailPage({
         layoutProblems: draft.problems.map(
           (problem) => `${problem.path} ${problem.message}`,
         ),
+        /*
+         * Recomputed on every read rather than stored beside the spec.
+         *
+         * There is no column for it and there should not be: the assessment is a
+         * pure function of the spec and the reading, both already here, and a
+         * stored copy would go stale the moment the rules change — reporting
+         * "safe" for a template the current build would decline. Cheap enough to
+         * run for a page of twenty-four.
+         */
+        layoutRisks: draft.spec
+          ? assessAutoApproval(draft.spec, template.layoutReading).map((risk) => risk.message)
+          : [],
       };
     })(),
     layoutReading: template.layoutReading,

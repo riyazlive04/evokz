@@ -14,6 +14,13 @@
  * nothing — a day resolving to it fails `pinned-unreadable` or quietly drops out
  * of the walk — so they are listed for correction instead.
  *
+ * **And only what `assessAutoApproval` trusts.** Rendering is the lower bar and
+ * on its own it is not enough: a spec that lost its photograph renders a
+ * flawless poster that is two thirds empty colour, and the structural check
+ * calls it clean. This script exists to sweep a backlog in one command, which is
+ * exactly the circumstance where nobody is looking at each one — so it declines
+ * those and names them.
+ *
  * **It cannot un-approve.** Withdrawing is a judgement about a poster somebody
  * looked at, and the console is where that belongs.
  *
@@ -30,6 +37,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 
+import { assessAutoApproval } from '@/lib/poster/layout-risk';
 import { parseLayoutDraft } from '@/lib/types/layout-spec';
 
 const prisma = new PrismaClient();
@@ -75,7 +83,7 @@ async function main() {
     const templates = await prisma.categoryTemplate.findMany({
       where: { categoryId: category.id, layoutApprovedAt: null },
       orderBy: { createdAt: 'asc' },
-      select: { id: true, label: true, layoutSpec: true },
+      select: { id: true, label: true, layoutSpec: true, layoutReading: true },
     });
 
     console.log(`\n${category.name}: ${templates.length} unapproved template(s).`);
@@ -102,6 +110,15 @@ async function main() {
         continue;
       }
 
+      const risks = assessAutoApproval(draft.spec, template.layoutReading);
+      if (risks.length > 0) {
+        skipped += 1;
+        console.log(
+          `  SKIP   ${template.label} — ${risks.map((r) => r.message).join(' ')}`,
+        );
+        continue;
+      }
+
       approved += 1;
       if (!dryRun) {
         await prisma.categoryTemplate.update({
@@ -116,7 +133,8 @@ async function main() {
   console.log(
     `\n${dryRun ? 'Would approve' : 'Approved'} ${approved}, skipped ${skipped}.` +
       (skipped > 0
-        ? ' Skipped templates need their layout read or corrected in the console.'
+        ? ' Skipped templates need a human: open each in the console, render it, and ' +
+          'approve it there if it is right.'
         : ''),
   );
 }

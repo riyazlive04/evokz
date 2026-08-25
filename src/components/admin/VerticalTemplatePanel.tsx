@@ -60,6 +60,16 @@ export interface VerticalTemplateRow {
   layoutSpec: string | null;
   /** Why the draft cannot render yet. Empty when it is good to approve. */
   layoutProblems: string[];
+  /**
+   * Why this draft did not approve itself, though it renders.
+   *
+   * Distinct from `layoutProblems`, which is geometry the renderer refuses.
+   * These are specs that draw a perfectly good-looking poster that is wrong —
+   * the extractor contradicting its own reading, or a layout whose only flexible
+   * band has nothing in it to hold the space open. An operator may still approve
+   * past one by hand; the point is that nothing does it for them.
+   */
+  layoutRisks: string[];
   /** The model's band-by-band reading, or why there isn't one. */
   layoutReading: string | null;
   /** True once an operator has confirmed the spec against the template. */
@@ -465,13 +475,26 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
               ? 'Needs a correction before it can render:'
               : template.layoutApproved
                 ? 'Approved — this template’s own layout is in the rotation.'
-                : 'Draft — not in the rotation. A clean extraction approves itself, so this one was either re-read or has a fault below.'}
+                : template.layoutRisks.length > 0
+                  ? 'Held back — this one did not approve itself. Render it before you decide:'
+                  : 'Draft — not in the rotation. A clean extraction approves itself, so this one was either re-read or has a fault below.'}
           </p>
 
           {broken && (
             <ul className="list-disc space-y-0.5 pl-3.5 text-[10px] text-danger-ink">
               {template.layoutProblems.map((problem) => (
                 <li key={problem}>{problem}</li>
+              ))}
+            </ul>
+          )}
+
+          {/* Only while it is unapproved. Once a human has approved past a risk
+              the warning has been answered, and repeating it on every page load
+              would train the operator to ignore the colour. */}
+          {!template.layoutApproved && !broken && template.layoutRisks.length > 0 && (
+            <ul className="list-disc space-y-0.5 pl-3.5 text-[10px] text-warning-ink">
+              {template.layoutRisks.map((risk) => (
+                <li key={risk}>{risk}</li>
               ))}
             </ul>
           )}

@@ -11,9 +11,10 @@
  * plate.
  *
  * **A clean first read is approved automatically**, matching what an upload now
- * does. A draft with structural problems is not: `parseLayoutSpec` refuses it at
- * render time, so approving one would put a template in the rotation that never
- * draws. Those are listed for correction.
+ * does. Two things stop that: a structural problem, which `parseLayoutSpec`
+ * refuses at render time anyway, and a risk from `assessAutoApproval` — a spec
+ * that renders perfectly well and is wrong, such as one that contradicts its own
+ * reading about how many photographs the poster has. Both are listed.
  *
  * **A re-read under `--all` is never approved**, and that asymmetry is the point.
  * A first read is a template that could not be used at all, so approving it can
@@ -37,6 +38,7 @@ import { Prisma, PrismaClient } from '@prisma/client';
 
 import { extractLayoutSpec } from '@/lib/ai/layout-extractor';
 import { downloadDriveFile } from '@/lib/google-drive';
+import { assessAutoApproval } from '@/lib/poster/layout-risk';
 import { readImageDimensions } from '@/lib/poster/image-info';
 
 const prisma = new PrismaClient();
@@ -125,18 +127,25 @@ async function main() {
           // Cleared on a re-read even when it was set: the approval on file
           // refers to the spec this one replaced.
           layoutApprovedAt:
-            approveClean && draft.problems.length === 0 ? new Date() : null,
+            approveClean &&
+            draft.problems.length === 0 &&
+            assessAutoApproval(draft.spec, draft.reading).length === 0
+              ? new Date()
+              : null,
         },
       });
 
-      const problems = draft.problems.length;
+      const problems = draft.problems.map((p) => `${p.path} ${p.message}`);
+      const risks = assessAutoApproval(draft.spec, draft.reading).map((r) => r.message);
+
       console.log(
-        problems > 0
-          ? `read with ${problems} problem(s) to correct, left unapproved: ` +
-              draft.problems.map((p) => `${p.path} ${p.message}`).join('; ')
-          : approveClean
-            ? 'read and approved — in the rotation'
-            : 'read — re-reads are left unapproved, approve it in the console',
+        problems.length > 0
+          ? `read with ${problems.length} problem(s), left unapproved: ${problems.join('; ')}`
+          : risks.length > 0
+            ? `read but NOT approved — ${risks.join(' ')}`
+            : approveClean
+              ? 'read and approved — in the rotation'
+              : 'read — re-reads are left unapproved, approve it in the console',
       );
     } catch (error) {
       failed += 1;

@@ -40,6 +40,7 @@ import {
   validateLayoutSpec,
 } from '@/lib/types/layout-spec';
 import { readImageDimensions } from '@/lib/poster/image-info';
+import { assessAutoApproval } from '@/lib/poster/layout-risk';
 import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key';
 import { BODY_FONT_OPTIONS, HEADING_FONT_OPTIONS } from '@/lib/poster/theme';
 import { sampleRegionInk } from '@/lib/poster/plate-ink';
@@ -1938,7 +1939,10 @@ export async function uploadVerticalTemplate(
          * every stored spec to a folder, and it is now the only thing standing
          * between a misread and a client.
          */
-        layoutApprovedAt: draft.spec && draft.problems.length === 0 ? new Date() : null,
+        layoutApprovedAt:
+          draft.spec && draft.problems.length === 0 && draft.risks.length === 0
+            ? new Date()
+            : null,
       },
       select: { id: true, label: true },
     });
@@ -1955,6 +1959,15 @@ interface LayoutDraft {
   /** Operator-facing: the model's reading, or why there isn't one. */
   reading: string;
   problems: string[];
+  /**
+   * Faults that render fine and are wrong — see `assessAutoApproval`.
+   *
+   * Separate from `problems` because they mean something different to the
+   * caller: a problem makes the spec inert, while a risk makes it *plausible*.
+   * Only auto-approval reads this; an operator may still approve past it by
+   * hand, having looked.
+   */
+  risks: string[];
 }
 
 /**
@@ -2001,6 +2014,7 @@ async function readLayoutQuietly(
       spec: result.spec as unknown as Prisma.InputJsonValue,
       reading: result.reading,
       problems,
+      risks: assessAutoApproval(result.spec, result.reading).map((risk) => risk.message),
     };
   } catch (error) {
     const message = describeError(error);
@@ -2009,6 +2023,7 @@ async function readLayoutQuietly(
       spec: null,
       reading: `Layout could not be read automatically: ${message}`,
       problems: [message],
+      risks: [],
     };
   }
 }

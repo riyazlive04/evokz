@@ -99,10 +99,23 @@ whose geometry the vision extractor read and whose `layoutApprovedAt` is set. Th
 built-in compositions: a vertical with no approved template cannot generate at all, and says so
 as a `[compose]` failure naming the fix.
 
-**Approval is automatic when the extraction is clean.** Uploading a template approves it there
-and then, provided `validateLayoutSpec` found no structural fault — a draft with a fault is
-stored unapproved, because `parseLayoutSpec` refuses it at render time and approving it would
-put a template in the rotation that never draws. Two paths still leave a template withdrawn and
+**Approval is automatic when the extraction is clean**, and "clean" means two separate things.
+`validateLayoutSpec` must find no structural fault — a spec that fails it is refused by
+`parseLayoutSpec` at render time anyway, so approving one would put a template in the rotation
+that never draws. And `assessAutoApproval` ([src/lib/poster/layout-risk.ts](src/lib/poster/layout-risk.ts))
+must find no risk.
+
+That second gate exists because the structural check is not enough, measured against the real
+library rather than assumed. Of 31 stored templates, two contradict their own reading — the
+model states it saw a photograph and then emits no photo slot in the same response — and two
+have a *hollow flex row*: no photograph anywhere, and the row that absorbs leftover space holds
+only a contact bar, which the renderer does not grow. Both render a flawless 1080×1920 PNG that
+is two thirds empty colour with a phone number floating in it, and `validateLayoutSpec` calls
+every one of them clean. The two faults overlap in one template and miss each other in two, so
+both checks are needed. An unparseable reading fails closed. `npm run check:risk` holds all four
+as fixtures.
+
+A held-back template says why on its card, and a human can still approve it after looking. Two paths still leave a template withdrawn and
 both are re-reads: the console's *Read layout* button and `layouts:read --all`. A re-read
 replaces geometry that is already drawing live posters, with a non-deterministic result, and
 that is the case still worth a human.
@@ -490,6 +503,7 @@ the client is already generated.
 | `npm run lint` | ESLint (next/core-web-vitals) |
 | `npm run check:secret-box` | Fixture suite for the at-rest encryption — no database needed |
 | `npm run check:plate` | Compositing, hole detection and ink sampling for the clean-plate path |
+| `npm run check:risk` | The auto-approval gate, against four real templates that render fine and are wrong |
 | `npm run layouts:read <vertical>` | Read a layout for every template in a vertical that has none, approving the clean ones. One vision call per template |
 | `npm run layouts:approve <vertical>` | Approve every stored layout in a vertical that would render. `--dry-run` to preview; never un-approves |
 | `npm run check:fleet -- ./review` | Render every stored spec, approved or not, to a folder. The review surface |
