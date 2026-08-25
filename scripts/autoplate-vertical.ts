@@ -35,6 +35,7 @@
  * Run: DATABASE_URL=… OPENAI_API_KEY=… FAL_KEY=… \
  *        scripts/autoplate-vertical.ts <vertical> <snapshotDir> [--labels a,b] [--replace]
  */
+import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 
 import { Prisma, PrismaClient } from '@prisma/client';
@@ -56,7 +57,27 @@ const prisma = new PrismaClient();
  * block. Generous is safe — the surrounding artwork reconstructs from its own
  * neighbourhood — while tight is the one setting that produces garbage.
  */
-const PAD = 0.055;
+const DEFAULT_PAD = 0.055;
+
+/**
+ * How much of the poster the mask reaches beyond a reported region.
+ *
+ * Tunable because the right value depends on what the type sat on. 5.5% clears
+ * a headline on flat colour; text over card chrome or busy photography needs
+ * more, because the eraser reconstructs from what surrounds the mask and a
+ * boundary that still contains letter-shapes gives it letter-shapes to copy.
+ * Too much erases artwork worth keeping, so this is a dial rather than a
+ * constant.
+ */
+function padFrom(args: string[]): number {
+  const flag = args.find((a) => a.startsWith('--pad'));
+  if (!flag) return DEFAULT_PAD;
+  const raw = flag.includes('=')
+    ? flag.split('=')[1]
+    : args[args.indexOf(flag) + 1];
+  const value = Number.parseFloat(raw ?? '');
+  return Number.isFinite(value) && value > 0 && value < 0.5 ? value : DEFAULT_PAD;
+}
 
 function eraserEndpoint(): string {
   return process.env.FAL_ERASER_ENDPOINT || 'fal-ai/bria/eraser';
@@ -67,6 +88,7 @@ async function buildMask(
   width: number,
   height: number,
   boxes: ReadonlyArray<{ x: number; y: number; w: number; h: number }>,
+  PAD: number,
 ): Promise<Buffer> {
   const rects = boxes
     .map((b) => {
@@ -118,6 +140,7 @@ async function erase(image: Buffer, mimeType: string, mask: Buffer, key: string)
 async function main() {
   const args = process.argv.slice(2);
   const replace = args.includes('--replace');
+  const pad = padFrom(args);
 
   const labelsArg = args.find((a) => a.startsWith('--labels'));
   const labelValueIndex = labelsArg && !labelsArg.includes('=') ? args.indexOf(labelsArg) + 1 : -1;
@@ -128,8 +151,12 @@ async function main() {
         .filter(Boolean)
     : [];
 
+  // A flag's value is a bare argument too, so drop those before reading the
+  // vertical and the snapshot directory off the front.
+  const padFlag = args.find((a) => a.startsWith('--pad'));
+  const padValueIndex = padFlag && !padFlag.includes('=') ? args.indexOf(padFlag) + 1 : -1;
   const positional = args.filter(
-    (a, i) => !a.startsWith('--') && i !== labelValueIndex,
+    (a, i) => !a.startsWith('--') && i !== labelValueIndex && i !== padValueIndex,
   );
   const name = positional[0];
   const snapshotDir = positional[1];
@@ -198,12 +225,23 @@ async function main() {
       // Snapshotted before anything is written, so this template can be put back
       // exactly as it was. See template-snapshot.ts for why re-reading is not a
       // restore.
+      /*
+       * Written once and never overwritten.
+       *
+       * A `--replace` run would otherwise snapshot the state *with* the previous
+       * plate on it, so "restore" would put back the plate being replaced rather
+       * than the template as it was before any of this — quietly turning the
+       * revert into a no-op after the second attempt.
+       */
+      const snapshotPath = `${snapshotDir}/${template.label}.json`;
       const { id: _id, mimeType: _m, gDriveFileId: _g, ...columns } = template;
-      await writeFile(
-        `${snapshotDir}/${template.label}.json`,
-        JSON.stringify({ templateId: template.id, saved: true, row: columns }, null, 2),
-        'utf8',
-      );
+      if (!existsSync(snapshotPath)) {
+        await writeFile(
+          snapshotPath,
+          JSON.stringify({ templateId: template.id, saved: true, row: columns }, null, 2),
+          'utf8',
+        );
+      }
 
       const reference = await downloadDriveFile(template.gDriveFileId);
       const meta = await sharp(reference).metadata();
@@ -218,7 +256,7 @@ async function main() {
       });
       if (draft.regions.length === 0) throw new Error('no type found to erase');
 
-      const mask = await buildMask(width, height, draft.regions);
+      const mask = await buildMask(width, height, draft.regions, pad);
       const erased = await erase(reference, template.mimeType, mask, credentials.key);
 
       const holes = await findPlateHoles(erased);
