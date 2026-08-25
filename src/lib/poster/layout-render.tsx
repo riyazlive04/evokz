@@ -113,6 +113,154 @@ function slotGap(previous: LayoutSlot, next: LayoutSlot): number {
   return 24;
 }
 
+
+// ---------------------------------------------------------------------------
+// Chrome
+// ---------------------------------------------------------------------------
+
+/**
+ * The marks a template uses to fill space, which the slot vocabulary has no way
+ * to describe.
+ *
+ * A rebuilt poster comes out emptier than its reference and the photograph is
+ * rarely the reason. Measured on the HealthFirst medical template: a faithful
+ * spec, a correct render, and 60% of the canvas bare — because the panel behind
+ * the service list, the shape behind the cut-out doctor and the curve over the
+ * footer are all chrome, and chrome had no representation at all. Slots carry
+ * content; these carry the surface it sits on.
+ *
+ * Drawn as inline SVG because satori rasterises it — the same route
+ * `icons.tsx` takes — so a curve is a real curve rather than a border-radius
+ * approximation of one.
+ *
+ * **Every colour comes from the theme, never from a stored hex.** The reference
+ * being teal must not make a green client's poster teal, which is the rule
+ * `LAYOUT_FILLS` exists to enforce and applies with equal force here.
+ */
+
+/**
+ * A dome cut into the top of a filled band, so it meets the page on a curve.
+ *
+ * Painted as the *page* colour over the band's own fill rather than as the band
+ * over the page, and that inversion is what makes it work at all. The canvas
+ * clips overflow, so a shape hanging up into the row above would be sliced off
+ * at the very boundary it exists to soften; masking downward from inside the
+ * row has nothing to clip.
+ *
+ * **Explicit pixel dimensions, never percentages.** Satori resolves `<svg>` the
+ * way `icons.tsx` uses it — numeric `width`/`height` against a `viewBox`. A
+ * percentage-sized SVG with `preserveAspectRatio="none"` renders, and renders
+ * its path as a filled rectangle: the first version of this drew a perfectly
+ * straight edge and looked like the feature had simply not been wired up.
+ *
+ * The cap is a fixed height rather than a share of the band, so a slim footer
+ * and a tall hero get the same sweep instead of the tall one getting a bulge.
+ */
+function BandCurveCap({
+  pageColor,
+  width,
+  height,
+}: {
+  pageColor: string;
+  width: number;
+  height: number;
+}) {
+  // Everything above the dome, filled in the page's own colour. The control
+  // point at -height puts the apex exactly on the band's top edge.
+  const d = `M0 0 L${width} 0 L${width} ${height} Q ${width / 2} ${-height} 0 ${height} Z`;
+
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      style={{ position: 'absolute', left: 0, top: 0 }}
+    >
+      <path d={d} fill={pageColor} />
+    </svg>
+  );
+}
+
+/**
+ * A large accent form anchored to the bottom of a cell, for a cut-out figure to
+ * stand in front of.
+ *
+ * A `subject` photo is a person with their background removed. On bare canvas
+ * they float, which is the single thing that makes a composite read as
+ * unfinished — and nearly every reference that uses a cut-out puts a shape
+ * behind them. This is the general case of that shape.
+ *
+ * Deliberately anchored below and oversized horizontally: a disc centred in the
+ * cell would halo the figure's head, which looks like a mistake. Sitting low
+ * behind their body is what the references actually do.
+ */
+/**
+ * A rounded panel behind a cell's content.
+ *
+ * A plain rectangle rather than anything cleverer, because that is what
+ * reference panels overwhelmingly are — the "OUR SERVICES" block on the
+ * HealthFirst template, the offer card on a restaurant poster, the spec sheet on
+ * a property listing. What makes them read as panels is the radius and the
+ * hairline, not the shape.
+ *
+ * A `div` rather than SVG: satori draws rounded borders natively, and a real
+ * border hairlines more crisply than a stroked rect scaled by
+ * `preserveAspectRatio: none`, which would thin the edge on one axis.
+ */
+function CardSurface({
+  color,
+  borderColor,
+  radius,
+}: {
+  color: string;
+  borderColor: string;
+  radius: number;
+}) {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        display: 'flex',
+        backgroundColor: color,
+        borderRadius: radius,
+        border: `1px solid ${borderColor}`,
+      }}
+    />
+  );
+}
+
+function SubjectBackdrop({ color, width }: { color: string; width: number }) {
+  /*
+   * Sized off the column's width and anchored to its floor, because the cell's
+   * height is not knowable here — it is whatever the flex row settles on, and
+   * satori needs a number before that is decided. A disc as wide as the column
+   * is the right scale for a figure standing in it whatever the band's height
+   * turns out to be.
+   */
+  const box = width;
+
+  return (
+    <svg
+      width={box}
+      height={box}
+      viewBox={`0 0 ${box} ${box}`}
+      style={{ position: 'absolute', left: 0, bottom: 0 }}
+    >
+      <ellipse
+        cx={box * 0.55}
+        cy={box * 0.86}
+        rx={box * 0.62}
+        ry={box * 0.52}
+        fill={color}
+      />
+    </svg>
+  );
+}
+
 function fillColor(fill: LayoutFill, theme: PosterTheme): string | undefined {
   switch (fill) {
     case 'light':
@@ -243,6 +391,18 @@ function Row({
 
   const totalWeight = row.cells.reduce((sum, cell) => sum + cell.weight, 0);
 
+  /*
+   * The cap masks the band rather than replacing it, so the row paints its fill
+   * exactly as it always did and the curve is drawn over the top of it.
+   */
+  const bandColor = fillColor(row.fill, theme);
+  const curved = row.edge === 'curveTop' && bandColor !== undefined;
+  // The colour the band is meeting. The canvas ground, not the row above's own
+  // fill: a curve between two filled bands is not a shape this expresses, and
+  // guessing at the neighbour would be wrong more often than it was right.
+  const pageColor = canvasIsDark ? theme.darkNeutral : theme.lightNeutral;
+  const capHeight = metrics.s(70);
+
   return (
     <div
       style={{
@@ -251,10 +411,10 @@ function Row({
         width: metrics.width,
         alignItems: 'stretch',
         overflow: 'hidden',
+        // The curve is absolutely positioned against this box.
+        position: 'relative',
         ...sizing,
-        ...(fillColor(row.fill, theme)
-          ? { backgroundColor: fillColor(row.fill, theme) }
-          : {}),
+        ...(bandColor ? { backgroundColor: bandColor } : {}),
       }}
     >
       {row.cells.map((cell, index) => (
@@ -269,6 +429,19 @@ function Row({
           photoIndexAt={photoIndexAt}
         />
       ))}
+
+      {/*
+        * Last, so it paints over the cells and not just the row.
+        *
+        * A cell carries its own `fill`, and a band's cells are routinely filled
+        * the same colour as the band — so a cap drawn before them was painted
+        * straight over by the first cell that had a background, and the edge came
+        * out perfectly straight with no sign anything had been attempted. It is a
+        * mask, and a mask belongs on top.
+        */}
+      {curved && (
+        <BandCurveCap pageColor={pageColor} width={metrics.width} height={capHeight} />
+      )}
     </div>
   );
 }
@@ -322,7 +495,29 @@ function Cell({
   const drawnSlots = isOverlay ? cell.slots.filter((slot) => slot !== 'photo') : cell.slots;
 
   const bleeds = drawnSlots.every((slot) => SELF_BLEEDING.has(slot));
-  const padding = cell.padded && !bleeds ? metrics.margin : 0;
+
+  /*
+   * A card is a surface, so it needs room between its edge and its type.
+   *
+   * An unpadded card would set the service list hard against the panel's own
+   * border, which is the one thing that makes a panel look like an accident.
+   * The inset is the canvas margin again rather than a new constant — the same
+   * rhythm every other inset on the poster uses.
+   */
+  const isCard = cell.surface === 'card';
+  /*
+   * A card in `inherit` has no fill of its own, so it takes the neutral of the
+   * family it is sitting in — light on a light page, dark on a dark one — and
+   * lets the hairline do the separating. That is what the references do: the
+   * HealthFirst service panel is a near-white block on a near-white field, read
+   * as a panel entirely by its radius and its edge. Flipping to the opposite
+   * neutral would turn a quiet panel into a slab and change the poster's
+   * balance, which is not what "draw this as a card" asked for.
+   */
+  const cardColor =
+    (cell.fill !== 'inherit' ? fillColor(cell.fill, theme) : undefined) ??
+    (ground.isDark ? theme.darkNeutral : theme.lightNeutral);
+  const padding = isCard ? metrics.margin : cell.padded && !bleeds ? metrics.margin : 0;
   const contentWidth = Math.max(1, width - padding * 2);
 
   /*
@@ -394,15 +589,27 @@ function Cell({
         padding: isOverlay ? 0 : padding,
         overflow: 'hidden',
         alignItems: isOverlay ? 'stretch' : FLEX[cell.align],
-        // A hug row is exactly as tall as its content, so there is nothing to
-        // distribute; a flex or fixed row has slack, and content pinned to the
-        // top of a tall band reads as a mistake.
-        justifyContent: rowIsHug ? 'flex-start' : 'center',
-        ...(cell.fill !== 'inherit' && fillColor(cell.fill, theme)
+        /*
+         * A hug row is exactly as tall as its content, so there is nothing to
+         * distribute. A flex or fixed row has slack, and where that slack goes
+         * is now the spec's decision rather than always "the middle".
+         *
+         * Centring unconditionally is what left a third of the HealthFirst
+         * rebuild blank above its headline: the reference starts its copy near
+         * the top of the band and the renderer had no way to be told so.
+         * `valign` defaults to `center`, so every stored spec draws as before.
+         */
+        justifyContent: rowIsHug ? 'flex-start' : FLEX[cell.valign],
+        ...(cell.fill !== 'inherit' && fillColor(cell.fill, theme) && !isCard
           ? { backgroundColor: fillColor(cell.fill, theme) }
           : {}),
       }}
     >
+      {/* Behind everything, including the photograph it exists to support. */}
+      {cell.backdrop === 'blob' && <SubjectBackdrop color={theme.accent} width={width} />}
+
+      {isCard && <CardSurface color={cardColor} borderColor={ground.hairline} radius={metrics.s(28)} />}
+
       {isOverlay && (
         <OverlayBackground props={props} photoIndex={overlayPhoto} dark={overlayIsDark} />
       )}

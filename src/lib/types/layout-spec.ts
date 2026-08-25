@@ -157,6 +157,61 @@ export const layoutPhotoKindSchema = z.enum(LAYOUT_PHOTO_KINDS);
  * a spec is allowed to carry — its colour comes from the client's accent and its
  * words from the day's copy, exactly like every other slot.
  */
+/**
+ * Chrome a cell can be drawn on, beyond a flat fill.
+ *
+ * The grid's blind spot, and the reason a rebuilt poster reads as emptier than
+ * the reference it came from. A template's density is rarely its photograph —
+ * it is the panel behind the service list, the card under the feature block, the
+ * shape behind the cut-out figure. Measured on the HealthFirst reference: the
+ * spec was a faithful reading and the render still came out 60% bare ground,
+ * because every one of those marks was outside the vocabulary.
+ *
+ * `card` is a rounded surface with a hairline edge, drawn in the cell's own
+ * fill. Deliberately one primitive rather than a catalogue: a designer's panel
+ * is a rounded rectangle in nine cases out of ten, and a vocabulary the
+ * extractor has to choose *between* is one it will choose wrongly — the same
+ * failure that put a `spacer` where a person was standing.
+ */
+export const LAYOUT_SURFACES = ['none', 'card'] as const;
+
+export type LayoutSurface = (typeof LAYOUT_SURFACES)[number];
+
+export const layoutSurfaceSchema = z.enum(LAYOUT_SURFACES);
+
+/**
+ * A shape painted behind a cell's content.
+ *
+ * Exists for one job: a `subject` photo is a person with their background
+ * removed, and standing them on bare canvas is what makes a composite look
+ * unfinished. Nearly every reference that uses a cut-out puts a shape behind
+ * them — a swoosh, a disc, a wedge of brand colour — and `blob` is the general
+ * case of it: a large accent form anchored to the bottom of the cell that the
+ * figure stands in front of.
+ *
+ * Painted in the theme accent, never a stored hex, for the reason on
+ * `LAYOUT_FILLS`: one template has to serve every tenant.
+ */
+export const LAYOUT_BACKDROPS = ['none', 'blob'] as const;
+
+export type LayoutBackdrop = (typeof LAYOUT_BACKDROPS)[number];
+
+export const layoutBackdropSchema = z.enum(LAYOUT_BACKDROPS);
+
+/**
+ * How a filled row meets the row above it.
+ *
+ * `curveTop` gives the band a curved upper edge instead of a straight one —
+ * the wave over a footer, the sweep under a hero. It is drawn *inside* the row
+ * rather than overhanging the one above, because the canvas clips overflow and
+ * a shape hanging upward would be cut off at the boundary it is trying to blur.
+ */
+export const LAYOUT_EDGES = ['none', 'curveTop'] as const;
+
+export type LayoutEdge = (typeof LAYOUT_EDGES)[number];
+
+export const layoutEdgeSchema = z.enum(LAYOUT_EDGES);
+
 export const LAYOUT_CTA_SHAPES = ['pill', 'rounded', 'square'] as const;
 
 export type LayoutCtaShape = (typeof LAYOUT_CTA_SHAPES)[number];
@@ -213,6 +268,27 @@ export const layoutCellSchema = z.object({
    * existed meant and the only behaviour the renderer had.
    */
   photoKind: layoutPhotoKindSchema.default('scene'),
+  /**
+   * Chrome drawn under this cell's content. Defaults to `none`, which is what
+   * every spec stored before this field existed means and exactly what they
+   * drew.
+   */
+  surface: layoutSurfaceSchema.default('none'),
+  /** A shape painted behind the content — see `LAYOUT_BACKDROPS`. */
+  backdrop: layoutBackdropSchema.default('none'),
+  /**
+   * Where the cell's content sits vertically when the row is taller than it.
+   *
+   * **The single largest source of dead space in a rebuilt poster**, and until
+   * this field the renderer simply centred everything: a copy column in a tall
+   * flex band got equal gaps above and below, so a poster whose reference starts
+   * its headline near the top came out with a third of the canvas blank over it.
+   * `cell.align` never governed this — it is horizontal only.
+   *
+   * Defaults to `center`, which is what the renderer did unconditionally, so no
+   * stored spec moves.
+   */
+  valign: layoutAlignSchema.default('center'),
   /** Stacked top to bottom, in this order. */
   slots: z.array(layoutSlotSchema),
 });
@@ -221,6 +297,8 @@ export type LayoutCell = z.infer<typeof layoutCellSchema>;
 
 export const layoutRowSchema = z.object({
   sizingMode: layoutSizingModeSchema,
+  /** How this row's fill meets the row above — see `LAYOUT_EDGES`. */
+  edge: layoutEdgeSchema.default('none'),
   /**
    * Share of canvas height, 0–1. Read only when `sizingMode` is `fixed`;
    * the extractor is told to send 0 otherwise.

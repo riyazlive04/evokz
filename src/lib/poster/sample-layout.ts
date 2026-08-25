@@ -49,6 +49,7 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
       // Logo, eyebrow, headline, rule and body — the full copy stack, so every
       // token the brand tokenizer produces is visible in one frame.
       sizingMode: 'hug',
+      edge: 'none',
       heightFraction: 0,
       fill: 'inherit',
       cells: [
@@ -58,6 +59,9 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
           align: 'start',
           padded: true,
           photoKind: 'scene',
+          surface: 'none',
+          backdrop: 'none',
+          valign: 'center',
           slots: ['logo', 'eyebrow', 'headline', 'accentRule', 'body'],
         },
       ],
@@ -66,6 +70,7 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
       // The flex row every spec must have. A photograph here shows the accent
       // against a real image rather than against flat colour.
       sizingMode: 'flex',
+      edge: 'none',
       heightFraction: 0,
       fill: 'inherit',
       cells: [
@@ -75,6 +80,9 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
           align: 'center',
           padded: false,
           photoKind: 'scene',
+          surface: 'none',
+          backdrop: 'none',
+          valign: 'center',
           slots: ['photo'],
         },
       ],
@@ -84,6 +92,7 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
       // palette that reads on light and fails on dark is a common tokenizer
       // outcome and the whole reason to look at a preview.
       sizingMode: 'hug',
+      edge: 'none',
       heightFraction: 0,
       fill: 'dark',
       cells: [
@@ -93,12 +102,16 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
           align: 'center',
           padded: true,
           photoKind: 'scene',
+          surface: 'none',
+          backdrop: 'none',
+          valign: 'center',
           slots: ['features'],
         },
       ],
     },
     {
       sizingMode: 'fixed',
+      edge: 'none',
       heightFraction: 0.1,
       fill: 'accent',
       cells: [
@@ -108,6 +121,9 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
           align: 'center',
           padded: false,
           photoKind: 'scene',
+          surface: 'none',
+          backdrop: 'none',
+          valign: 'center',
           slots: ['contact'],
         },
       ],

@@ -182,7 +182,17 @@ const LAYOUT_SCHEMA = {
             items: {
               type: 'object',
               additionalProperties: false,
-              required: ['weight', 'fill', 'align', 'padded', 'photoKind', 'slots'],
+              required: [
+                'weight',
+                'fill',
+                'align',
+                'valign',
+                'padded',
+                'photoKind',
+                'surface',
+                'backdrop',
+                'slots',
+              ],
               properties: {
                 weight: {
                   type: 'number',
@@ -221,6 +231,36 @@ const LAYOUT_SCHEMA = {
                     'a person or object cut out of its background, standing directly ' +
                     'on the poster\'s flat colour with no photographic edge behind ' +
                     'them. Send "scene" for a cell with no photo in it.',
+                },
+                valign: {
+                  type: 'string',
+                  enum: ['start', 'center', 'end'],
+                  description:
+                    'Where the content of this cell sits vertically inside its band, when ' +
+                    'the band is taller than the content. "start" when the block begins ' +
+                    'near the top of its band — which is what a copy column beside a ' +
+                    'tall photograph almost always does — "center" when it is centred ' +
+                    'in the space, "end" when it sits on the floor of the band. A figure ' +
+                    'standing in a column is "end": people stand on the ground.',
+                },
+                surface: {
+                  type: 'string',
+                  enum: ['none', 'card'],
+                  description:
+                    '"card" when the content of this cell sits on its own panel — a ' +
+                    'rounded block, box or tinted area with a visible edge, holding it ' +
+                    'apart from the poster behind it. A service list inside a bordered ' +
+                    'panel is "card"; the same list floating on the background is ' +
+                    '"none". Judge the panel, not the content.',
+                },
+                backdrop: {
+                  type: 'string',
+                  enum: ['none', 'blob'],
+                  description:
+                    '"blob" only when a cut-out person or object stands in front of a ' +
+                    'large plain shape of colour — a circle, swoosh or arc behind them ' +
+                    'that is not a photograph. Very common behind a "subject" photo and ' +
+                    'meaningless without one. "none" everywhere else.',
                 },
                 slots: {
                   type: 'array',
@@ -279,6 +319,10 @@ Rules that matter more than fidelity to the reference:
 3. Mark the largest photo row "flex". Text cannot reflow to fit a canvas, so one row must be able to give up space when the copy runs long. If there is no photo, mark the tallest row.
 4. Copy rows are "hug". A bar whose proportion is the point of it — a slim footer, a full-bleed contact strip — is "fixed" with its heightFraction.
 5. padded is true everywhere except a photo that bleeds to the poster edge.
+6b. Report the poster's FURNITURE as well as its bands. Three fields exist for the marks that make a reference look designed rather than typed, and leaving them at "none" is what makes a rebuilt poster come out mostly empty. "surface: "card" for a block sitting on its own panel — a bordered or tinted box holding a service list or an offer apart from the background. "backdrop: "blob" for the shape of flat colour a cut-out person stands in front of, which most posters with a cut-out have. "edge: "curveTop" for a band whose top edge sweeps or arches instead of running straight across.
+
+6c. Say where each block sits vertically, in "valign". This is not the same question as "align", which is left-and-right. A copy column beside a tall photograph almost always starts at the TOP of its band — "start" — and reporting it as centred leaves a third of the poster blank above the headline. A figure standing in a column is "end", because people stand on the ground. Use "center" only when the block is genuinely centred in space taller than itself.
+
 6. Fills are roles, not colours: the poster's darkest band is "dark", its brightest is "light", and a saturated brand-coloured band is "accent". A band with no fill of its own is "inherit".
 
 Group small items generously. Three stacked lines each with a little icon are one "features" slot, not three cells.
