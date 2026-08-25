@@ -13,13 +13,18 @@ import {
   createPlaceholderPhoto,
   createPlaceholderSubject,
 } from '@/lib/poster/placeholder-photo';
+import { downloadDriveFile } from '@/lib/google-drive';
 import { resolvePosterCanvas } from '@/lib/poster/canvas';
-import { resolveSpecPhotoRequests } from '@/lib/poster/photo-request';
+import {
+  resolvePlatePhotoRequests,
+  resolveSpecPhotoRequests,
+} from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
 import { SAMPLE_LAYOUT_SPEC } from '@/lib/poster/sample-layout';
 import { prisma } from '@/lib/prisma';
 import { parseBrandGuideline, EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
 import { parseLayoutDraft, type PosterLayoutSpec } from '@/lib/types/layout-spec';
+import { parsePlateSpec } from '@/lib/types/plate-spec';
 import { parsePosterCopy, type PosterCopy } from '@/lib/types/poster';
 
 /**
@@ -166,9 +171,26 @@ export async function GET(request: NextRequest) {
      * at the preset's aspect while production draws at the template's would make
      * the approval step worse than useless — it would show a poster nobody gets.
      */
-    const canvas = resolvePosterCanvas(resolved, preset);
+    /*
+     * A plate, when the template being reviewed has one.
+     *
+     * `?palette=template|client` overrides the stored choice for this render
+     * only, so an operator can see both readings side by side before committing
+     * one to the column.
+     */
+    const paletteParam = params.get('palette');
+    const plate = templateId
+      ? await loadTemplatePlate(
+          templateId,
+          paletteParam === 'template' ? true : paletteParam === 'client' ? false : null,
+        )
+      : null;
 
-    const requests = resolveSpecPhotoRequests(resolved, canvas);
+    const canvas = resolvePosterCanvas(plate?.spec ?? resolved, preset);
+
+    const requests = plate
+      ? resolvePlatePhotoRequests(plate.spec, canvas)
+      : resolveSpecPhotoRequests(resolved, canvas);
 
     const photos = requests.map((request, index) => {
       const placeholder = capLongEdge(request.width, request.height, 1280);
@@ -193,6 +215,7 @@ export async function GET(request: NextRequest) {
       guideline: context?.guideline ?? EMPTY_BRAND_GUIDELINE,
       identity: context?.identity ?? SAMPLE_IDENTITY,
       photos,
+      ...(plate ? { plate } : {}),
       width: canvas.width,
       height: canvas.height,
     });
@@ -211,6 +234,9 @@ export async function GET(request: NextRequest) {
         // canvas from a preset-driven one without measuring the PNG.
         'X-Poster-Canvas': `${canvas.width}x${canvas.height}`,
         'X-Poster-Canvas-Reason': canvas.reason,
+        // Which path drew this, so a caller can tell a composited poster from a
+        // rebuilt one without reading the pixels.
+        'X-Poster-Path': plate ? 'plate' : 'grid',
       },
     });
   } catch (error) {
@@ -257,6 +283,47 @@ async function loadTemplateLayout(templateId: string) {
   });
   if (!template) return null;
   return parseLayoutDraft(template.layoutSpec);
+}
+
+/**
+ * The template's clean plate, ready to composite.
+ *
+ * Deliberately ignores `plateApprovedAt`, exactly as the layout draft above
+ * ignores `layoutApprovedAt` and for the same reason: approval says an operator
+ * has seen the plate rendered, and they cannot see it rendered until something
+ * renders it. Gating the review surface on the flag it exists to inform would
+ * make the review impossible to perform.
+ *
+ * Returns null when there is no plate, or when its spec cannot be read — both of
+ * which fall the preview back to the grid path, which is what production would
+ * do too.
+ */
+async function loadTemplatePlate(templateId: string, useTemplatePalette: boolean | null) {
+  const row = await prisma.categoryTemplate.findUnique({
+    where: { id: templateId },
+    select: { plateSpec: true, plateDriveFileId: true, paletteSource: true },
+  });
+  if (!row?.plateDriveFileId) return null;
+
+  const spec = parsePlateSpec(row.plateSpec);
+  if (!spec) return null;
+
+  let bytes: Buffer;
+  try {
+    bytes = await downloadDriveFile(row.plateDriveFileId);
+  } catch {
+    // A plate that cannot be read back is worth showing as "no plate" rather
+    // than failing the preview: the grid render still tells the operator
+    // something, and the Drive fault surfaces on the template card.
+    return null;
+  }
+
+  return {
+    spec,
+    bytes,
+    mimeType: 'image/png',
+    useTemplatePalette: useTemplatePalette ?? row.paletteSource === 'template',
+  };
 }
 
 async function loadClientContext(clientId: string, day: number | null) {

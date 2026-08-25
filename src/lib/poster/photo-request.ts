@@ -4,6 +4,7 @@ import {
   FAL_MIN_EDGE,
 } from '@/lib/image-sizes';
 import type { LayoutPhotoKind, PosterLayoutSpec } from '@/lib/types/layout-spec';
+import type { PosterPlateSpec } from '@/lib/types/plate-spec';
 
 /**
  * What size to ask fal.ai for — the *background photo*, not the delivered canvas.
@@ -166,6 +167,45 @@ export function resolveSpecPhotoRequests(
   });
 
   return requests;
+}
+
+/**
+ * One request per photo region on a clean plate.
+ *
+ * Simpler than the grid's estimate, and better, because there is nothing to
+ * estimate: a plate's regions are measured from its own transparency, so the
+ * region *is* the box the frame lands in. The grid path has to guess a row's
+ * height from its sizing mode because that height is only settled after layout;
+ * here it is a property of the artwork.
+ *
+ * The aspect is therefore not clamped the way `resolveSpecPhotoRequests` clamps
+ * its estimate. A bound there guards against a misread spec; here an extreme
+ * ratio means the operator genuinely cut a letterbox slot in their plate, and
+ * overriding that would crop the frame against the hole it was measured from.
+ * Only fal's own edge limits apply.
+ */
+export function resolvePlatePhotoRequests(
+  spec: PosterPlateSpec,
+  canvas: PhotoCanvas,
+): PhotoRequest[] {
+  return spec.photos.map((region, index) => {
+    const regionWidth = Math.max(1, region.w * canvas.width);
+    const regionHeight = Math.max(1, region.h * canvas.height);
+    const aspect = regionWidth / regionHeight;
+
+    const long = Math.min(FAL_MAX_EDGE, Math.max(regionWidth, regionHeight, FAL_MIN_EDGE));
+    const width = clampEdge(aspect >= 1 ? long : long * aspect);
+    const height = clampEdge(aspect >= 1 ? long / aspect : long);
+
+    return {
+      width,
+      height,
+      kind: region.kind,
+      reason:
+        `plate "${spec.name}" region ${index + 1} is ${aspect.toFixed(2)}:1, ` +
+        'measured from the artwork',
+    };
+  });
 }
 
 /**

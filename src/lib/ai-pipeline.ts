@@ -2,7 +2,7 @@ import { DeliveryStatus, UsageKeySource } from '@prisma/client';
 
 import { intEnv, optionalEnv, requireEnv } from '@/lib/env';
 import { resolveFalCredentials, type FalCredentials } from '@/lib/fal-credentials';
-import { uploadClientAsset } from '@/lib/google-drive';
+import { downloadDriveFile, uploadClientAsset } from '@/lib/google-drive';
 import { ensurePosterCopy } from '@/lib/ai/poster-copy';
 import { resolveImageSizePreset } from '@/lib/image-sizes';
 import {
@@ -10,6 +10,7 @@ import {
   resolveDayLayout,
 } from '@/lib/poster/layout-library';
 import {
+  resolvePlatePhotoRequests,
   resolveSpecPhotoRequests,
   type PhotoRequest,
 } from '@/lib/poster/photo-request';
@@ -19,6 +20,7 @@ import { prisma } from '@/lib/prisma';
 import { describeDelay, nextSendDelay } from '@/lib/send-jitter';
 import { parseBrandGuideline } from '@/lib/types/brand';
 import { describeCopyShape } from '@/lib/types/layout-spec';
+import { describePlateCopyShape } from '@/lib/types/plate-spec';
 import { pickForDay } from '@/lib/types/poster';
 import { recordCutoutUsage, recordImageUsage, recordWhatsAppUsage } from '@/lib/usage';
 
@@ -257,10 +259,21 @@ export async function runCreativePipeline(
        * canvas the layout is actually drawn onto — sizing them against the
        * preset would ask fal for a 9:16 frame to fill a cell in a square poster.
        */
-      const canvas = resolvePosterCanvas(layout.spec, sizePreset);
-      console.info(`[ace:pipeline] day ${entry.dayNumber} canvas — ${canvas.reason}`);
+      /*
+       * A plate is the thing actually drawn, so it is the thing the canvas and
+       * the photo requests are measured against — its aspect, its regions. The
+       * grid spec stays in play for the copy stage and as the fallback if the
+       * plate's own spec has stopped parsing.
+       */
+      const canvas = resolvePosterCanvas(layout.plate?.spec ?? layout.spec, sizePreset);
+      console.info(
+        `[ace:pipeline] day ${entry.dayNumber} canvas — ${canvas.reason}` +
+          (layout.plate ? ' (clean plate)' : ''),
+      );
 
-      const photoRequests = resolveSpecPhotoRequests(layout.spec, canvas);
+      const photoRequests = layout.plate
+        ? resolvePlatePhotoRequests(layout.plate.spec, canvas)
+        : resolveSpecPhotoRequests(layout.spec, canvas);
 
       // ---- Step 1: Flux.1 via fal.ai --------------------------------------
       stage = 'generate';
@@ -337,7 +350,27 @@ export async function runCreativePipeline(
       // The layout is passed so the copy is written to fit it — the number of
       // feature items, whether an eyebrow will be drawn, how narrow the headline
       // column is. Resolved above, before anything was bought.
-      const posterCopy = await ensurePosterCopy(entry.id, describeCopyShape(layout.spec));
+      /*
+       * Shaped by the plate when there is one: its boxes are what the words have
+       * to fit, and they are usually tighter than the grid's rows because a
+       * plate cannot reflow to absorb a long headline.
+       */
+      const posterCopy = await ensurePosterCopy(
+        entry.id,
+        layout.plate
+          ? describePlateCopyShape(layout.plate.spec)
+          : describeCopyShape(layout.spec),
+      );
+
+      /*
+       * Fetched here rather than at resolution, so a day that fails earlier
+       * never pays for the download. Read back from Drive on every render: a
+       * plate is a few hundred kilobytes and caching it would mean an operator
+       * replacing one and not seeing the change.
+       */
+      const plateBytes = layout.plate
+        ? await downloadDriveFile(layout.plate.driveFileId)
+        : null;
 
       const poster = await renderPoster({
         layoutSpec: layout.spec,
@@ -353,6 +386,16 @@ export async function runCreativePipeline(
           whatsappNumber: client.whatsappNumber,
         },
         photos,
+        ...(layout.plate && plateBytes
+          ? {
+              plate: {
+                spec: layout.plate.spec,
+                bytes: plateBytes,
+                mimeType: layout.plate.mimeType,
+                useTemplatePalette: layout.plate.useTemplatePalette,
+              },
+            }
+          : {}),
         width: canvas.width,
         height: canvas.height,
       });

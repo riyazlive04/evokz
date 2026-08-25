@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { parseLayoutSpec, type PosterLayoutSpec } from '@/lib/types/layout-spec';
+import { parsePlateSpec, type PosterPlateSpec } from '@/lib/types/plate-spec';
 import { pickForDay } from '@/lib/types/poster';
 
 /**
@@ -23,6 +24,7 @@ export interface CategoryLayout {
   templateId: string;
   label: string;
   spec: PosterLayoutSpec;
+  plate: ResolvedPlate | null;
 }
 
 /**
@@ -42,13 +44,15 @@ export async function loadCategoryLayouts(categoryId: string): Promise<CategoryL
   const rows = await prisma.categoryTemplate.findMany({
     where: { categoryId, layoutApprovedAt: { not: null } },
     orderBy: { createdAt: 'asc' },
-    select: { id: true, label: true, layoutSpec: true },
+    select: { id: true, label: true, layoutSpec: true, ...PLATE_COLUMNS },
   });
 
   const library: CategoryLayout[] = [];
   for (const row of rows) {
     const spec = parseLayoutSpec(row.layoutSpec);
-    if (spec) library.push({ templateId: row.id, label: row.label, spec });
+    if (spec) {
+      library.push({ templateId: row.id, label: row.label, spec, plate: readPlate(row) });
+    }
   }
   return library;
 }
@@ -61,9 +65,73 @@ export type LayoutFailure =
   | { reason: 'no-approved-templates' }
   | { reason: 'pinned-missing' | 'pinned-unapproved' | 'pinned-unreadable' | 'pinned-foreign' };
 
+/**
+ * The clean plate a resolved day should be composited onto, when it has one.
+ *
+ * Carried beside the spec rather than instead of it: the spec is still what the
+ * copy stage is shaped by and what the day falls back to if the plate's own spec
+ * stops parsing. Null means this template renders on the grid path, which is
+ * every template until someone uploads a plate for it.
+ */
+export interface ResolvedPlate {
+  spec: PosterPlateSpec;
+  driveFileId: string;
+  mimeType: string;
+  useTemplatePalette: boolean;
+}
+
 export type LayoutResolution =
-  | { ok: true; spec: PosterLayoutSpec; templateId: string; label: string; source: 'pinned' | 'rotation' }
+  | {
+      ok: true;
+      spec: PosterLayoutSpec;
+      templateId: string;
+      label: string;
+      source: 'pinned' | 'rotation';
+      plate: ResolvedPlate | null;
+    }
   | ({ ok: false } & LayoutFailure);
+
+/**
+ * Reads a row's plate, or null.
+ *
+ * **Approval is checked here and separately from the layout's.** The two gates
+ * describe different artefacts and can be right or wrong independently: a
+ * template may have a sound grid and a plate whose headline box sits across
+ * somebody's face. An unapproved plate silently falls the day back to the grid
+ * rather than failing it, which is the opposite of how a *pinned template* fails
+ * — and deliberately, because there the operator named something specific and a
+ * silent substitution would hide that, whereas here the grid is a legitimate way
+ * to draw the same template.
+ */
+function readPlate(row: {
+  plateSpec: unknown;
+  plateDriveFileId: string | null;
+  plateApprovedAt: Date | null;
+  paletteSource: string;
+}): ResolvedPlate | null {
+  if (!row.plateDriveFileId || row.plateApprovedAt === null) return null;
+
+  const spec = parsePlateSpec(row.plateSpec);
+  if (!spec) return null;
+
+  return {
+    spec,
+    driveFileId: row.plateDriveFileId,
+    // Plates are stored as uploaded; PNG is the only format that carries the
+    // alpha this path depends on, and `prepareTemplateImage` is not used for
+    // them for exactly that reason — it re-encodes to WebP.
+    mimeType: 'image/png',
+    useTemplatePalette: row.paletteSource === 'template',
+  };
+}
+
+/** Columns every plate read needs. Kept in one place so the two queries agree. */
+const PLATE_COLUMNS = {
+  plateSpec: true,
+  plateDriveFileId: true,
+  plateApprovedAt: true,
+  paletteSource: true,
+} as const;
 
 /**
  * Resolves one day's layout.
@@ -82,7 +150,14 @@ export async function resolveDayLayout(input: {
   if (input.pinnedTemplateId) {
     const template = await prisma.categoryTemplate.findUnique({
       where: { id: input.pinnedTemplateId },
-      select: { id: true, label: true, categoryId: true, layoutSpec: true, layoutApprovedAt: true },
+      select: {
+        id: true,
+        label: true,
+        categoryId: true,
+        layoutSpec: true,
+        layoutApprovedAt: true,
+        ...PLATE_COLUMNS,
+      },
     });
 
     if (!template) return { ok: false, reason: 'pinned-missing' };
@@ -98,7 +173,14 @@ export async function resolveDayLayout(input: {
     const spec = parseLayoutSpec(template.layoutSpec);
     if (!spec) return { ok: false, reason: 'pinned-unreadable' };
 
-    return { ok: true, spec, templateId: template.id, label: template.label, source: 'pinned' };
+    return {
+      ok: true,
+      spec,
+      templateId: template.id,
+      label: template.label,
+      source: 'pinned',
+      plate: readPlate(template),
+    };
   }
 
   const library = await loadCategoryLayouts(input.categoryId);
@@ -111,6 +193,7 @@ export async function resolveDayLayout(input: {
     templateId: chosen.templateId,
     label: chosen.label,
     source: 'rotation',
+    plate: chosen.plate,
   };
 }
 

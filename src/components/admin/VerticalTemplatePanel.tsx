@@ -10,6 +10,9 @@ import {
   renameVerticalTemplate,
   setTemplateLayoutApproval,
   setTemplateLayoutSpec,
+  setTemplatePaletteSource,
+  setTemplatePlateApproval,
+  uploadTemplatePlate,
   uploadVerticalTemplate,
 } from '@/app/admin/dashboard/actions';
 import { Button } from '@/components/ui/button';
@@ -60,6 +63,20 @@ export interface VerticalTemplateRow {
   layoutReading: string | null;
   /** True once an operator has confirmed the spec against the template. */
   layoutApproved: boolean;
+
+  // ---- Clean plate ---------------------------------------------------------
+  /** Whether a plate has been uploaded at all. */
+  hasPlate: boolean;
+  /** Photo regions measured from the plate's transparency. */
+  plateRegions: number;
+  /** The plate's region map, pretty-printed, for the JSON editor. */
+  plateSpec: string | null;
+  /** Why the plate cannot composite yet. Empty when it is good to approve. */
+  plateProblems: string[];
+  /** True once an operator has seen the plate composited and confirmed it. */
+  plateApproved: boolean;
+  /** Whether posters from this template keep the reference's own colours. */
+  usesTemplatePalette: boolean;
 }
 
 
@@ -349,6 +366,8 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
 
       <LayoutReview template={template} />
 
+      <PlateReview template={template} />
+
       {confirmDelete && !remove.pending && (
         <p className="px-3 pb-2 text-[10px] text-warning-ink">Click again to delete.</p>
       )}
@@ -558,6 +577,136 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
           {error}
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The clean plate: upload, review, approve.
+ *
+ * A plate changes what rendering *is* for this template. Without one the poster
+ * is rebuilt from the extracted grid — band structure reproduced, every visual
+ * treatment lost. With one the template's own artwork is the poster, the
+ * generated photograph shows through the holes the operator cut, and the type is
+ * drawn on top. The heart-shaped mask, the rounded feature cards, the curved
+ * footer: preserved as pixels, because they are never described at all.
+ *
+ * Its own approval gate, beside the layout's rather than replacing it. The two
+ * can be right and wrong independently, and withdrawing a plate has to drop the
+ * template back to the grid without disturbing a spec that was fine.
+ */
+function PlateReview({ template }: { template: VerticalTemplateRow }) {
+  const upload = useAction(uploadTemplatePlate);
+  const approve = useAction(setTemplatePlateApproval);
+  const palette = useAction(setTemplatePaletteSource);
+
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const busy = upload.pending || approve.pending || palette.pending;
+  const error = upload.error ?? approve.error ?? palette.error;
+  const broken = template.plateProblems.length > 0;
+
+  return (
+    <div className="space-y-2 border-t border-border/60 px-3 py-2">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+        Clean plate
+      </p>
+
+      {!template.hasPlate ? (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          None. This template is rebuilt from its grid, so its masks, cards, curves and
+          colours are not reproduced. Upload the artwork as a PNG with its own words erased
+          and the photo areas made transparent.
+        </p>
+      ) : (
+        <p
+          className={
+            template.plateApproved
+              ? 'text-[11px] text-success-ink'
+              : 'text-[11px] text-muted-foreground'
+          }
+        >
+          {template.plateApproved
+            ? `Approved — posters are composited onto this plate. ${template.plateRegions} photo region(s).`
+            : `Uploaded, not approved. ${template.plateRegions} photo region(s) measured. Posters still use the grid.`}
+        </p>
+      )}
+
+      {broken && (
+        <ul className="space-y-0.5 text-[11px] text-warning-ink">
+          {template.plateProblems.map((problem) => (
+            <li key={problem}>{problem}</li>
+          ))}
+        </ul>
+      )}
+
+      {template.hasPlate && (
+        <a
+          href={`/api/poster/preview?templateId=${template.id}`}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+        >
+          <ExternalLink className="h-3 w-3" />
+          See this template rendered
+        </a>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            const data = new FormData();
+            data.set('plate', file);
+            void upload.run(template.id, data);
+            // Cleared so re-selecting the same file after a failed upload still
+            // fires a change event.
+            event.target.value = '';
+          }}
+        />
+
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => inputRef.current?.click()}>
+          {upload.pending ? (
+            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+          ) : (
+            <Upload className="mr-1 h-3 w-3" />
+          )}
+          {template.hasPlate ? 'Replace plate' : 'Upload plate'}
+        </Button>
+
+        {template.hasPlate && (
+          <Button
+            size="sm"
+            variant={template.plateApproved ? 'ghost' : 'default'}
+            disabled={busy || (broken && !template.plateApproved)}
+            onClick={() => void approve.run(template.id, !template.plateApproved)}
+          >
+            {template.plateApproved ? 'Withdraw plate' : 'Approve plate'}
+          </Button>
+        )}
+
+        {template.hasPlate && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={() =>
+              void palette.run(
+                template.id,
+                template.usesTemplatePalette ? 'client' : 'template',
+              )
+            }
+          >
+            {template.usesTemplatePalette ? "Colours: template's" : "Colours: client's brand"}
+          </Button>
+        )}
+      </div>
+
+      {error && <p className="text-[11px] text-destructive">{error}</p>}
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { prisma } from '@/lib/prisma';
 import { parseLayoutDraft } from '@/lib/types/layout-spec';
+import { parsePlateDraft } from '@/lib/types/plate-spec';
 
 /**
  * Reference-template library for one vertical.
@@ -71,6 +72,10 @@ export default async function VerticalDetailPage({
           layoutSpec: true,
           layoutReading: true,
           layoutApprovedAt: true,
+          plateSpec: true,
+          plateDriveFileId: true,
+          plateApprovedAt: true,
+          paletteSource: true,
         },
       },
     },
@@ -107,6 +112,19 @@ export default async function VerticalDetailPage({
     })(),
     layoutReading: template.layoutReading,
     layoutApproved: template.layoutApprovedAt !== null,
+    // The plate, read as a draft for the same reason the layout is: a region map
+    // one edit from correct is far more useful shown with its faults than hidden.
+    ...(() => {
+      const draft = parsePlateDraft(template.plateSpec);
+      return {
+        hasPlate: template.plateDriveFileId !== null,
+        plateRegions: draft.spec?.photos.length ?? 0,
+        plateSpec: draft.spec ? JSON.stringify(draft.spec, null, 2) : null,
+        plateProblems: draft.problems.map((problem) => `${problem.path} ${problem.message}`),
+        plateApproved: template.plateApprovedAt !== null,
+        usesTemplatePalette: template.paletteSource === 'template',
+      };
+    })(),
   }));
 
   const totalTemplates = category._count.templates;

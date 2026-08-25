@@ -14,9 +14,11 @@ import {
 } from '@/lib/poster/image-info';
 import { measureInkLuminance } from '@/lib/poster/logo-key';
 import { resolveMetrics } from '@/lib/poster/metrics';
+import { renderPlateSpec } from '@/lib/poster/plate-render';
 import { requiredFaces, resolvePosterTheme } from '@/lib/poster/theme';
 import type { BrandGuideline } from '@/lib/types/brand';
 import { countPhotoSlots, type PosterLayoutSpec } from '@/lib/types/layout-spec';
+import type { PosterPlateSpec } from '@/lib/types/plate-spec';
 import type {
   PosterCopy,
   PosterIdentity,
@@ -77,6 +79,23 @@ export interface RenderPosterInput {
    * repeats the last one rather than leaving a hole; see the warning below.
    */
   photos: Buffer[];
+  /**
+   * The clean plate to composite, when this template has an approved one.
+   *
+   * Its presence is what selects the render path. With a plate the poster is the
+   * template's own artwork with content dropped into it; without one it is
+   * rebuilt from `layoutSpec` exactly as before. `layoutSpec` stays required
+   * either way — it is what a plate falls back to if its spec stops parsing, and
+   * what `describeCopyShape` reads when the copy is written.
+   */
+  plate?: {
+    spec: PosterPlateSpec;
+    /** The plate artwork as stored. PNG with alpha, normally. */
+    bytes: Buffer;
+    mimeType: string;
+    /** Whether the reference's sampled colours win over the client's brand. */
+    useTemplatePalette: boolean;
+  };
   /** Output canvas, from the client's `imageSizePreset`. */
   width: number;
   height: number;
@@ -113,7 +132,11 @@ export async function renderPoster(
    * rather than on the array being empty. Under the archetypes this could not
    * happen: every one of them had a photo region.
    */
-  const wantedPhotos = countPhotoSlots(input.layoutSpec);
+  // A plate's photo count comes from the regions cut into it, not from the grid
+  // spec — the two describe the same template but only one of them is drawing.
+  const wantedPhotos = input.plate
+    ? input.plate.spec.photos.length
+    : countPhotoSlots(input.layoutSpec);
   if (wantedPhotos > 0 && input.photos.length === 0) {
     throw new Error(
       `The layout "${input.layoutSpec.name}" declares ${wantedPhotos} photo cell(s) but ` +
@@ -159,16 +182,29 @@ export async function renderPoster(
   const fonts = await loadFonts(requiredFaces(theme));
 
   // Stage 1 — lay out the tree and emit SVG.
-  const tree = renderLayoutSpec({
-    spec: input.layoutSpec,
-    copy: input.copy,
-    theme,
-    identity,
-    photos,
-    metrics,
-    logoDimensions: logo?.dimensions ?? null,
-    logoInkLuminance: logo?.inkLuminance ?? null,
-  });
+  const tree = input.plate
+    ? renderPlateSpec({
+        spec: input.plate.spec,
+        copy: input.copy,
+        theme,
+        identity,
+        plateDataUri: toDataUri(input.plate.bytes, input.plate.mimeType),
+        photos,
+        metrics,
+        logoDimensions: logo?.dimensions ?? null,
+        logoInkLuminance: logo?.inkLuminance ?? null,
+        useTemplatePalette: input.plate.useTemplatePalette,
+      })
+    : renderLayoutSpec({
+        spec: input.layoutSpec,
+        copy: input.copy,
+        theme,
+        identity,
+        photos,
+        metrics,
+        logoDimensions: logo?.dimensions ?? null,
+        logoInkLuminance: logo?.inkLuminance ?? null,
+      });
 
   const svg = await satori(tree, {
     width: input.width,
@@ -224,7 +260,10 @@ export async function renderPoster(
    * fell back to the client's preset) — which is exactly the case an operator
    * should be told about, because the fix is to re-read the template.
    */
-  const spec = input.layoutSpec;
+  // The plate is what is drawn, so its aspect is the one the canvas must match.
+  const spec = input.plate
+    ? { name: input.plate.spec.name, aspect: input.plate.spec.aspect }
+    : input.layoutSpec;
   const canvasAspect = input.width / input.height;
 
   if (spec.aspect > 0) {

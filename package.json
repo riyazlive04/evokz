@@ -12,6 +12,7 @@
     "check:secret-box": "tsx scripts/check-secret-box.ts",
     "check:fleet": "tsx --tsconfig scripts/tsconfig.json scripts/check-spec-fleet.tsx",
     "check:layouts": "tsx --tsconfig scripts/tsconfig.json scripts/check-poster-layouts.ts",
+    "check:plate": "tsx --tsconfig scripts/tsconfig.json scripts/check-plate-render.ts",
     "check:import": "tsx --tsconfig scripts/tsconfig.json scripts/check-calendar-import.ts",
     "layout:extract": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-layout-extract.ts",
     "layout:render": "tsx --tsconfig scripts/tsconfig.json scripts/check-layout-render.ts",

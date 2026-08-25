@@ -99,7 +99,6 @@ model CategoryTemplate {
   width    Int?
   height   Int?
 
-
   /// This template's own geometry, as a `PosterLayoutSpec` (src/lib/types/layout-spec.ts).
   ///
   /// The difference between this and `archetype` is the difference between the
@@ -131,16 +130,65 @@ model CategoryTemplate {
   /// that existed before specs.
   layoutApprovedAt DateTime?
 
+  // ---- Clean plate ---------------------------------------------------------
+  /// The template's artwork with its own words and photography erased, as a PNG
+  /// with transparency where the generated photograph belongs.
+  ///
+  /// **This is the difference between rebuilding a poster and rendering one.**
+  /// `layoutSpec` describes the reference as a grid and the renderer draws an
+  /// approximation from that description — which reproduces band structure and
+  /// nothing else. Every treatment that makes a template recognisable lives
+  /// outside that vocabulary: a photograph masked into a heart, feature items as
+  /// rounded cards, a footer with a curved top edge, a gradient behind the type.
+  ///
+  /// A plate carries all of it as pixels. The generated photograph is composited
+  /// *behind* the plate and shows through wherever the operator made it
+  /// transparent, so the plate's own alpha does the masking — the heart, the
+  /// rounded corners, the curve — with no layout vocabulary at all.
+  ///
+  /// Null means this template has no plate and renders on the `layoutSpec` grid
+  /// path, exactly as before. That is every existing row.
+  plateDriveFileId String?
+  plateViewUrl     String?
+  /// Measured from the stored plate. Load-bearing: the plate's own aspect wins
+  /// over the reference's, since the plate is what is actually drawn.
+  plateWidth       Int?
+  plateHeight      Int?
+
+  /// Where the generated photograph and each block of type go on the plate, as a
+  /// `PosterPlateSpec` (src/lib/types/plate-spec.ts). Free-form Json for the same
+  /// reason as `layoutSpec`: a spec written by an older build must take one
+  /// template out of rotation rather than break the vertical.
+  plateSpec Json?
+
+  /// When an operator confirmed the plate's regions are right.
+  ///
+  /// Its own gate, separate from `layoutApprovedAt`, because the two describe
+  /// different artefacts and can be right or wrong independently — a template may
+  /// have a sound grid and a plate whose headline box sits over someone's face.
+  /// Null means the plate never composites, and the grid path runs.
+  plateApprovedAt DateTime?
+
+  /// Whether this template's posters take their colours from the reference or
+  /// from the client's brand.
+  ///
+  /// `client` — the default and the behaviour every existing row has — resolves
+  /// fills and type colour from the brand tokenizer, which is what lets one
+  /// template serve every tenant (see `LAYOUT_FILLS`). `template` keeps the
+  /// reference's own palette, which is what a plate usually wants: a plate is
+  /// finished artwork in its designer's colours, and recolouring the type on top
+  /// of it to a different brand is how a composite stops looking composed.
+  ///
+  /// A String rather than an enum, matching `imageSizePreset`: presentation data
+  /// whose catalogue may grow, where a migration per addition is the wrong trade.
+  paletteSource String @default("client")
+
   /// Days pinned to this template by name in an imported sheet.
   calendarDays ContentCalendar[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Serves the gallery query: every template for one vertical, newest first.
-  @@index([categoryId, createdAt])
-  // Serves generation's preferred path: approved specs for one vertical.
-  @@index([categoryId, layoutApprovedAt])
   /// Makes the label addressable from a spreadsheet.
   ///
   /// A sheet names the template it wants per day, so the name has to resolve to
@@ -148,6 +196,12 @@ model CategoryTemplate {
   /// may both reasonably own a "Grand Opening" reference, and a client only ever
   /// draws from its own category.
   @@unique([categoryId, label])
+  // Serves the gallery query: every template for one vertical, newest first.
+  @@index([categoryId, createdAt])
+  // Serves generation's preferred path: approved specs for one vertical.
+  @@index([categoryId, layoutApprovedAt])
+  // The same query for the plate path.
+  @@index([categoryId, plateApprovedAt])
 }
 
 model Client {
@@ -258,9 +312,9 @@ model Client {
 }
 
 model ContentCalendar {
-  id                 String         @id @default(uuid())
+  id                 String            @id @default(uuid())
   clientId           String
-  client             Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client             Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
   dayNumber          Int
   scheduledDate      DateTime
   /// Short content angle for the day, fed to the poster-copy prompt.
@@ -270,11 +324,11 @@ model ContentCalendar {
   /// photo brief, which every row has. The AI calendar generator still writes one
   /// — it needs the value to keep 365 days from converging on the same angle.
   theme              String?
-  caption            String         @db.Text
+  caption            String            @db.Text
   hashtags           String
   // Background-photo prompt only. The poster's text is never diffusion-rendered;
   // it is composited as vector type from `posterCopy`.
-  imagePrompt        String         @db.Text
+  imagePrompt        String            @db.Text
   // Slot content for the poster layer: headline lines, accent line index, body,
   // feature items, CTA labels. Shape validated by `posterCopySchema`
   // (src/lib/types/poster.ts). Null on rows seeded before the poster layer
@@ -295,7 +349,7 @@ model ContentCalendar {
   posterTemplate     CategoryTemplate? @relation(fields: [posterTemplateId], references: [id], onDelete: SetNull)
   gDriveFileId       String? // Storage reference inside Google Drive
   gDriveViewUrl      String? // Public link used by Evolution API + the dashboard
-  deliveryStatus     DeliveryStatus @default(PENDING)
+  deliveryStatus     DeliveryStatus    @default(PENDING)
   /// Earliest instant the WhatsApp broadcast may go out, set when the poster
   /// reaches GENERATED. Generation runs at the client's exact `cronTime`; the
   /// send is held back by a random few minutes so a fleet of clients does not
@@ -329,9 +383,9 @@ model ContentCalendar {
   /// backlog phase drains a few per minute. Restart-safe by construction — the
   /// mark is the queue, so a killed container resumes where it stopped.
   generationQueuedAt DateTime?
-  errorMessage       String?        @db.Text
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  errorMessage       String?           @db.Text
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
 
   @@unique([clientId, dayNumber])
   // Ultra-fast time-window scanning for the dispatch engine.

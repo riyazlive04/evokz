@@ -41,7 +41,9 @@ import {
 import { readImageDimensions } from '@/lib/poster/image-info';
 import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key';
 import { BODY_FONT_OPTIONS, HEADING_FONT_OPTIONS } from '@/lib/poster/theme';
+import { findPlateHoles } from '@/lib/poster/plate-regions';
 import { prepareTemplateImage, templateFileName } from '@/lib/template-image';
+import { parsePlateDraft, parsePlateSpec } from '@/lib/types/plate-spec';
 import {
   dedupeTemplateLabel,
   normalizeTemplateLabel,
@@ -2052,6 +2054,199 @@ export async function extractTemplateLayout(
     return success({ approved: false as const, problems: draft.problems });
   } catch (error) {
     return toFailure(error, 'Reading template layout');
+  }
+}
+
+/**
+ * Attaches a clean plate to a template.
+ *
+ * The plate is the template's artwork with its own words and photography erased
+ * and the photo areas made transparent. Once one is approved the poster stops
+ * being rebuilt from the grid and starts being *composited* — the artwork is the
+ * background, the generated frame shows through the holes, and the type is drawn
+ * on top. Every treatment the grid cannot express survives as pixels.
+ *
+ * **Stored as uploaded, not through `prepareTemplateImage`.** That helper
+ * re-encodes to WebP, and while WebP does carry alpha, the resize-and-recompress
+ * it performs is exactly wrong here: a plate's value is its edges, and the
+ * anti-aliased rim of a mask is what makes a composited photograph look cut
+ * rather than pasted. The size cap still applies.
+ *
+ * Photo regions are measured from the file rather than asked of a model — see
+ * `findPlateHoles`. Text regions are left empty for the operator or a later
+ * extraction pass to fill, which is why this returns the hole count: an operator
+ * who cut three holes and sees "1 region" knows the export flattened them.
+ */
+export async function uploadTemplatePlate(
+  templateId: string,
+  formData: FormData,
+): Promise<ActionResult<{ regions: number; found: number }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+
+    const file = formData.get('plate');
+    if (!(file instanceof File) || file.size === 0) {
+      return failure('Choose a plate image to upload.');
+    }
+    if (file.type !== 'image/png') {
+      return failure(
+        `"${file.type || 'unknown'}" cannot carry transparency. Export the plate as a PNG ` +
+          'with the photo areas erased.',
+      );
+    }
+    if (file.size > MAX_TEMPLATE_BYTES) {
+      return failure(
+        `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${
+          MAX_TEMPLATE_BYTES / 1024 / 1024
+        } MB.`,
+      );
+    }
+
+    const template = await prisma.categoryTemplate.findUnique({
+      where: { id },
+      select: {
+        label: true,
+        plateDriveFileId: true,
+        plateSpec: true,
+        category: { select: { name: true } },
+      },
+    });
+    if (!template) return failure('That template no longer exists.');
+
+    const bytes = Buffer.from(await file.arrayBuffer());
+
+    const holes = await findPlateHoles(bytes);
+    if (!holes) {
+      return failure('That file could not be decoded as an image.');
+    }
+
+    const folderId = await ensureVerticalTemplateFolder(template.category.name);
+    const uploaded = await uploadClientAsset({
+      folderId,
+      fileName: `${template.label} — plate.png`,
+      body: bytes,
+      mimeType: 'image/png',
+      // Unpublished, exactly like the reference: a plate never leaves the
+      // console, and publishing it would let anyone holding the Drive id read
+      // the client's template library.
+      publish: false,
+    });
+
+    /*
+     * An existing draft's text regions survive a re-upload; only the geometry
+     * measured from the file is replaced. Re-exporting a plate to nudge one mask
+     * is common, and making the operator re-place every text box afterwards
+     * would make that a punishing edit.
+     */
+    const previous = parsePlateDraft(template.plateSpec).spec;
+
+    const spec = {
+      version: 1 as const,
+      name: previous?.name ?? template.label,
+      aspect: holes.width / holes.height,
+      photos: holes.regions,
+      text: previous?.text ?? [],
+      featureCount: previous?.featureCount ?? 3,
+      featureStyle: previous?.featureStyle ?? ('labelAndBody' as const),
+      ctaShape: previous?.ctaShape ?? ('pill' as const),
+      headlineEmphasis: previous?.headlineEmphasis ?? [],
+      headlineCase: previous?.headlineCase ?? ('upper' as const),
+    };
+
+    await prisma.categoryTemplate.update({
+      where: { id },
+      data: {
+        plateDriveFileId: uploaded.fileId,
+        plateViewUrl: uploaded.viewUrl,
+        plateWidth: holes.width,
+        plateHeight: holes.height,
+        plateSpec: spec as unknown as Prisma.InputJsonValue,
+        // Never set here. Approval means a human saw the plate composited, and
+        // nobody has at this point — the same rule as `layoutApprovedAt`.
+        plateApprovedAt: null,
+      },
+    });
+
+    // Trashed after the row points at the replacement, so a failure above leaves
+    // the operator with the plate they had rather than none.
+    if (template.plateDriveFileId) {
+      await trashDriveFile(template.plateDriveFileId).catch((error: unknown) => {
+        console.warn(`[ace:plate] could not trash the previous plate: ${describeError(error)}`);
+      });
+    }
+
+    revalidateAdmin();
+    return success({ regions: holes.regions.length, found: holes.found });
+  } catch (error) {
+    return toFailure(error, 'Uploading clean plate');
+  }
+}
+
+/**
+ * Publishes or withdraws a template's clean plate.
+ *
+ * Separate from `setTemplateLayoutApproval` because the two describe different
+ * artefacts: a template can have a sound grid and a plate whose headline box
+ * sits across somebody's face, and withdrawing one must not withdraw the other.
+ * Withdrawing a plate drops the template back to the grid path, which is the fix
+ * an operator reaches for when a composited poster comes out wrong.
+ */
+export async function setTemplatePlateApproval(
+  templateId: string,
+  approved: boolean,
+): Promise<ActionResult<{ approved: boolean }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+
+    const template = await prisma.categoryTemplate.findUnique({
+      where: { id },
+      select: { plateSpec: true, plateDriveFileId: true },
+    });
+    if (!template) return failure('That template no longer exists.');
+
+    if (approved) {
+      if (!template.plateDriveFileId) {
+        return failure('Upload a clean plate before approving one.');
+      }
+      const spec = parsePlateSpec(template.plateSpec);
+      if (!spec) {
+        return failure(
+          'This plate has no usable region map yet. Every plate needs at least a headline ' +
+            'region before it can be composited.',
+        );
+      }
+    }
+
+    await prisma.categoryTemplate.update({
+      where: { id },
+      data: { plateApprovedAt: approved ? new Date() : null },
+    });
+
+    revalidateAdmin();
+    return success({ approved });
+  } catch (error) {
+    return toFailure(error, 'Approving clean plate');
+  }
+}
+
+/** Chooses whether a template's posters take the reference's colours or the client's. */
+export async function setTemplatePaletteSource(
+  templateId: string,
+  source: 'template' | 'client',
+): Promise<ActionResult<{ source: string }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+    const value = z.enum(['template', 'client']).parse(source);
+
+    await prisma.categoryTemplate.update({
+      where: { id },
+      data: { paletteSource: value },
+    });
+
+    revalidateAdmin();
+    return success({ source: value });
+  } catch (error) {
+    return toFailure(error, 'Setting palette source');
   }
 }
 
