@@ -182,6 +182,21 @@ function main(): void {
       'The band splits at about 44%. There is one photographic region. The headline has 3 lines.',
     ) === 1,
   );
+  // Real phrasings from re-reads of the same three templates. The extractor
+  // varies its opening verb, and an earlier version of this parser anchored on
+  // "there is/are" and reported a correct Med-SM-13 as unreadable.
+  check(
+    '"The poster has one photographic region"',
+    readPhotoCountFromReading('The poster has one photographic region, which is rectangular.') === 1,
+  );
+  check(
+    '"It has two photographic regions"',
+    readPhotoCountFromReading('It has two photographic regions.') === 2,
+  );
+  check(
+    'the count is read even mid-sentence',
+    readPhotoCountFromReading('Looking at the poster, no photographic regions are present.') === 0,
+  );
   check('a reading that never says', readPhotoCountFromReading('A poster with a headline and a footer.') === null);
   check('no reading at all', readPhotoCountFromReading(null) === null);
 

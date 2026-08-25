@@ -75,13 +75,29 @@ export function readPhotoCountFromReading(reading: string | null): number | null
     five: 5,
   };
 
-  // "There is one photographic region", "There are no photographic regions",
-  // "There are 2 photographic regions". The count sits between the verb and the
-  // noun, so anchor on both rather than grabbing the first number in the string
-  // — a reading also quotes column percentages and line counts.
+  /*
+   * Anchored on the noun, not on the sentence.
+   *
+   * The first version required "there is/are N photographic region", which is
+   * how the extractor usually opens — and then a re-read of Med-SM-13 came back
+   * "The poster has one photographic region", was reported as unreadable, and
+   * held a template whose geometry was correct. Failing closed is right when the
+   * count genuinely cannot be found; doing it because the model chose a
+   * different verb is a false positive that costs an operator a real template.
+   *
+   * The count is the word immediately before "photographic region" in every
+   * phrasing seen, so that is what this matches, wherever it falls. The noun
+   * phrase is a strong enough anchor on its own — a reading quotes plenty of
+   * other numbers (column splits, line counts, feature counts) and none of them
+   * sit in front of these two words.
+   *
+   * First occurrence wins: a reading that says "There are two photographic
+   * regions" and then discusses "the first photographic region" must be read as
+   * two, and the count always precedes the commentary.
+   */
   const match = reading
     .toLowerCase()
-    .match(/there (?:is|are)\s+(\d+|no|none|zero|one|two|three|four|five)\s+photographic\s+region/);
+    .match(/(\d+|no|none|zero|one|two|three|four|five)\s+photographic\s+regions?/);
 
   if (!match?.[1]) return null;
 
