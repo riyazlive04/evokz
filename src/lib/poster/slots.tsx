@@ -469,6 +469,13 @@ export interface HeadlineProps extends SlotBase {
   emphasis: LayoutEmphasis[];
   /** Whether the template sets its headline in capitals. */
   textCase: 'upper' | 'sentence';
+  /**
+   * The height the headline must fit, when its surroundings cannot move.
+   *
+   * Supplied by the plate path and omitted by the grid, which has nothing to fit
+   * into — see `fitHeadline`.
+   */
+  availableHeight?: number;
   /** Column the headline must fit inside. */
   availableWidth: number;
 }
@@ -499,8 +506,9 @@ export function Headline({
   textCase,
   trailingPeriod,
   availableWidth,
+  availableHeight,
 }: HeadlineProps) {
-  const { size, wrap } = fitHeadline(metrics, lines, availableWidth);
+  const { size, wrap } = fitHeadline(metrics, lines, availableWidth, availableHeight);
   // Clamped rather than trusted: `accentLineIndex` comes from a Json column, and
   // an out-of-range value would leave the poster with no accent at all.
   const accentIndex = Math.min(Math.max(accentLineIndex, 0), lines.length - 1);

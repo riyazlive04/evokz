@@ -401,6 +401,43 @@ async function main() {
     );
   }
 
+  /*
+   * A headline longer than its region used to wrap and grow downward over
+   * whatever the artwork had below it — on a live plate a five-word headline in
+   * a narrow box became five lines and buried the eyebrow and the feature list.
+   * A plate's boxes cannot move, so the type has to fit both ways.
+   */
+  console.log('\n=== a plate headline fits its box ===');
+  {
+    const { fitHeadline, resolveMetrics } = await import('@/lib/poster/metrics');
+    const m = resolveMetrics(1080, 1920);
+    const lines = ['MODERN CARE', 'CLOSE TO HOME'];
+    const narrow = 380;
+    const boxHeight = 150;
+
+    const unbounded = fitHeadline(m, lines, narrow);
+    const bounded = fitHeadline(m, lines, narrow, boxHeight);
+
+    check(
+      'a height ceiling shrinks the type',
+      bounded.size < unbounded.size,
+      unbounded.size.toFixed(0) + 'px unbounded vs ' + bounded.size.toFixed(0) + 'px in a ' + boxHeight + 'px box',
+    );
+
+    // The whole point of the ceiling: what it returns must actually fit.
+    const perLine = bounded.size * m.headline.lineHeight;
+    check(
+      'the fitted block is no taller than the box',
+      perLine * lines.length <= boxHeight + 1,
+      (perLine * lines.length).toFixed(0) + 'px of type in ' + boxHeight + 'px',
+    );
+
+    check(
+      'a roomy box is left alone',
+      fitHeadline(m, lines, 900, 4000).size === fitHeadline(m, lines, 900).size,
+    );
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed.`);
     process.exitCode = 1;

@@ -179,7 +179,7 @@ function TextRegion({
   const width = region.w * metrics.width;
   const height = region.h * metrics.height;
 
-  const content = renderSlot(region, props, width);
+  const content = renderSlot(region, props, width, height);
   if (!content) return null;
 
   return (
@@ -244,6 +244,12 @@ function renderSlot(
   region: PlateTextRegion,
   props: PlateRenderProps,
   width: number,
+  /**
+   * The region's own height. Passed on to any slot that can grow downward,
+   * because on a plate there is nowhere for it to grow into — the artwork below
+   * is fixed and overflow lands on top of it.
+   */
+  height: number,
 ): React.ReactElement | null {
   const { spec, copy, theme, identity, metrics, logoDimensions, logoInkLuminance } = props;
   const ground = groundForRegion(region, theme, props.useTemplatePalette);
@@ -290,6 +296,7 @@ function renderSlot(
           textCase={spec.headlineCase}
           trailingPeriod={copy.headlinePeriod}
           availableWidth={width}
+          availableHeight={height}
         />
       );
 

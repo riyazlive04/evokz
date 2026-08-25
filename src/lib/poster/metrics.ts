@@ -321,6 +321,19 @@ export function fitHeadline(
   metrics: PosterMetrics,
   lines: string[],
   availableWidth: number,
+  /**
+   * The height the headline must also fit, in pixels. Omitted on the grid path,
+   * where there is nothing to fit into — a row hugs its content and the bands
+   * below it move down.
+   *
+   * **A plate cannot do that.** Its boxes are a photograph of a composition and
+   * its neighbours cannot move, so a headline that grows downward runs over the
+   * eyebrow, the feature list and whatever the artwork put there. Seen on a live
+   * plate: a five-word headline in a narrow region wrapped to five lines and
+   * buried both. Fitting width alone is only half an answer wherever the
+   * surroundings are fixed.
+   */
+  availableHeight?: number,
 ): HeadlineFit {
   const base = headlineSize(metrics, lines.length);
   const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
@@ -329,12 +342,29 @@ export function fitHeadline(
   const room = availableWidth * SAFETY;
   const widthAt = (size: number, chars: number) => chars * size * AVERAGE_CAP_ADVANCE;
 
-  if (widthAt(base, longestLine) <= room) return { size: base, wrap: false };
+  /*
+   * The height ceiling, applied to whatever the width logic settles on.
+   *
+   * Wrapping is what makes this necessary rather than merely tidy: shrinking
+   * keeps the line count and costs height proportionally, but wrapping *adds*
+   * lines, so the block can grow taller precisely when the type got smaller.
+   * Estimated against the wrapped line count rather than the authored one for
+   * the same reason.
+   */
+  const capToHeight = (size: number, lineCount: number): number => {
+    if (!availableHeight || availableHeight <= 0 || lineCount <= 0) return size;
+    const tallest = availableHeight / (lineCount * metrics.headline.lineHeight);
+    return Math.min(size, tallest);
+  };
+
+  if (widthAt(base, longestLine) <= room) {
+    return { size: capToHeight(base, lines.length), wrap: false };
+  }
 
   // Below 55% the headline stops dominating and the composition reads as a
   // body-copy block, so that is where shrinking stops and wrapping takes over.
   const fitted = room / (longestLine * AVERAGE_CAP_ADVANCE);
-  if (fitted >= base * 0.55) return { size: fitted, wrap: false };
+  if (fitted >= base * 0.55) return { size: capToHeight(fitted, lines.length), wrap: false };
 
   const longestWord = lines.reduce(
     (max, line) =>
@@ -343,10 +373,19 @@ export function fitHeadline(
   );
   // `longestWord` is at most `longestLine`, so this is never smaller than the
   // size rejected above — wrapping buys back the room that shrinking could not.
-  return {
-    size: Math.min(base, room / (Math.max(longestWord, 1) * AVERAGE_CAP_ADVANCE)),
-    wrap: true,
-  };
+  const wrappedSize = Math.min(base, room / (Math.max(longestWord, 1) * AVERAGE_CAP_ADVANCE));
+
+  /*
+   * How many lines the wrap will actually produce, approximated from the total
+   * character count against the room one line holds. Rough, and it only has to
+   * be: it is the difference between capping against the two lines somebody
+   * wrote and the five the renderer is about to draw.
+   */
+  const charsPerLine = Math.max(1, Math.floor(room / (wrappedSize * AVERAGE_CAP_ADVANCE)));
+  const totalChars = lines.reduce((sum, line) => sum + line.length + 1, 0);
+  const wrappedLines = Math.max(lines.length, Math.ceil(totalChars / charsPerLine));
+
+  return { size: capToHeight(wrappedSize, wrappedLines), wrap: true };
 }
 
 function clamp(value: number, min: number, max: number): number {
