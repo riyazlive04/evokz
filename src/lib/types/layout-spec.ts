@@ -628,18 +628,33 @@ export interface LayoutCopyShape {
   featureBodies: boolean;
   /** Share of the canvas width the headline column gets, 0–1. */
   headlineWidthShare: number;
+  /**
+   * Share of the canvas width the feature block gets, 0–1.
+   *
+   * Reported for the same reason as the headline's: the block cannot reflow to
+   * fit, so a column narrower than its words is a column that either shrinks its
+   * type or stacks one word per line. The renderer now does the first, and this
+   * lets the copy stage stop causing it — a nine-word sentence in a quarter-width
+   * column is set tiny however well the fitter behaves.
+   */
+  featureWidthShare: number;
 }
 
 export function describeCopyShape(spec: PosterLayoutSpec): LayoutCopyShape {
   const slots = new Set<LayoutSlot>();
   let headlineWidthShare = 1;
+  let featureWidthShare = 1;
 
   for (const row of spec.rows) {
     const totalWeight = row.cells.reduce((sum, cell) => sum + cell.weight, 0);
     for (const cell of row.cells) {
       for (const slot of cell.slots) slots.add(slot);
-      if (cell.slots.includes('headline') && totalWeight > 0) {
+      if (totalWeight <= 0) continue;
+      if (cell.slots.includes('headline')) {
         headlineWidthShare = cell.weight / totalWeight;
+      }
+      if (cell.slots.includes('features')) {
+        featureWidthShare = cell.weight / totalWeight;
       }
     }
   }
@@ -652,5 +667,6 @@ export function describeCopyShape(spec: PosterLayoutSpec): LayoutCopyShape {
     featureCount: spec.featureCount,
     featureBodies: spec.featureStyle === 'labelAndBody',
     headlineWidthShare,
+    featureWidthShare,
   };
 }

@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "name": "Narrow feature column",
+  "ground": "dark",
+  "rows": [
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "inherit",
+          "align": "start",
+          "padded": false,
+          "photoKind": "scene",
+          "slots": ["photo"]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "dark",
+      "cells": [
+        {
+          "weight": 75,
+          "fill": "dark",
+          "align": "start",
+          "padded": true,
+          "photoKind": "scene",
+          "slots": ["headline"]
+        },
+        {
+          "weight": 25,
+          "fill": "dark",
+          "align": "start",
+          "padded": true,
+          "photoKind": "scene",
+          "slots": ["features"]
+        }
+      ]
+    }
+  ]
+}

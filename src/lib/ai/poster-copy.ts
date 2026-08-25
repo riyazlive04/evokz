@@ -180,6 +180,22 @@ function describeLayoutFit(shape: LayoutCopyShape): string {
       `- features: exactly ${shape.featureCount} items. The layout has room for ` +
         `${shape.featureCount} and reads as a mistake with more.`,
     );
+    /*
+     * A narrow feature column is the same fault as a narrow headline column two
+     * branches below, and it went unreported for far longer. Under about a third
+     * of the poster's width the icon, the gap and the padding have taken most of
+     * the column, and a full sentence sets at the fitter's floor or stacks a word
+     * per line. Measured: a quarter-width column on a 1080 canvas left 52px for
+     * the words.
+     */
+    if (shape.featureWidthShare < 0.34) {
+      notes.push(
+        `  The feature block is only ${Math.round(shape.featureWidthShare * 100)}% of the ` +
+          'poster width, so each item is a narrow column. Keep every label to one or ' +
+          'two words, keep each body under 40 characters, and avoid long words — ' +
+          'nothing can wrap a word wider than the column.',
+      );
+    }
   } else {
     // The card row shows the label and nothing else, so the body is written,
     // stored, and never drawn — `posterFeatureSchema.body` is `.min(1)`, so it

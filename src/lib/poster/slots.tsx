@@ -194,6 +194,44 @@ function fitToRoom(length: number, room: number, base: number): number {
 }
 
 /**
+ * Size at which a *wrapping* block still fits `room`.
+ *
+ * The difference from `fitToRoom` is which measurement constrains it. That one
+ * fits an unbroken line — a phone number, a wordmark — so its whole length is
+ * the constraint. A paragraph re-flows, so its length is irrelevant and the
+ * binding constraint is its longest single word: wrapping cannot save a word
+ * wider than the column, and nothing else has to fit on one line. `fitHeadline`
+ * makes the same distinction for the same reason.
+ *
+ * Measuring a paragraph with `fitToRoom` would shrink it to the floor on sight —
+ * a 90-character body in a 160px column predicts 1,550px and collapses, when in
+ * truth it wraps to seven comfortable lines.
+ *
+ * **Feature labels wrap too, and measuring one as a line is a regression.**
+ * "TAILORED SOLUTIONS" sets over two lines in every reference that has it; fitted
+ * as though it had to hold one, it shrank from 27.6px to 21.1px in a full-width
+ * band that had room for it all along.
+ */
+function fitWrapped(text: string, room: number, base: number): number {
+  const longestWord = text
+    .split(/\s+/)
+    .reduce((max, word) => Math.max(max, word.length), 0);
+  return fitToRoom(longestWord, room, base);
+}
+
+/**
+ * Least width worth giving a feature's text beside its icon.
+ *
+ * Below this the icon and the gap have eaten so much of the column that the
+ * words stack one per line, and the block stops reading as a labelled feature
+ * and starts reading as a broken one. Measured: a 25% column on a 1080 canvas
+ * leaves 52px here — about four characters — and a 20% column leaves a negative
+ * number. `FeatureList` stacks the icon above the text rather than beside it
+ * once it drops under this, which hands the text the whole column back.
+ */
+const MIN_FEATURE_TEXT_WIDTH = 200;
+
+/**
  * The client's logo, or a generated wordmark lockup when none is on file.
  *
  * The boxed "LOGO HERE" placeholder in 7 of the 12 references is a stock-template
@@ -702,7 +740,45 @@ export function FeatureList({
   width,
   showBody = true,
 }: FeatureBlockProps) {
-  const textWidth = width - metrics.feature.iconBox - metrics.feature.gap;
+  /*
+   * Icon beside the text, or above it.
+   *
+   * Beside is the reference arrangement and stays the default. But the icon
+   * badge and its gap take a fixed ~108px whatever the column is, so in a narrow
+   * one they consume most of it: a 25% column on a 1080 canvas leaves 52px for
+   * the words — "We / create / customized / plans / for / your / needs." one word
+   * per line — and a 20% column leaves less than nothing, which yoga renders as
+   * a collapsed block.
+   *
+   * Stacking hands that 108px back to the text. It is the arrangement
+   * `FeatureStrip` already uses, so a narrow list column and a wide strip column
+   * end up reading as the same component rather than as two.
+   */
+  const besideWidth = width - metrics.feature.iconBox - metrics.feature.gap;
+  const stack = besideWidth < metrics.s(MIN_FEATURE_TEXT_WIDTH);
+
+  // Floored, never negative: a column too narrow even to stack in still has to
+  // produce a block satori can lay out.
+  const textWidth = Math.max(metrics.s(60), stack ? width : besideWidth);
+
+  /*
+   * Type fitted to the column it actually landed in.
+   *
+   * Every size here used to be a fixed multiple of the canvas, which is right
+   * for the full-width bands these were written against and wrong for a column:
+   * the block cannot reflow to fit, so a narrow one clipped or stacked instead.
+   * Measured against the widest word across all the features rather than per
+   * feature, so the three rows stay optically matched — one card set two points
+   * smaller than its neighbours reads as a mistake.
+   */
+  const labelSize = features.reduce(
+    (min, f) => Math.min(min, fitWrapped(f.label, textWidth, metrics.feature.label)),
+    metrics.feature.label,
+  );
+  const bodySize = features.reduce(
+    (min, f) => Math.min(min, fitWrapped(f.body, textWidth, metrics.feature.body)),
+    metrics.feature.body,
+  );
 
   return (
     <div
@@ -743,7 +819,17 @@ export function FeatureList({
               }}
             />
           )}
-          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center' }}>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: stack ? 'column' : 'row',
+              alignItems: stack
+                ? align === 'center'
+                  ? 'center'
+                  : 'flex-start'
+                : 'center',
+            }}
+          >
             <IconBadge
               metrics={metrics}
               ground={ground}
@@ -754,16 +840,18 @@ export function FeatureList({
               style={{
                 display: 'flex',
                 flexDirection: 'column',
-                marginLeft: metrics.feature.gap,
+                ...(stack
+                  ? { marginTop: metrics.s(10) }
+                  : { marginLeft: metrics.feature.gap }),
                 width: textWidth,
               }}
             >
               <div
                 style={{
                   fontFamily: theme.bodyFont.family,
-                  fontSize: metrics.feature.label,
+                  fontSize: labelSize,
                   fontWeight: heaviestWeight(theme.bodyFont),
-                  letterSpacing: metrics.feature.label * 0.02,
+                  letterSpacing: labelSize * 0.02,
                   textTransform: 'uppercase',
                   color: ground.text,
                 }}
@@ -775,7 +863,7 @@ export function FeatureList({
                   style={{
                     marginTop: metrics.s(4),
                     fontFamily: theme.bodyFont.family,
-                    fontSize: metrics.feature.body,
+                    fontSize: bodySize,
                     fontWeight: lightestWeight(theme.bodyFont),
                     lineHeight: 1.45,
                     color: withAlpha(ground.text, 0.75),
@@ -806,6 +894,26 @@ export function FeatureStrip({
   showBody = true,
 }: FeatureBlockProps) {
   const columnWidth = width / features.length;
+
+  /*
+   * Same fitting as `FeatureList`, for the same reason.
+   *
+   * A strip divides its band by the number of features, so four cards in a
+   * half-width band leave each one about 120px — narrower than the list column
+   * that made this necessary. The strip already stacks its icon, so there is no
+   * arrangement to switch; only the type has to give.
+   *
+   * Measured across every card, so the row stays optically matched.
+   */
+  const textWidth = Math.max(metrics.s(60), columnWidth - metrics.s(33));
+  const labelSize = features.reduce(
+    (min, f) => Math.min(min, fitWrapped(f.label, textWidth, metrics.feature.label)),
+    metrics.feature.label,
+  );
+  const bodySize = features.reduce(
+    (min, f) => Math.min(min, fitWrapped(f.body, textWidth, metrics.feature.body)),
+    metrics.feature.body,
+  );
 
   return (
     <div
@@ -853,9 +961,9 @@ export function FeatureStrip({
               style={{
                 marginTop: metrics.s(14),
                 fontFamily: theme.bodyFont.family,
-                fontSize: metrics.feature.label,
+                fontSize: labelSize,
                 fontWeight: heaviestWeight(theme.bodyFont),
-                letterSpacing: metrics.feature.label * 0.02,
+                letterSpacing: labelSize * 0.02,
                 textTransform: 'uppercase',
                 textAlign: 'center',
                 color: ground.text,
@@ -868,7 +976,7 @@ export function FeatureStrip({
                 style={{
                   marginTop: metrics.s(6),
                   fontFamily: theme.bodyFont.family,
-                  fontSize: metrics.feature.body,
+                  fontSize: bodySize,
                   fontWeight: lightestWeight(theme.bodyFont),
                   lineHeight: 1.4,
                   textAlign: 'center',
