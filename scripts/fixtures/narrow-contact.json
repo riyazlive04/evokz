@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "Contact bar in a half-width column",
+  "ground": "light",
+  "aspect": 0.5625,
+  "featureCount": 3,
+  "featureStyle": "labelOnly",
+  "ctaShape": "pill",
+  "headlineEmphasis": ["accent", "heavy"],
+  "headlineCase": "upper",
+  "rows": [
+    {
+      "sizingMode": "flex",
+      "edge": "none",
+      "heightFraction": 0,
+      "fill": "inherit",
+      "cells": [
+        { "weight": 50, "fill": "inherit", "align": "start", "padded": true, "photoKind": "scene", "surface": "none", "backdrop": "none", "valign": "start", "slots": ["headline"] },
+        { "weight": 50, "fill": "inherit", "align": "end", "padded": false, "photoKind": "subject", "surface": "none", "backdrop": "blob", "valign": "end", "slots": ["photo"] }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "edge": "curveTop",
+      "heightFraction": 0.2,
+      "fill": "dark",
+      "cells": [
+        { "weight": 50, "fill": "dark", "align": "center", "padded": true, "photoKind": "scene", "surface": "none", "backdrop": "none", "valign": "center", "slots": ["contact"] },
+        { "weight": 50, "fill": "dark", "align": "center", "padded": true, "photoKind": "scene", "surface": "none", "backdrop": "none", "valign": "center", "slots": ["cta"] }
+      ]
+    }
+  ]
+}

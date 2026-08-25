@@ -1066,6 +1066,13 @@ export interface ContactBarProps {
    */
   variant: 'accent' | 'dark';
   /** Stack the two cells vertically instead of side by side. 4/12 references. */
+  /**
+   * Force the two cells into a column.
+   *
+   * Rarely needed now: the bar stacks itself as soon as its cells cannot be set
+   * side by side at a legible size, which is the case that used to clip. This
+   * remains for a caller that wants a column in a bar wide enough for a row.
+   */
   stacked?: boolean;
   /**
    * Which edge the stacked cells hang from. Ignored when `stacked` is false —
@@ -1140,14 +1147,38 @@ export function ContactBar({
    * halves stay optically matched — a bar whose phone number is set two points
    * larger than its website reads as a mistake.
    */
-  const cellRoom =
-    barWidth / Math.max(1, cells.length) -
+  const roomFor = (columns: number) =>
+    barWidth / Math.max(1, columns) -
     metrics.margin -
     metrics.contact.badge -
     metrics.s(46);
 
   const longestLabel = cells.reduce((max, cell) => Math.max(max, cell.label.length), 1);
   const longestValue = cells.reduce((max, cell) => Math.max(max, cell.value.length), 1);
+
+  /*
+   * Stack the cells when the bar is too narrow to hold them side by side.
+   *
+   * `fitToRoom` sets type smaller rather than clipping it, but it stops at 55%
+   * of base — below that a phone number stops being a phone number — so a bar
+   * narrow enough overflows the floor and the cell's `overflow: hidden` takes
+   * the end off the number. That is not a cosmetic failure: a client's contact
+   * details delivered daily with the last digits missing is the exact defect the
+   * whole typeset-rather-than-diffuse decision exists to prevent.
+   *
+   * It happens as soon as a layout puts the bar in a column instead of across
+   * the canvas. A freshly re-read Med-SM-1 did precisely that — `contact` and
+   * `cta` side by side at 50/50, a fair reading of the reference — and the
+   * number lost its last four digits.
+   *
+   * Two rows at full width beat two clipped columns, so the bar takes the space
+   * it has vertically. Predicted against the *value* line because it is the
+   * longer of the two and both are `nowrap`; the label rides along.
+   */
+  const floorWidth = longestValue * metrics.contact.value * 0.55 * AVERAGE_CAP_ADVANCE;
+  const stack = stacked || (cells.length > 1 && floorWidth > roomFor(cells.length));
+
+  const cellRoom = roomFor(stack ? 1 : cells.length);
 
   const labelSize = fitToRoom(longestLabel, cellRoom, metrics.contact.label);
   const valueSize = fitToRoom(longestValue, cellRoom, metrics.contact.value);
@@ -1156,11 +1187,11 @@ export function ContactBar({
     <div
       style={{
         display: 'flex',
-        flexDirection: stacked ? 'column' : 'row',
+        flexDirection: stack ? 'column' : 'row',
         width: width ?? metrics.width,
-        minHeight: stacked ? metrics.contact.height * 1.15 : metrics.contact.height,
+        minHeight: stack ? metrics.contact.height * 1.15 : metrics.contact.height,
         ...(transparent ? {} : { backgroundColor: background }),
-        alignItems: stacked ? FLEX_ALIGN[align] : 'center',
+        alignItems: stack ? FLEX_ALIGN[align] : 'center',
         justifyContent: 'center',
         paddingLeft: metrics.margin,
         paddingRight: metrics.margin,
@@ -1175,7 +1206,7 @@ export function ContactBar({
             display: 'flex',
             flexDirection: 'row',
             alignItems: 'center',
-            ...(stacked
+            ...(stack
               ? {
                   width: '100%',
                   marginTop: index > 0 ? metrics.s(14) : 0,
@@ -1187,7 +1218,7 @@ export function ContactBar({
               : { flex: 1 }),
           }}
         >
-          {index > 0 && !stacked && (
+          {index > 0 && !stack && (
             <div
               style={{
                 width: 1,
