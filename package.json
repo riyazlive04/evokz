@@ -15,6 +15,7 @@
     "check:risk": "tsx --tsconfig scripts/tsconfig.json scripts/check-layout-risk.ts",
     "check:plate": "tsx --tsconfig scripts/tsconfig.json scripts/check-plate-render.ts",
     "check:import": "tsx --tsconfig scripts/tsconfig.json scripts/check-calendar-import.ts",
+    "template:snapshot": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/template-snapshot.ts",
     "layouts:approve": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/approve-vertical-layouts.ts",
     "layouts:read": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/read-vertical-layouts.ts",
     "layout:extract": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-layout-extract.ts",
