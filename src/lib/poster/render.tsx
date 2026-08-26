@@ -15,6 +15,7 @@ import {
 import { measureInkLuminance } from '@/lib/poster/logo-key';
 import { resolveMetrics } from '@/lib/poster/metrics';
 import { renderPlateSpec } from '@/lib/poster/plate-render';
+import { sampleRegionSurface } from '@/lib/poster/plate-ink';
 import { requiredFaces, resolvePosterTheme } from '@/lib/poster/theme';
 import type { BrandGuideline } from '@/lib/types/brand';
 import { countPhotoSlots, type PosterLayoutSpec } from '@/lib/types/layout-spec';
@@ -181,6 +182,28 @@ export async function renderPoster(
 
   const fonts = await loadFonts(requiredFaces(theme));
 
+  /*
+   * What each block of type is about to be set on.
+   *
+   * Measured here, from the plate itself, because this is the last point that
+   * holds the bytes and the first that is allowed to be async — `renderPlateSpec`
+   * builds a tree synchronously. Sequential for the reason `extractPlateRegions`
+   * gives about its own sampling: seven small crops of one buffer is tens of
+   * milliseconds against a render that has already paid for a diffusion call.
+   *
+   * Per render rather than stored on the spec, deliberately. It could be measured
+   * once at plate time and written into `plateSpec`, which would be cheaper — and
+   * would reach none of the plates already sitting in Drive without regenerating
+   * every one of them. This way the fix applies to the existing library the next
+   * time each poster draws.
+   */
+  const plateSurfaces: Array<string | null> = [];
+  if (input.plate) {
+    for (const region of input.plate.spec.text) {
+      plateSurfaces.push(await sampleRegionSurface(input.plate.bytes, region));
+    }
+  }
+
   // Stage 1 — lay out the tree and emit SVG.
   const tree = input.plate
     ? renderPlateSpec({
@@ -194,6 +217,7 @@ export async function renderPoster(
         logoDimensions: logo?.dimensions ?? null,
         logoInkLuminance: logo?.inkLuminance ?? null,
         useTemplatePalette: input.plate.useTemplatePalette,
+        surfaces: plateSurfaces,
       })
     : renderLayoutSpec({
         spec: input.layoutSpec,

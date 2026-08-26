@@ -272,7 +272,17 @@ async function main() {
     aspect: 1,
     photos: [],
     text: [
-      { x: 0.05, y: 0.4, w: 0.9, h: 0.2, slot: 'headline', align: 'center', valign: 'center', color: '#FF00FF' },
+      /*
+       * Amber, not the magenta this fixture used to carry.
+       *
+       * Magenta reads at 1.52:1 on the teal plate underneath it — a pairing no
+       * designer would set and, since the ink guard landed, one the renderer
+       * refuses outright. The test was passing because nothing checked. Amber is
+       * a colour a template really might use, clears the 3:1 a headline needs at
+       * 3.9:1, and is still nowhere near the white fallback, so a pixel count
+       * still tells the two apart.
+       */
+      { x: 0.05, y: 0.4, w: 0.9, h: 0.2, slot: 'headline', align: 'center', valign: 'center', color: '#FFEB3B' },
     ],
   });
   if (tinted) {
@@ -288,11 +298,11 @@ async function main() {
       height: 600,
     });
     const { data } = await sharp(withPalette.body).raw().toBuffer({ resolveWithObject: true });
-    let magenta = 0;
+    let amber = 0;
     for (let i = 0; i < data.length; i += 3) {
-      if (data[i]! > 200 && data[i + 1]! < 60 && data[i + 2]! > 200) magenta += 1;
+      if (data[i]! > 200 && data[i + 1]! > 180 && data[i + 2]! < 110) amber += 1;
     }
-    check('the sampled colour is used when the template palette wins', magenta > 200, `${magenta} px`);
+    check('the sampled colour is used when the template palette wins', amber > 200, `${amber} px`);
   }
 
   /*
@@ -502,6 +512,202 @@ async function main() {
         JSON.stringify(middleOfScene),
       );
     }
+  }
+
+
+  /*
+   * Type is coloured for the artwork it lands on, not for a surface the plate
+   * path never paints.
+   *
+   * The regression these guard is not hypothetical: two delivered posters lost
+   * their whole footer to it. `ContactBar` was asked for `variant="accent"` and
+   * `transparent` together — colours derived from the gold accent field, and
+   * that field then not drawn — so a near-black phone number was set on navy
+   * artwork. `BodyCopy` reads `ground.muted`, which `groundForRegion` never
+   * overrode, so the body paragraph was theme-dark on every plate whatever was
+   * behind it.
+   *
+   * Both are asserted on pixels rather than on the resolved colours, because
+   * the colours were always defensible in isolation. It is the pairing with the
+   * plate that was wrong, and only the composite shows that.
+   */
+  console.log('\n=== type reads against the plate it is set on ===');
+  {
+    // A fully opaque, very dark plate. Anything drawn in the theme's light-ground
+    // ink lands within a few points of it and vanishes.
+    const DARK = { r: 12, g: 30, b: 62 }; // navy, as in the delivered poster
+    const darkPlate = await sharp({
+      create: { width: 600, height: 600, channels: 4, background: { ...DARK, alpha: 1 } },
+    })
+      .png()
+      .toBuffer();
+
+    const spec = parsePlateSpec({
+      version: 1,
+      name: 'dark plate',
+      aspect: 1,
+      photos: [],
+      text: [
+        { x: 0.05, y: 0.04, w: 0.9, h: 0.2, slot: 'headline', align: 'start', valign: 'start', color: null },
+        { x: 0.05, y: 0.34, w: 0.9, h: 0.18, slot: 'body', align: 'start', valign: 'start', color: null },
+        { x: 0.05, y: 0.72, w: 0.9, h: 0.22, slot: 'contact', align: 'start', valign: 'center', color: null },
+      ],
+    })!;
+
+    const poster = await renderPoster({
+      layoutSpec: FALLBACK_GRID,
+      copy: COPY,
+      guideline: EMPTY_BRAND_GUIDELINE,
+      identity: IDENTITY,
+      photos: [],
+      plate: { spec, bytes: darkPlate, mimeType: 'image/png', useTemplatePalette: false },
+      width: 600,
+      height: 600,
+    });
+
+    /*
+     * Counts pixels in a horizontal band that differ from the plate colour.
+     *
+     * Type is a small share of any band it sits in, so this asks whether the
+     * block made *any* legible mark rather than how much — the failure being
+     * guarded is total invisibility, where the answer is zero or close to it.
+     */
+    const { data, info } = await sharp(poster.body).raw().toBuffer({ resolveWithObject: true });
+    const legibleIn = (top: number, bottom: number): number => {
+      let seen = 0;
+      for (let y = Math.round(top * info.height); y < Math.round(bottom * info.height); y += 1) {
+        for (let x = 0; x < info.width; x += 1) {
+          const i = (y * info.width + x) * info.channels;
+          const px = { r: data[i]!, g: data[i + 1]!, b: data[i + 2]! };
+          // Well beyond anti-aliasing: a mark that clears this is readable ink.
+          if (!near(px, DARK, 60)) seen += 1;
+        }
+      }
+      return seen;
+    };
+
+    check(
+      'the body paragraph is visible on a dark plate',
+      legibleIn(0.34, 0.52) > 200,
+      `${legibleIn(0.34, 0.52)} px of ink`,
+    );
+
+    check(
+      'the contact bar is visible on a dark plate',
+      legibleIn(0.72, 0.94) > 200,
+      `${legibleIn(0.72, 0.94)} px of ink`,
+    );
+
+    check(
+      'the headline is visible on a dark plate',
+      legibleIn(0.04, 0.24) > 200,
+      `${legibleIn(0.04, 0.24)} px of ink`,
+    );
+  }
+
+  /*
+   * A sampled ink colour is a proposal, not an instruction.
+   *
+   * `sampleRegionInk` reads the reference; the type is composited onto the
+   * plate, and the eraser reconstructs what was under the words. A headline
+   * that sat on a pale band can end up over the darker artwork that band was
+   * covering, and the sample then names a colour indistinguishable from its new
+   * background. Seen live: feature labels sampled to a mid-teal, set on teal.
+   */
+  console.log('\n=== an unreadable sampled colour is refused ===');
+  {
+    const TEAL = { r: 0, g: 128, b: 128 };
+    const tealPlate = await sharp({
+      create: { width: 600, height: 600, channels: 4, background: { ...TEAL, alpha: 1 } },
+    })
+      .png()
+      .toBuffer();
+
+    // A sampled colour a couple of points off the plate — exactly the failure.
+    const sunk = parsePlateSpec({
+      version: 1,
+      name: 'sunken ink',
+      aspect: 1,
+      photos: [],
+      text: [
+        { x: 0.05, y: 0.3, w: 0.9, h: 0.3, slot: 'headline', align: 'start', valign: 'start', color: '#0d8583' },
+      ],
+    })!;
+
+    const poster = await renderPoster({
+      layoutSpec: FALLBACK_GRID,
+      copy: COPY,
+      guideline: EMPTY_BRAND_GUIDELINE,
+      identity: IDENTITY,
+      photos: [],
+      plate: { spec: sunk, bytes: tealPlate, mimeType: 'image/png', useTemplatePalette: true },
+      width: 600,
+      height: 600,
+    });
+
+    const { data, info } = await sharp(poster.body).raw().toBuffer({ resolveWithObject: true });
+    let legible = 0;
+    for (let i = 0; i < data.length; i += info.channels) {
+      const px = { r: data[i]!, g: data[i + 1]!, b: data[i + 2]! };
+      if (!near(px, TEAL, 60)) legible += 1;
+    }
+
+    check(
+      'a headline sampled to its own background is redrawn in a readable ink',
+      legible > 200,
+      `${legible} px of ink`,
+    );
+  }
+
+  /*
+   * The other half of that trade: a sampled colour that DOES read must survive.
+   * Refusing every sample would keep the type legible and throw away the
+   * designer's palette, which is the whole reason `paletteSource: "template"`
+   * exists.
+   */
+  console.log('\n=== a readable sampled colour is kept ===');
+  {
+    const WHITE = { r: 250, g: 250, b: 250 };
+    const lightPlate = await sharp({
+      create: { width: 600, height: 600, channels: 4, background: { ...WHITE, alpha: 1 } },
+    })
+      .png()
+      .toBuffer();
+
+    const crimson = parsePlateSpec({
+      version: 1,
+      name: 'kept ink',
+      aspect: 1,
+      photos: [],
+      text: [
+        { x: 0.05, y: 0.3, w: 0.9, h: 0.3, slot: 'headline', align: 'start', valign: 'start', color: '#b0122f' },
+      ],
+    })!;
+
+    const poster = await renderPoster({
+      layoutSpec: FALLBACK_GRID,
+      copy: COPY,
+      guideline: EMPTY_BRAND_GUIDELINE,
+      identity: IDENTITY,
+      photos: [],
+      plate: { spec: crimson, bytes: lightPlate, mimeType: 'image/png', useTemplatePalette: true },
+      width: 600,
+      height: 600,
+    });
+
+    const { data, info } = await sharp(poster.body).raw().toBuffer({ resolveWithObject: true });
+    let crimsonPixels = 0;
+    for (let i = 0; i < data.length; i += info.channels) {
+      if (near({ r: data[i]!, g: data[i + 1]!, b: data[i + 2]! }, { r: 176, g: 18, b: 47 }, 30)) {
+        crimsonPixels += 1;
+      }
+    }
+
+    check(
+      "the designer's colour is used where it reads",
+      crimsonPixels > 200,
+      `${crimsonPixels} px`,
+    );
   }
 
 

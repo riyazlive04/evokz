@@ -11,8 +11,10 @@ import {
   LogoLock,
   groundFor,
   groundForFill,
+  groundForSurface,
   type Ground,
 } from '@/lib/poster/slots';
+import { contrastRatio } from '@/lib/poster/color';
 import type { ImageDimensions } from '@/lib/poster/image-info';
 import {
   PLATE_FLEX,
@@ -79,6 +81,18 @@ export interface PlateRenderProps {
    * generic plate still wants the client's brand, which is why this is a choice.
    */
   useTemplatePalette: boolean;
+  /**
+   * The plate's own colour under each text region, in `spec.text` order, as
+   * measured by `sampleRegionSurface`. A null entry means the region sits over a
+   * photographic hole or the plate could not be read, and the theme's ground
+   * applies as it always did.
+   *
+   * Measured in `renderPoster` rather than here because reading pixels is async
+   * and this builds a tree synchronously — and measured per render rather than
+   * stored on the spec so that every plate already in Drive gets the benefit
+   * without being regenerated.
+   */
+  surfaces: ReadonlyArray<string | null>;
 }
 
 export function renderPlateSpec(props: PlateRenderProps): React.ReactElement {
@@ -217,7 +231,12 @@ export function renderPlateSpec(props: PlateRenderProps): React.ReactElement {
 
       {/* Layer 2 — the type. */}
       {spec.text.map((region, index) => (
-        <TextRegion key={`text-${index}`} region={region} props={props} />
+        <TextRegion
+          key={`text-${index}`}
+          region={region}
+          props={props}
+          surface={props.surfaces[index] ?? null}
+        />
       ))}
     </div>
   );
@@ -226,16 +245,18 @@ export function renderPlateSpec(props: PlateRenderProps): React.ReactElement {
 function TextRegion({
   region,
   props,
+  surface,
 }: {
   region: PlateTextRegion;
   props: PlateRenderProps;
+  surface: string | null;
 }) {
   const { metrics } = props;
 
   const width = region.w * metrics.width;
   const height = region.h * metrics.height;
 
-  const content = renderSlot(region, props, width, height);
+  const content = renderSlot(region, props, width, height, surface);
   if (!content) return null;
 
   return (
@@ -279,21 +300,83 @@ function groundForRegion(
   region: PlateTextRegion,
   theme: PosterTheme,
   useTemplatePalette: boolean,
+  /**
+   * The plate's own colour under this region, measured by `sampleRegionSurface`.
+   * Null where the region sits over a photographic hole, or where the plate could
+   * not be read.
+   */
+  surface: string | null,
 ): Ground {
-  if (useTemplatePalette && region.color) {
-    /*
-     * `groundForFill` resolves the colours that read *against* a surface, which
-     * is not what is wanted here — the sampled hex is the ink, not the ground
-     * behind it. So the base is the theme's own light/dark ground, with the
-     * text colours overridden to what the reference used.
-     */
-    const base = groundFor(theme, false);
-    return { ...base, text: region.color, accentText: region.color };
+  /*
+   * The ground is built from what the type is actually going to sit on.
+   *
+   * This used to be `groundFor(theme, false)` unconditionally — the theme's
+   * *light* ground — on the reasoning that plates are overwhelmingly light
+   * artwork with dark type. Plenty are not, and the ones that are not delivered
+   * dark type on dark artwork: a body paragraph and a phone number that were
+   * present, correct, and invisible. The comment even said so, and treated the
+   * sampled ink colour as the escape hatch — but the sample only ever reached
+   * `text` and `accentText`, so `muted`, `hairline` and `accentFill` stayed
+   * light-ground regardless. Body copy reads `muted`. That is the whole bug.
+   *
+   * With the surface measured there is nothing left to assume.
+   */
+  const base = surface ? groundForSurface(theme, surface) : groundFor(theme, false);
+
+  if (!useTemplatePalette || !region.color) return base;
+
+  /*
+   * The reference's own ink, but only where it can still be seen.
+   *
+   * A sampled hex is the colour this block was printed in on the *reference*,
+   * and the plate is not the reference — the eraser reconstructs what was under
+   * the type, and a headline that sat on a pale band can end up over the darker
+   * artwork that band was hiding. Trusted outright, that sinks the type into the
+   * plate: measured on a live template, feature labels sampled to a mid-teal and
+   * were composited onto teal artwork.
+   *
+   * So the sample has to clear the same bar any other text colour would. Where
+   * it does, the composite keeps the designer's palette, which is the entire
+   * point of `paletteSource: "template"`. Where it does not, the surface's own
+   * contrasting ink wins — a legible poster in the wrong colour beats a
+   * beautiful one nobody can read.
+   */
+  if (surface) {
+    const ratio = contrastRatio(region.color, surface);
+    const required = minInkContrast(region.slot);
+
+    if (ratio < required) {
+      console.warn(
+        `[ace:plate] the "${region.slot}" region's sampled colour ${region.color} reads at ` +
+          `${ratio.toFixed(2)}:1 on the plate's ${surface} behind it, under the ` +
+          `${required}:1 that slot needs; using ${base.text} instead so the block stays legible.`,
+      );
+      return base;
+    }
   }
 
-  // Plates are overwhelmingly light artwork with dark type; a plate whose type
-  // sits on a dark band carries a sampled colour and takes the branch above.
-  return groundFor(theme, false);
+  return { ...base, text: region.color, accentText: region.color };
+}
+
+/**
+ * Contrast a sampled ink colour must reach against the plate behind it.
+ *
+ * WCAG AA, with its own large-text allowance rather than one bar for everything.
+ * That distinction is load-bearing here rather than pedantic: a poster headline
+ * is display type several times the large-text threshold, and holding it to the
+ * body-copy ratio refuses pairings that are not merely acceptable but *deliberate*
+ * — a deep amber headline on teal reads at 3.9:1 and is exactly the sort of thing
+ * a designer chooses. Refusing it would repaint the template's own artwork in
+ * white and lose the palette this whole path exists to preserve.
+ *
+ * It costs nothing in safety. The failure being guarded against is not a tight
+ * pairing but a collapsed one — a sample that has gone wrong lands a point or two
+ * off its background, far below either threshold.
+ */
+function minInkContrast(slot: PlateSlot): number {
+  // Display type: the headline, and the imperative set inside the button. Both
+  // are far above 18pt at every canvas the renderer will accept.
+  return slot === 'headline' || slot === 'cta' ? 3 : 4.5;
 }
 
 function renderSlot(
@@ -306,9 +389,10 @@ function renderSlot(
    * is fixed and overflow lands on top of it.
    */
   height: number,
+  surface: string | null,
 ): React.ReactElement | null {
   const { spec, copy, theme, identity, metrics, logoDimensions, logoInkLuminance } = props;
-  const ground = groundForRegion(region, theme, props.useTemplatePalette);
+  const ground = groundForRegion(region, theme, props.useTemplatePalette, surface);
   const align = region.align;
 
   const slot: PlateSlot = region.slot;
@@ -430,6 +514,7 @@ function renderSlot(
           align={align}
           variant="accent"
           transparent
+          ground={ground}
         />
       );
   }

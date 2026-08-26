@@ -1,4 +1,10 @@
-import { bestTextOn, hexToRgb, relativeLuminance, withAlpha } from '@/lib/poster/color';
+import {
+  bestTextOn,
+  contrastRatio,
+  hexToRgb,
+  relativeLuminance,
+  withAlpha,
+} from '@/lib/poster/color';
 import { heaviestWeight, lightestWeight } from '@/lib/poster/fonts';
 import { PosterIconGlyph } from '@/lib/poster/icons';
 import { containFit, type ImageDimensions } from '@/lib/poster/image-info';
@@ -72,6 +78,42 @@ export function groundFor(theme: PosterTheme, isDark: boolean): Ground {
  * accent: accent-on-accent is invisible, so the icon circles and rule on an accent
  * panel have to be drawn in whatever reads against it.
  */
+/**
+ * Ground for type being set on measured artwork.
+ *
+ * The plate path's counterpart to `groundForFill`, and separate from it because
+ * the two describe different situations. A fill is a colour this renderer chose
+ * and painted, so an accent on top of it would be accent-on-accent and has to be
+ * given up. A plate's surface is a colour somebody else printed, the accent is
+ * the *client's* and carries their brand onto artwork that has none of it — so
+ * it is kept wherever it can still be seen, and only surrendered where it cannot.
+ *
+ * That distinction is what keeps the icon badges gold on a teal plate while the
+ * feature text beside them turns white.
+ */
+export function groundForSurface(theme: PosterTheme, surface: string): Ground {
+  const text = bestTextOn(surface);
+  const isDark = relativeLuminance(hexToRgb(surface) ?? { r: 0, g: 0, b: 0 }) < 0.5;
+
+  /*
+   * 3:1 rather than 4.5:1, because this gates *marks* rather than prose — an
+   * icon's stroke, a rule, a button's field. WCAG's large-text and non-text
+   * thresholds are both 3:1, and holding the brand accent to the body-copy bar
+   * would drop it off plates it reads on perfectly well.
+   */
+  const accentReads = contrastRatio(theme.accent, surface) >= 3;
+
+  return {
+    isDark,
+    text,
+    // Text needs the full 4.5:1, so it is asked separately from the fill above.
+    accentText: contrastRatio(theme.accent, surface) >= 4.5 ? theme.accent : text,
+    accentFill: accentReads ? theme.accent : text,
+    muted: withAlpha(text, 0.85),
+    hairline: withAlpha(text, 0.25),
+  };
+}
+
 export function groundForFill(theme: PosterTheme, fill: string): Ground {
   const text = bestTextOn(fill);
   const isDark = relativeLuminance(hexToRgb(fill) ?? { r: 0, g: 0, b: 0 }) < 0.5;
@@ -1073,6 +1115,15 @@ export interface ContactBarProps {
    * chooses the variant that contrasts with whatever it put above.
    */
   variant: 'accent' | 'dark';
+  /**
+   * The colours that read on what is actually behind this bar.
+   *
+   * Read only when `transparent` is set, and required in practice whenever it
+   * is: a bar that paints no field of its own cannot derive its colours from the
+   * field it would have painted. Optional so the archetype and grid callers,
+   * which all paint their fill, are untouched.
+   */
+  ground?: Ground;
   /** Stack the two cells vertically instead of side by side. 4/12 references. */
   /**
    * Force the two cells into a column.
@@ -1113,6 +1164,7 @@ export function ContactBar({
   identity,
   copy,
   variant,
+  ground,
   stacked = false,
   transparent = false,
   align = 'start',
@@ -1120,14 +1172,46 @@ export function ContactBar({
 }: ContactBarProps) {
   const onAccent = variant === 'accent';
   const background = onAccent ? theme.accent : theme.darkNeutral;
-  const labelColor = onAccent
-    ? withAlpha(theme.onAccent, 0.8)
-    : withAlpha(theme.onDark, 0.7);
-  const valueColor = onAccent ? theme.onAccent : theme.accentOnDark;
-  const badgeColor = onAccent ? theme.onAccent : theme.accent;
-  const dividerColor = onAccent
-    ? withAlpha(theme.onAccent, 0.4)
-    : withAlpha(theme.onDark, 0.3);
+
+  /*
+   * A bar that paints no field must not be coloured for one.
+   *
+   * `variant` names the fill this bar draws behind itself, and every colour
+   * below was derived from that fill — which is correct exactly as long as the
+   * fill is painted. The plate path asks for neither: it passes `transparent`,
+   * because the curved footer is already printed on the artwork, together with
+   * `variant="accent"`, because the printed footer *is* the accent band. The two
+   * together resolved `theme.onAccent` — near-black against a gold accent — and
+   * set it on navy artwork that the accent field was never drawn over. A phone
+   * number nobody can read, delivered daily.
+   *
+   * So a transparent bar takes a `ground` measured from what is actually behind
+   * it, and the variant is left to describe only the fill it is no longer
+   * drawing. Opaque bars are untouched: there the fill exists and the variant is
+   * the honest answer.
+   */
+  const measured = transparent ? ground : undefined;
+
+  const labelColor = measured
+    ? measured.muted
+    : onAccent
+      ? withAlpha(theme.onAccent, 0.8)
+      : withAlpha(theme.onDark, 0.7);
+  const valueColor = measured
+    ? measured.text
+    : onAccent
+      ? theme.onAccent
+      : theme.accentOnDark;
+  const badgeColor = measured
+    ? measured.accentFill
+    : onAccent
+      ? theme.onAccent
+      : theme.accent;
+  const dividerColor = measured
+    ? measured.hairline
+    : onAccent
+      ? withAlpha(theme.onAccent, 0.4)
+      : withAlpha(theme.onDark, 0.3);
 
   const barWidth = width ?? metrics.width;
 
@@ -1240,7 +1324,17 @@ export function ContactBar({
             metrics={metrics}
             icon={cell.icon}
             color={badgeColor}
-            glyphColor={background}
+            /*
+             * The glyph is knocked out of the badge, so it has to contrast with
+             * the badge and nothing else. On an opaque bar the bar's own fill is
+             * that colour by construction — the badge is painted in the bar's
+             * text colour, so the fill reads back out of it.
+             *
+             * A transparent bar has no fill to knock out of. Reusing it there
+             * drew the accent glyph on an accent badge: a gold disc with a gold
+             * telephone on it, which is to say a gold disc.
+             */
+            glyphColor={measured ? bestTextOn(badgeColor) : background}
           />
           <div
             style={{
