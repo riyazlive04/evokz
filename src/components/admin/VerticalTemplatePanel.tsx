@@ -2,11 +2,20 @@
 
 import * as React from 'react';
 
-import { ExternalLink, ImagePlus, Loader2, SquareDashedMousePointer, Trash2, Upload } from 'lucide-react';
+import {
+  ExternalLink,
+  ImagePlus,
+  Loader2,
+  RefreshCw,
+  SquareDashedMousePointer,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 
 import {
   deleteVerticalTemplate,
   extractTemplateLayout,
+  extractVerticalLayouts,
   renameVerticalTemplate,
   setTemplateLayoutApproval,
   setTemplateLayoutSpec,
@@ -139,6 +148,32 @@ export function VerticalTemplatePanel({
 
   const upload = useAction(uploadVerticalTemplate);
 
+  /*
+   * Re-reading is the only action ever wanted for a whole vertical at once, so
+   * it is the only one that belongs up here. Everything else on a template card
+   * is about that template.
+   */
+  const rereadAll = useAction(extractVerticalLayouts);
+  const [confirmAll, setConfirmAll] = React.useState(false);
+  /**
+   * The last sweep's summary.
+   *
+   * Held here rather than read off the action, which reports only pending and
+   * error — the same reason `progress` and `rejected` above are local: what an
+   * operator needs after a bulk run is what it did, and that outlives the call.
+   */
+  const [sweep, setSweep] = React.useState<{
+    read: number;
+    failed: number;
+    skippedAuthored: string[];
+  } | null>(null);
+
+  React.useEffect(() => {
+    if (!confirmAll) return;
+    const timer = setTimeout(() => setConfirmAll(false), 5_000);
+    return () => clearTimeout(timer);
+  }, [confirmAll]);
+
   // Against the whole library, never the page. Sizing this to `templates.length`
   // would offer room for another twenty-four uploads on every page of a vertical
   // that is already full, and the action would refuse every one of them.
@@ -217,6 +252,38 @@ export function VerticalTemplatePanel({
           Upload templates
         </Button>
 
+        {totalCount > 0 && (
+          <Button
+            type="button"
+            variant="ghost"
+            /*
+             * Confirmed once for the whole sweep, because it spends a vision
+             * call per template and withdraws every approval it touches. Not a
+             * confirmation about authored layouts — those are skipped outright,
+             * since nobody pressing a bulk button is asking to discard them.
+             */
+            onClick={() => {
+              if (!confirmAll) {
+                setConfirmAll(true);
+                return;
+              }
+              setConfirmAll(false);
+              setSweep(null);
+              void rereadAll.run(categoryId).then((outcome) => {
+                if (outcome.ok) setSweep(outcome.data);
+              });
+            }}
+            disabled={rereadAll.pending || upload.pending}
+          >
+            {rereadAll.pending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            {confirmAll ? `Re-read all ${totalCount}?` : 'Re-read all layouts'}
+          </Button>
+        )}
+
         <span className="font-mono text-[11px] text-muted-foreground">
           {totalCount} / {MAX_TEMPLATES_PER_CATEGORY}
         </span>
@@ -225,6 +292,22 @@ export function VerticalTemplatePanel({
           <span className="text-[11px] text-muted-foreground">{progress}</span>
         )}
       </div>
+
+      {sweep && (
+        <p className="text-[11px] text-success-ink">
+          {sweep.read} layout(s) re-read
+          {sweep.failed > 0 ? `, ${sweep.failed} failed` : ''}
+          {sweep.skippedAuthored.length > 0
+            ? `. Left alone: ${sweep.skippedAuthored.join(', ')} — hand-authored, and a re-read would replace them with an extraction.`
+            : '.'}
+        </p>
+      )}
+
+      {rereadAll.error && (
+        <p role="alert" className="text-[11px] text-danger-ink">
+          {rereadAll.error}
+        </p>
+      )}
 
       <p className="text-[11px] text-muted-foreground/70">
         PNG, JPEG or WebP · up to 6 MB each · select several at once. Stored in this
@@ -697,16 +780,6 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
               variant="ghost"
               className="h-7 px-2 text-[10px]"
               disabled={busy}
-              onClick={runReread}
-            >
-              {confirmReread ? 'Replace authored?' : 'Re-read'}
-            </Button>
-
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-[10px]"
-              disabled={busy}
               onClick={() => setEditing((open) => !open)}
             >
               {editing ? 'Close' : 'Edit'}
@@ -731,14 +804,33 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
         </>
       )}
 
-      {template.layoutReading && (
-        <p className="text-[10px] leading-snug text-muted-foreground/80">
-          {template.layoutReading}
-        </p>
-      )}
 
       {editing && (
         <div className="space-y-1.5 pt-1">
+          {/*
+            * The model's account of what it saw, and the control that replaces
+            * it. Both were on the face of the card and both are noise there: a
+            * vertical of a dozen templates became a wall of paragraphs and
+            * buttons an operator had to read past. They belong with the editor,
+            * which is where somebody is already looking at this one template in
+            * particular.
+            */}
+          {template.layoutReading && (
+            <p className="text-[10px] leading-snug text-muted-foreground/80">
+              {template.layoutReading}
+            </p>
+          )}
+
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-[10px]"
+            disabled={busy}
+            onClick={runReread}
+          >
+            {confirmReread ? 'Discard authored layout?' : 'Re-read this one'}
+          </Button>
+
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}

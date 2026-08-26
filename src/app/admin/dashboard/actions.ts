@@ -3501,3 +3501,65 @@ export async function testFalApiKey(input?: { key?: string }): Promise<
     return toFailure(error, 'Testing the fal.ai key');
   }
 }
+
+/**
+ * Re-reads every template in a vertical whose layout was not written by hand.
+ *
+ * **One button instead of one per card.** A vertical holds a dozen or more
+ * templates, each carrying an approval control, a re-read, an editor and a plate
+ * section — a wall of buttons an operator has to scan before finding the one
+ * they want. Re-reading is the only action that is ever wanted for all of them
+ * at once, so it is the one that belongs at the top.
+ *
+ * **Authored layouts are skipped, not confirmed past.** The per-card button asks
+ * before replacing one, because there a human is looking at that template and
+ * can mean it. A bulk action has no such intent behind it: nobody pressing
+ * "re-read all" is asking to discard fourteen hand-authored specs, and there is
+ * no confirmation that could make it safe to guess otherwise. They are counted
+ * and named in the result instead.
+ *
+ * Sequential rather than parallel, matching the pipeline's own image loop: each
+ * one is a vision call, and firing a vertical's worth at once is how a key hits
+ * a rate limit.
+ */
+export async function extractVerticalLayouts(
+  categoryId: string,
+): Promise<
+  ActionResult<{ read: number; failed: number; skippedAuthored: string[] }>
+> {
+  try {
+    const id = z.string().uuid().parse(categoryId);
+
+    const templates = await prisma.categoryTemplate.findMany({
+      where: { categoryId: id },
+      orderBy: { label: 'asc' },
+      select: { id: true, label: true, layoutAuthoredAt: true },
+    });
+
+    if (templates.length === 0) {
+      return failure('This vertical has no templates to read.');
+    }
+
+    const skippedAuthored: string[] = [];
+    let read = 0;
+    let failed = 0;
+
+    for (const template of templates) {
+      if (template.layoutAuthoredAt !== null) {
+        skippedAuthored.push(template.label);
+        continue;
+      }
+
+      // `replaceAuthored` stays false: the filter above is the only thing that
+      // decides, so a template that becomes authored mid-sweep is still safe.
+      const outcome = await extractTemplateLayout(template.id);
+      if (outcome.ok) read += 1;
+      else failed += 1;
+    }
+
+    revalidateAdmin();
+    return success({ read, failed, skippedAuthored });
+  } catch (error) {
+    return failure(describeError(error));
+  }
+}
