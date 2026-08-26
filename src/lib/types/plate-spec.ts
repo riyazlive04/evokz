@@ -210,8 +210,59 @@ export function validatePlateSpec(spec: PosterPlateSpec): PlateSpecProblem[] {
     }
   });
 
+  /*
+   * Two slots cannot occupy the same pixels.
+   *
+   * A plate cannot reflow, so overlapping regions are not a tight fit that
+   * resolves at render — they are two blocks of type printed over each other,
+   * every day, on every poster that template draws. Nothing checked for this
+   * until now, and it shipped: Med-SM-1 carried a features region running from
+   * the eyebrow to the bottom edge, with the body and the contact bar inside it.
+   *
+   * Judged by the share of the *smaller* region that is covered, not by absolute
+   * area — a headline clipping the corner of a full-width contact bar matters
+   * more to the contact bar than the raw overlap suggests. The threshold leaves
+   * room for the incidental touching that measured boxes produce at the edges of
+   * their ink.
+   */
+  for (let i = 0; i < spec.text.length; i += 1) {
+    for (let j = i + 1; j < spec.text.length; j += 1) {
+      const a = spec.text[i]!;
+      const b = spec.text[j]!;
+
+      const wide = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const tall = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      if (wide <= 0 || tall <= 0) continue;
+
+      const shared = wide * tall;
+      const smaller = Math.min(a.w * a.h, b.w * b.h);
+      if (smaller <= 0) continue;
+
+      const share = shared / smaller;
+      if (share < MAX_REGION_OVERLAP) continue;
+
+      problems.push({
+        path: 'text',
+        message:
+          `positions "${a.slot}" and "${b.slot}" over each other — ` +
+          `${(share * 100).toFixed(0)}% of the smaller one is covered. A plate cannot ` +
+          'reflow, so both blocks would be printed in the same place.',
+      });
+    }
+  }
+
   return problems;
 }
+
+/**
+ * Share of the smaller region that may be covered before it counts as a clash.
+ *
+ * Measured boxes hug their ink and still touch at the edges — a descender, a
+ * letterspaced capital — so a small overlap is normal rather than a fault. A
+ * quarter is well past incidental contact and well short of the wholesale
+ * containment that this exists to catch.
+ */
+const MAX_REGION_OVERLAP = 0.25;
 
 // ---------------------------------------------------------------------------
 // Normalisation

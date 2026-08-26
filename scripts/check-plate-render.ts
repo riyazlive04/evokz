@@ -275,6 +275,41 @@ async function main() {
     normalizePlateSpec(oneLine).text.length === 2,
   );
 
+  /*
+   * Two slots printed over each other. A plate cannot reflow, so this is not a
+   * tight fit that resolves at render — it is two blocks of type in the same
+   * place on every poster the template draws. Med-SM-1 shipped with a features
+   * region running from its eyebrow to the bottom edge, body and contact inside.
+   */
+  const clashing = posterPlateSpecSchema.parse({
+    version: 1,
+    name: 'x',
+    text: [
+      { x: 0.05, y: 0.15, w: 0.9, h: 0.1, slot: 'headline', align: 'start', valign: 'start', color: null },
+      { x: 0.05, y: 0.385, w: 0.89, h: 0.58, slot: 'features', align: 'start', valign: 'start', color: null },
+      { x: 0.08, y: 0.71, w: 0.44, h: 0.065, slot: 'body', align: 'start', valign: 'start', color: null },
+    ],
+  });
+  check(
+    'a region swallowing another is reported',
+    validatePlateSpec(normalizePlateSpec(clashing)).some((p) =>
+      p.message.includes('over each other'),
+    ),
+  );
+
+  const touching = posterPlateSpecSchema.parse({
+    version: 1,
+    name: 'x',
+    text: [
+      { x: 0.1, y: 0.2, w: 0.5, h: 0.1, slot: 'headline', align: 'start', valign: 'start', color: null },
+      { x: 0.1, y: 0.295, w: 0.5, h: 0.06, slot: 'body', align: 'start', valign: 'start', color: null },
+    ],
+  });
+  check(
+    'measured boxes touching at their ink are left alone',
+    validatePlateSpec(normalizePlateSpec(touching)).length === 0,
+  );
+
   check('unreadable JSON parses to null', parsePlateSpec({ version: 9 }) === null);
 
   console.log('\n=== compositing (the claim this path rests on) ===');

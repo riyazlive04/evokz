@@ -295,6 +295,74 @@ export async function labelTextBlocks(input: {
  * that extent is the only choice that does not move the first line, which is the
  * line a reader's eye lands on.
  */
+/**
+ * Vertical gap, as a share of the poster, that ends a run of lines.
+ *
+ * Lines of one block sit within a line-height of each other; a gap this large is
+ * a different part of the poster. Generous enough to hold a feature column whose
+ * items are spaced apart, tight enough to separate a headline from the body
+ * beneath it.
+ */
+const RUN_BREAK = 0.08;
+
+/**
+ * The largest contiguous run of lines carrying one label.
+ *
+ * **Without this a single mislabelled block ruins the slot.** The union is taken
+ * over every block sharing a label, so one stray box at the foot of the poster
+ * that the model called `features` stretches the features region from wherever
+ * the features actually are all the way down to it. Measured on Med-SM-1: a
+ * features region of `y 38.5, h 58.0` — the eyebrow to the bottom edge —
+ * swallowing the body at y 71 and the contact bar at y 81, which is precisely
+ * the overlapping mess it rendered.
+ *
+ * Runs are broken on vertical gaps and the heaviest one wins, weighed by cells
+ * rather than by count: three lines of a real feature column outweigh two stray
+ * marks, whatever the arithmetic of a plain majority would say.
+ */
+function largestRun(entries: LabelledBlock[]): LabelledBlock[] {
+  if (entries.length < 2) return entries;
+
+  const sorted = [...entries].sort((a, b) => a.block.y - b.block.y);
+
+  const runs: LabelledBlock[][] = [];
+  let current: LabelledBlock[] = [sorted[0]!];
+  let reach = sorted[0]!.block.y + sorted[0]!.block.h;
+
+  for (const entry of sorted.slice(1)) {
+    if (entry.block.y - reach > RUN_BREAK) {
+      runs.push(current);
+      current = [];
+    }
+    current.push(entry);
+    reach = Math.max(reach, entry.block.y + entry.block.h);
+  }
+  runs.push(current);
+
+  if (runs.length === 1) return entries;
+
+  let best = runs[0]!;
+  let bestWeight = -1;
+  for (const run of runs) {
+    const weight = run.reduce((sum, entry) => sum + entry.block.cells, 0);
+    if (weight > bestWeight) {
+      bestWeight = weight;
+      best = run;
+    }
+  }
+
+  const dropped = entries.length - best.length;
+  if (dropped > 0) {
+    console.warn(
+      `[ace:plate] the "${best[0]!.label}" label was given to ${entries.length} blocks in ` +
+        `${runs.length} separate places; keeping the ${best.length} that sit together and ` +
+        `dropping ${dropped}.`,
+    );
+  }
+
+  return best;
+}
+
 export function unionIntoRegions(labelled: LabelledBlock[]): PlateTextRegion[] {
   const bySlot = new Map<PlateSlot, LabelledBlock[]>();
 
@@ -308,7 +376,9 @@ export function unionIntoRegions(labelled: LabelledBlock[]): PlateTextRegion[] {
 
   const regions: PlateTextRegion[] = [];
 
-  for (const [slot, entries] of bySlot) {
+  for (const [slot, all] of bySlot) {
+    const entries = largestRun(all);
+
     let x0 = 1;
     let y0 = 1;
     let x1 = 0;
