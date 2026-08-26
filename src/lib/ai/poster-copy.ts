@@ -321,7 +321,7 @@ function describeLayoutFit(shape: LayoutCopyShape): string {
  * Floored at 6: below that the advice stops being actionable, and a column that
  * tight is a layout problem rather than a copy one.
  */
-function headlineCharBudget(widthShare: number): number {
+export function headlineCharBudget(widthShare: number): number {
   const columnPx = Math.max(0, widthShare * 940 - 96);
   return Math.max(6, Math.round((columnPx * 0.96) / (0.55 * 86 * 0.75)));
 }

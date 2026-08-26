@@ -8,8 +8,10 @@ import {
   type CalendarImportInput,
   type ConflictMode,
 } from '@/lib/calendar-parse';
+import { checkRowFit, type FitWarning } from '@/lib/calendar-fit';
 import { prisma } from '@/lib/prisma';
 import { getAppTimeZone, nthDeliveryDate } from '@/lib/time';
+import { countSubjectSlots, parseLayoutSpec } from '@/lib/types/layout-spec';
 
 /**
  * Bulk `ContentCalendar` writer — the operator-authored counterpart to
@@ -48,6 +50,16 @@ export interface CalendarImportResult {
    * get theirs from `ensurePosterCopy` on first render.
    */
   postersAuthored: number;
+  /**
+   * Rows that imported but will not draw as the sheet intends — a headline whose
+   * line count does not match its template's emphasis pattern, copy that will
+   * wrap, features the template cannot show, an image brief that does not
+   * describe the figure the layout composites.
+   *
+   * Advisory. Every one of these still delivers a poster; the warning is so an
+   * operator learns it here rather than from the creative.
+   */
+  fitWarnings: FitWarning[];
   /** Rows whose day already existed and `skip` mode left alone. */
   skippedExisting: number;
   /** Rows refused because the existing day is already GENERATED or DELIVERED. */
@@ -105,10 +117,23 @@ export async function applyCalendarImport(
   const approved = await prisma.categoryTemplate.findMany({
     where: { categoryId: client.categoryId, layoutApprovedAt: { not: null } },
     orderBy: { createdAt: 'asc' },
-    select: { id: true, label: true },
+    // The spec comes along so each row's copy can be checked against the layout
+    // it names before anything is written. See `checkRowFit`.
+    select: { id: true, label: true, layoutSpec: true },
   });
 
   const index = buildTemplateIndex(approved);
+
+  /*
+   * Parsed once, not per row: a sheet routinely names the same template on many
+   * days, and `parseLayoutSpec` is a Zod pass plus a structural validation.
+   */
+  const specByTemplate = new Map(
+    approved.map((template) => [
+      template.id,
+      { label: template.label, spec: parseLayoutSpec(template.layoutSpec) },
+    ]),
+  );
   const resolutions = rows.map((row) => resolveTemplateName(row.templateName, index));
 
   /*
@@ -179,8 +204,37 @@ export async function applyCalendarImport(
   // a concurrent seed had just written, and coverage must reflect the table.
   const seeded = await prisma.contentCalendar.count({ where: { clientId } });
 
+  /*
+   * What will not draw as the sheet intends.
+   *
+   * Reported, never refused. A headline one line short of its template still
+   * makes a poster — it just makes it without the accent the design is built
+   * around — and refusing the import over that would cost the operator every
+   * good row in the file. The point is that they find out here rather than from
+   * a delivered creative.
+   */
+  const fitWarnings: FitWarning[] = [];
+  for (const [rowIndex, row] of rows.entries()) {
+    const resolution = resolutions[rowIndex];
+    const templateId = resolution && 'id' in resolution ? resolution.id : null;
+    const template = templateId ? specByTemplate.get(templateId) : undefined;
+    if (!template?.spec) continue;
+
+    fitWarnings.push(
+      ...checkRowFit({
+        dayNumber: row.dayNumber ?? rowIndex + 1,
+        templateLabel: template.label,
+        spec: template.spec,
+        copy: row.poster,
+        imagePrompt: row.imagePrompt,
+        wantsSubject: countSubjectSlots(template.spec) > 0,
+      }),
+    );
+  }
+
   return {
     clientId,
+    fitWarnings,
     companyName: client.companyName,
     totalDays,
     created,

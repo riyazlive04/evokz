@@ -627,6 +627,37 @@ export function CalendarImportPanel({
             </span>
           )}
 
+          {/*
+            * Rows that imported but will not draw as the sheet intends.
+            *
+            * Amber rather than red, and below the success line rather than
+            * instead of it, because every one of these still delivers a poster.
+            * The warning exists so an operator finds out here — where the sheet
+            * is in front of them — instead of from a creative a client has
+            * already received. Five of seven live days carried a headline one
+            * line short of its template and nothing said so until somebody
+            * looked at the poster.
+            */}
+          {result && result.fitWarnings.length > 0 && (
+            <div className="space-y-1 rounded-md border border-warning-ink/30 bg-warning-ink/5 px-2.5 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-warning-ink">
+                {result.fitWarnings.length} row(s) will not draw as written
+              </p>
+              <ul className="space-y-0.5">
+                {result.fitWarnings.slice(0, 8).map((warning, index) => (
+                  <li key={index} className="text-[11px] text-warning-ink">
+                    <span className="font-semibold">Day {warning.dayNumber}</span> — {warning.message}
+                  </li>
+                ))}
+              </ul>
+              {result.fitWarnings.length > 8 && (
+                <p className="text-[10px] text-muted-foreground">
+                  …and {result.fitWarnings.length - 8} more.
+                </p>
+              )}
+            </div>
+          )}
+
           {importRows.error && (
             <span role="alert" className="text-[11px] text-danger-ink">
               {importRows.error}

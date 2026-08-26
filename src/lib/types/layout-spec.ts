@@ -686,6 +686,31 @@ export function countPhotoSlots(spec: PosterLayoutSpec): number {
 }
 
 /**
+ * Photo cells this layout composites as a cut-out figure rather than a scene.
+ *
+ * The distinction the image brief has to honour. A `subject` frame is passed
+ * through background removal and drawn on the poster's own ground, so a brief
+ * that does not describe one standing person yields an empty or partial matte —
+ * a pair of disembodied hands, or nothing. `checkRowFit` reads this to warn at
+ * import instead of at delivery.
+ */
+export function countSubjectSlots(spec: PosterLayoutSpec): number {
+  return spec.rows.reduce(
+    (total, row) =>
+      total +
+      row.cells.reduce(
+        (cellTotal, cell) =>
+          cellTotal +
+          (cell.photoKind === 'subject'
+            ? cell.slots.filter((slot) => slot === 'photo').length
+            : 0),
+        0,
+      ),
+    0,
+  );
+}
+
+/**
  * What a layout wants from the copy stage.
  *
  * The renderer ignores content for slots a spec does not declare, so this is not

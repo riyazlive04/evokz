@@ -14,8 +14,8 @@
   "ctaShape": "pill",
   "rows": [
     {
-      "sizingMode": "hug",
-      "heightFraction": 0,
+      "sizingMode": "fixed",
+      "heightFraction": 0.13,
       "fill": "dark",
       "cells": [
         {
@@ -78,8 +78,8 @@
       ]
     },
     {
-      "sizingMode": "hug",
-      "heightFraction": 0,
+      "sizingMode": "fixed",
+      "heightFraction": 0.08,
       "fill": "dark",
       "cells": [
         {
