@@ -45,6 +45,7 @@ import { labelTextBlocks, unionIntoRegions } from '@/lib/ai/plate-labeller';
 import { detectTextBlocks } from '@/lib/poster/text-detect';
 import { resolveFalCredentials } from '@/lib/fal-credentials';
 import { downloadDriveFile, ensureVerticalTemplateFolder, uploadClientAsset } from '@/lib/google-drive';
+import { sampleRegionInk } from '@/lib/poster/plate-ink';
 import { findPlateHoles } from '@/lib/poster/plate-regions';
 import {
   validatePlateSpec,
@@ -395,8 +396,25 @@ async function main() {
 
       if (wordBlocks.length === 0) throw new Error('every measured block was labelled ignore');
 
+      const regions = unionIntoRegions(labelling.labelled);
+
+      /*
+       * Each region's ink colour, measured from the reference.
+       *
+       * `extractPlateRegions` did this internally and it went with it — leaving
+       * every region's colour null, so a template on `paletteSource: "template"`
+       * silently fell back to the theme and lost the designer's palette, which
+       * is the entire point of that setting.
+       *
+       * Sequential: five or six crops of one decoded buffer is milliseconds, and
+       * sharp's thread pool is shared with the erase running after it.
+       */
+      for (const region of regions) {
+        region.color = await sampleRegionInk(reference, region);
+      }
+
       const draft = {
-        regions: unionIntoRegions(labelling.labelled),
+        regions,
         featureCount: labelling.featureCount,
         featureStyle: labelling.featureStyle,
         ctaShape: labelling.ctaShape,

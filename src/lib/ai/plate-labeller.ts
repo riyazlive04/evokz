@@ -106,7 +106,12 @@ Answer with one of these for every box:
   ignore   the box does not contain words at all: part of a photograph, an icon
            or logo mark on its own, a decorative rule, a shape, a gradient edge.
            This is a normal answer and often the right one for several boxes.
-  logo     a brand mark or a company name set as a wordmark
+  logo     the poster's own branding: a company name set as a wordmark, a symbol
+           or monogram standing for that company, or the strapline printed under
+           it. Label these "logo" even when the box holds no readable words —
+           the branding belongs to the template's designer and is replaced by
+           the client's, so it has to be found. A pictorial icon that merely
+           decorates a service or a feature is not branding; that is "ignore".
   eyebrow  a short letterspaced line introducing the largest type
   headline the largest type on the poster, the thing it is about
   body     a sentence or two of running prose
@@ -119,7 +124,7 @@ Rules that matter:
 
 1. A block split across several boxes gets the SAME label on each. A headline set over four lines is four boxes all labelled "headline". A column of three services is three boxes all labelled "features". Do not try to pick one box as the "real" one.
 2. EXACTLY ONE kind of block is the headline: the largest type on the poster. A second large block further down — a price, a date, an offer — is "body" or "features", never a second headline. Compare every large block against the largest.
-3. When a box contains no words, answer "ignore". Do not stretch for the nearest slot. A stethoscope is not a feature; a logo mark with no name in it is still "logo" only if it is the brand's mark, otherwise "ignore".
+3. When a box contains no words, answer "ignore" — with one exception, the branding above. Do not stretch for the nearest slot: a stethoscope is not a feature, and a photograph of a person is never type.
 4. A box holding an icon AND its label together is "features" — the words are what matter.
 5. If a poster has no button, no prose or no contact strip, simply no box gets that label. That is normal.
 
