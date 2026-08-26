@@ -2064,6 +2064,14 @@ async function readLayoutQuietly(
  */
 export async function extractTemplateLayout(
   templateId: string,
+  /**
+   * Proceed even though this template's layout was written by hand.
+   *
+   * Set by the console's second click, matching how deleting a template is
+   * confirmed. Never defaulted true: the whole point is that discarding an
+   * authored layout has to be something somebody chose.
+   */
+  replaceAuthored = false,
 ): Promise<ActionResult<{ approved: false; problems: string[] }>> {
   try {
     const id = z.string().uuid().parse(templateId);
@@ -2076,9 +2084,32 @@ export async function extractTemplateLayout(
         label: true,
         width: true,
         height: true,
+        layoutAuthoredAt: true,
       },
     });
     if (!template) return failure('That template no longer exists.');
+
+    /*
+     * An authored layout is not a draft to be refreshed.
+     *
+     * Extraction exists because an operator can upload any reference and the
+     * system has to work out what it is. A hand-authored spec is the opposite:
+     * it is a fixture, rendered at every preset by `check:layouts` on every run,
+     * and it cannot carry a vision model's confident mistake because no model
+     * produced it. Replacing one with an extraction is always a downgrade.
+     *
+     * It is refused rather than warned about because the failure was silent and
+     * expensive: fourteen templates were re-extracted over an authored layout in
+     * five minutes of clicking, every poster in the vertical went back to a
+     * misread geometry, and nothing anywhere said so.
+     */
+    if (template.layoutAuthoredAt !== null && !replaceAuthored) {
+      return failure(
+        `"${template.label}" has a hand-authored layout, which is more reliable than ` +
+          'anything reading the image can produce. Re-reading would replace it with an ' +
+          'extraction. Click "Re-read" again if that is really what you want.',
+      );
+    }
 
     // Read back from Drive rather than kept in memory: this action is reached
     // from a template row that may have been uploaded weeks ago.
@@ -2120,6 +2151,10 @@ export async function extractTemplateLayout(
       where: { id },
       data: {
         layoutSpec: draft.spec,
+        // Whatever was authored is gone the moment an extraction lands on top of
+        // it, so the marker goes with it — leaving it would guard a spec that no
+        // longer exists and refuse the next honest re-read.
+        layoutAuthoredAt: null,
         layoutReading: draft.reading,
         layoutApprovedAt: null,
       },

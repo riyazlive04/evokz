@@ -130,6 +130,21 @@ model CategoryTemplate {
   /// that existed before specs.
   layoutApprovedAt DateTime?
 
+  /// Set when this layout was written by hand rather than read from the image.
+  ///
+  /// Evokz authors its own reference templates, so for those the layout is known
+  /// before any file is uploaded and there is nothing to extract. An authored
+  /// spec is strictly better than a read one — it is a fixture, rendered at every
+  /// preset by `check:layouts` on every run, and it cannot contain a vision
+  /// model's confident mistake because no model produced it.
+  ///
+  /// The column exists so re-reading cannot throw one away by accident, which is
+  /// not hypothetical: fourteen templates were re-extracted over an authored
+  /// layout in five minutes of clicking, and nothing anywhere said so. Written by
+  /// `scripts/apply-authored-layout.ts`; cleared only by an operator who
+  /// confirms a re-read.
+  layoutAuthoredAt DateTime?
+
   // ---- Clean plate ---------------------------------------------------------
   /// The template's artwork with its own words and photography erased, as a PNG
   /// with transparency where the generated photograph belongs.

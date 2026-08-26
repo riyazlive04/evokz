@@ -73,6 +73,7 @@ export default async function VerticalDetailPage({
           layoutSpec: true,
           layoutReading: true,
           layoutApprovedAt: true,
+      layoutAuthoredAt: true,
           plateSpec: true,
           plateDriveFileId: true,
           plateApprovedAt: true,
@@ -125,6 +126,7 @@ export default async function VerticalDetailPage({
     })(),
     layoutReading: template.layoutReading,
     layoutApproved: template.layoutApprovedAt !== null,
+    layoutAuthored: template.layoutAuthoredAt !== null,
     // The plate, read as a draft for the same reason the layout is: a region map
     // one edit from correct is far more useful shown with its faults than hidden.
     ...(() => {

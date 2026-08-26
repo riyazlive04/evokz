@@ -74,6 +74,14 @@ export interface VerticalTemplateRow {
   layoutReading: string | null;
   /** True once an operator has confirmed the spec against the template. */
   layoutApproved: boolean;
+  /**
+   * Whether this layout was written by hand rather than read from the image.
+   *
+   * Drives the confirmation on re-reading: replacing an authored spec with an
+   * extraction is always a downgrade, so it takes a second click — the same
+   * idiom deleting a template uses.
+   */
+  layoutAuthored: boolean;
 
   // ---- Clean plate ---------------------------------------------------------
   /** Whether a plate has been uploaded at all. */
@@ -559,6 +567,36 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState(template.layoutSpec ?? '');
 
+  /*
+   * Re-reading an authored layout takes a second click.
+   *
+   * Replacing a hand-authored spec with an extraction is always a downgrade —
+   * the authored one is a fixture rendered at every preset on every run, and it
+   * cannot hold a vision model's confident mistake because no model produced it.
+   * It is guarded rather than merely warned about because the loss was silent:
+   * fourteen templates went back to a misread geometry in five minutes of
+   * clicking, and nothing said so until the posters came out wrong.
+   *
+   * Same idiom as deleting a template, and reset on any other interaction so a
+   * stale confirmation cannot be spent on a later click.
+   */
+  const [confirmReread, setConfirmReread] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!confirmReread) return;
+    const timer = setTimeout(() => setConfirmReread(false), 5_000);
+    return () => clearTimeout(timer);
+  }, [confirmReread]);
+
+  const runReread = () => {
+    if (template.layoutAuthored && !confirmReread) {
+      setConfirmReread(true);
+      return;
+    }
+    setConfirmReread(false);
+    void reread.run(template.id, template.layoutAuthored);
+  };
+
   // The server revalidation replaces the row; without this the textarea would
   // keep showing the pre-save text after a successful re-extract.
   React.useEffect(() => {
@@ -659,9 +697,9 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
               variant="ghost"
               className="h-7 px-2 text-[10px]"
               disabled={busy}
-              onClick={() => void reread.run(template.id)}
+              onClick={runReread}
             >
-              Re-read
+              {confirmReread ? 'Replace authored?' : 'Re-read'}
             </Button>
 
             <Button
@@ -686,7 +724,7 @@ function LayoutReview({ template }: { template: VerticalTemplateRow }) {
             variant="ghost"
             className="h-7 px-2 text-[10px]"
             disabled={busy}
-            onClick={() => void reread.run(template.id)}
+            onClick={runReread}
           >
             Read layout
           </Button>

@@ -127,6 +127,7 @@ async function main() {
       label: true,
       layoutSpec: true,
       layoutApprovedAt: true,
+      layoutAuthoredAt: true,
       layoutReading: true,
       plateApprovedAt: true,
       paletteSource: true,
@@ -162,6 +163,8 @@ async function main() {
       data: {
         layoutSpec: spec as unknown as Prisma.InputJsonValue,
         layoutApprovedAt: new Date(),
+        // What stops "Read layout" quietly replacing this with an extraction.
+        layoutAuthoredAt: new Date(),
         // The stored reading described the extraction this replaces. Leaving it
         // would have an operator reading a vision model's account of a spec no
         // model produced.
