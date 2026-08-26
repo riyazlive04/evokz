@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "name": "Evokz vertical card",
+  "ground": "dark",
+  "aspect": 0.5625,
+  "headlineEmphasis": [
+    "heavy",
+    "heavy",
+    "accent"
+  ],
+  "headlineCase": "upper",
+  "featureCount": 4,
+  "featureStyle": "labelOnly",
+  "ctaShape": "pill",
+  "rows": [
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "dark",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "dark",
+          "align": "center",
+          "valign": "center",
+          "padded": true,
+          "slots": [
+            "logo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "dark",
+      "cells": [
+        {
+          "weight": 64,
+          "fill": "dark",
+          "align": "start",
+          "valign": "start",
+          "padded": true,
+          "slots": [
+            "headline",
+            "features",
+            "spacer"
+          ]
+        },
+        {
+          "weight": 36,
+          "fill": "dark",
+          "align": "center",
+          "valign": "end",
+          "padded": false,
+          "photoKind": "subject",
+          "slots": [
+            "photo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.09,
+      "fill": "accent",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "accent",
+          "align": "start",
+          "valign": "center",
+          "padded": false,
+          "slots": [
+            "contact"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "dark",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "dark",
+          "align": "center",
+          "valign": "center",
+          "padded": true,
+          "slots": [
+            "body"
+          ]
+        }
+      ]
+    }
+  ]
+}
