@@ -134,8 +134,20 @@ async function main() {
     },
   });
 
-  if (templates.length === 0) {
-    console.error('No templates matched.');
+  /*
+   * An empty vertical is not an error when the whole vertical is the subject.
+   *
+   * It is the case that matters most: a vertical with no templates yet is one
+   * whose *first* upload should inherit the standard layout rather than be
+   * guessed at, and refusing here would mean the only way to protect it is to
+   * remember to come back after somebody has already uploaded — by which point
+   * the estimate is in the rotation.
+   *
+   * Named labels are different. Those are templates the caller believes exist,
+   * and not finding them means the command did not do what they think.
+   */
+  if (templates.length === 0 && labels.length > 0) {
+    console.error(`No templates matched: ${labels.join(', ')}.`);
     process.exitCode = 1;
     return;
   }
