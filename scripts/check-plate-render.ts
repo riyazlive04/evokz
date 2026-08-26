@@ -213,14 +213,66 @@ async function main() {
     normalizePlateSpec(twice).text.length === 1,
   );
 
-  const tiny = posterPlateSpecSchema.parse({
+  /*
+   * An undersized region costs its own slot, not the whole template.
+   *
+   * This used to be reported by `validatePlateSpec`, which refuses the entire
+   * spec — so one stray box a labeller had named `contact` dropped an otherwise
+   * perfect plate back to the grid path. Measured against the live library, that
+   * refused seven of thirteen templates whose only fault was an eyebrow measured
+   * accurately at 1.5% of the poster.
+   */
+  const strayRegion = posterPlateSpecSchema.parse({
+    version: 1,
+    name: 'x',
+    text: [
+      { x: 0.1, y: 0.1, w: 0.5, h: 0.1, slot: 'headline', align: 'start', valign: 'start', color: null },
+      { x: 0, y: 0.9, w: 0.02, h: 0.001, slot: 'contact', align: 'start', valign: 'start', color: null },
+    ],
+  });
+  const repaired = normalizePlateSpec(strayRegion);
+  check(
+    'a stray region is dropped, and the rest of the plate survives',
+    repaired.text.length === 1 && repaired.text[0]!.slot === 'headline',
+    `${repaired.text.length} region(s) kept`,
+  );
+  check(
+    'dropping a stray region leaves the spec valid',
+    validatePlateSpec(repaired).length === 0,
+  );
+
+  /*
+   * The headline is the exception: losing it is not a repair. A plate with
+   * nowhere to put the thing it is about cannot be drawn, so the spec is refused
+   * on its headline count and the day falls back to the grid.
+   */
+  const tinyHeadline = posterPlateSpecSchema.parse({
     version: 1,
     name: 'x',
     text: [{ x: 0, y: 0, w: 0.02, h: 0.001, slot: 'headline', align: 'start', valign: 'start', color: null }],
   });
   check(
-    'a region too small to set type in is reported',
-    validatePlateSpec(normalizePlateSpec(tiny)).some((p) => p.message.includes('decimal')),
+    'a plate whose headline is too small to set is refused outright',
+    validatePlateSpec(normalizePlateSpec(tinyHeadline)).some((p) =>
+      p.message.includes('headline'),
+    ),
+  );
+
+  /*
+   * One measured line of small type is a legitimate region, not a misread. An
+   * eyebrow is nothing but one line, and at 1.5% of a 1600px poster it is 24px.
+   */
+  const oneLine = posterPlateSpecSchema.parse({
+    version: 1,
+    name: 'x',
+    text: [
+      { x: 0.1, y: 0.1, w: 0.5, h: 0.1, slot: 'headline', align: 'start', valign: 'start', color: null },
+      { x: 0.1, y: 0.05, w: 0.45, h: 0.015, slot: 'eyebrow', align: 'start', valign: 'start', color: null },
+    ],
+  });
+  check(
+    'a single measured line of type is kept',
+    normalizePlateSpec(oneLine).text.length === 2,
   );
 
   check('unreadable JSON parses to null', parsePlateSpec({ version: 9 }) === null);

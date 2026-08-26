@@ -199,22 +199,6 @@ export function validatePlateSpec(spec: PosterPlateSpec): PlateSpecProblem[] {
     });
   }
 
-  /*
-   * A region too small to set anything in is almost always a misplaced decimal —
-   * 0.05 where 0.5 was meant — and it renders as type crushed into a corner
-   * rather than as an error.
-   */
-  spec.text.forEach((region, index) => {
-    if (region.w < 0.08 || region.h < 0.02) {
-      problems.push({
-        path: `text[${index}]`,
-        message:
-          `is ${(region.w * 100).toFixed(0)}% by ${(region.h * 100).toFixed(0)}% of the ` +
-          'plate, too small to set the slot in. Check for a misplaced decimal point.',
-      });
-    }
-  });
-
   spec.photos.forEach((region, index) => {
     if (region.w < 0.05 || region.h < 0.05) {
       problems.push({
@@ -233,17 +217,67 @@ export function validatePlateSpec(spec: PosterPlateSpec): PlateSpecProblem[] {
 // Normalisation
 // ---------------------------------------------------------------------------
 
-/** Repairs the faults not worth an operator's attention. */
+/**
+ * Narrowest a region may be before it is treated as a misread.
+ *
+ * A block of type occupies a column. Below about a twelfth of the poster there
+ * is no column — 8% of a 900px reference is 72px, which holds a word at caption
+ * size and nothing a slot is made of. Regions this narrow are what a detector
+ * produces from a stray mark that a labeller then named, and drawing one sets a
+ * phone number one character per line.
+ */
+const MIN_REGION_WIDTH = 0.08;
+
+/**
+ * Shortest a region may be.
+ *
+ * **Far lower than it was, because the regions changed under it.** At 2% this
+ * was calibrated for boxes a vision model estimated, which never came back
+ * smaller than a twentieth of the poster; measured against pixels, one line of
+ * small type genuinely is 1.5% of a 1600px poster and an eyebrow is nothing but
+ * one line. Seven of thirteen templates were refused outright on their eyebrow
+ * or their body — regions whose only fault was being measured accurately.
+ *
+ * 0.8% is a 13px line on that same poster, below which there is no type.
+ */
+const MIN_REGION_HEIGHT = 0.008;
+
+/**
+ * Repairs the faults not worth an operator's attention.
+ *
+ * An undersized region is repaired here rather than reported by
+ * `validatePlateSpec`, and the distinction is the difference between a template
+ * that draws and one that does not: a reported problem refuses the whole spec,
+ * so a single stray box named `contact` would drop an otherwise perfect plate
+ * back to the grid. Dropping the box costs that one slot and keeps the poster.
+ *
+ * If what gets dropped is the headline, `validatePlateSpec` still refuses the
+ * spec on its headline count — which is right, because a plate with nowhere to
+ * put the thing it is about cannot be drawn.
+ */
 export function normalizePlateSpec(spec: PosterPlateSpec): PosterPlateSpec {
   return {
     ...spec,
-    // Deduped by slot, keeping the first. A second box for the same slot is the
-    // extractor having described one block twice; drawing both stacks identical
-    // type at two places on the poster, which reads as a rendering fault.
-    text: spec.text.filter(
-      (region, index) =>
-        spec.text.findIndex((other) => other.slot === region.slot) === index,
-    ),
+    text: spec.text
+      .filter((region) => {
+        const usable =
+          region.w >= MIN_REGION_WIDTH && region.h >= MIN_REGION_HEIGHT;
+        if (!usable) {
+          console.warn(
+            `[ace:plate] dropping the "${region.slot}" region: ` +
+              `${(region.w * 100).toFixed(0)}% by ${(region.h * 100).toFixed(1)}% of the ` +
+              'plate is too small to set a slot in.',
+          );
+        }
+        return usable;
+      })
+      // Deduped by slot, keeping the first. A second box for the same slot is the
+      // extractor having described one block twice; drawing both stacks identical
+      // type at two places on the poster, which reads as a rendering fault.
+      .filter(
+        (region, index, kept) =>
+          kept.findIndex((other) => other.slot === region.slot) === index,
+      ),
   };
 }
 
