@@ -49,7 +49,7 @@
 
 import sharp from 'sharp';
 
-import { relativeLuminance } from '@/lib/poster/color';
+import { hexToRgb, relativeLuminance } from '@/lib/poster/color';
 
 // ---------------------------------------------------------------------------
 // Result
@@ -537,4 +537,63 @@ function median(values: number[]): number {
   return sorted.length % 2 === 0
     ? Math.round((sorted[middle - 1]! + sorted[middle]!) / 2)
     : sorted[middle]!;
+}
+
+/**
+ * Recolours a keyed-out logo to a single ink that reads on the poster's ground.
+ *
+ * **What this replaces.** A logo whose background has been removed is a
+ * silhouette on transparency, so dark ink on a dark poster is invisible.
+ * `LogoLock` used to answer that by painting a light rounded plate behind it —
+ * correct, legible, and a pale square on artwork that has none, which is exactly
+ * what an operator sees and calls a bug. The logo was uploaded transparent; a
+ * plate puts the background back.
+ *
+ * Recolouring keeps the silhouette and changes only what fills it, which is what
+ * a designer does with a one-colour mark on a dark ground. The ink comes from
+ * the client's own theme — `onDark` or `onLight` — so it is the brand's own
+ * contrast-corrected colour rather than flat white.
+ *
+ * **The cost, stated plainly.** A multi-coloured logo comes back as one flat
+ * colour. That is why the caller only reaches for this when the logo genuinely
+ * does not read: a mark that is legible as uploaded is left exactly as it is,
+ * whatever it is made of.
+ *
+ * Null on any failure, which leaves the original bytes in place — a logo that
+ * reads poorly is a better outcome than no logo at all.
+ */
+export async function tintLogoInk(
+  bytes: Buffer,
+  hex: string,
+): Promise<Buffer | null> {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return null;
+
+  try {
+    const image = sharp(bytes, { limitInputPixels: MAX_PIXELS }).ensureAlpha();
+    const { width, height } = await image.metadata();
+    if (!width || !height) return null;
+
+    /*
+     * The alpha channel is the silhouette, and the only part of the original
+     * worth keeping. Extracted as a single-channel mask and joined back onto a
+     * flat field of the target ink, so every opaque pixel becomes that ink and
+     * every transparent one stays transparent — including the anti-aliased rim,
+     * which keeps its soft edge because its alpha is preserved exactly.
+     */
+    const alpha = await image.clone().extractChannel(3).toColourspace('b-w').raw().toBuffer();
+
+    return await sharp({
+      create: { width, height, channels: 3, background: rgb },
+    })
+      .joinChannel(alpha, { raw: { width, height, channels: 1 } })
+      .png()
+      .toBuffer();
+  } catch (error) {
+    console.warn(
+      '[ace:logo] could not recolour the logo, using it as uploaded:',
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
 }

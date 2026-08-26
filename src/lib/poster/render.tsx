@@ -12,10 +12,12 @@ import {
   readSvgDimensions,
   type ImageDimensions,
 } from '@/lib/poster/image-info';
-import { measureInkLuminance } from '@/lib/poster/logo-key';
+import { hexToRgb, relativeLuminance } from '@/lib/poster/color';
+import { measureInkLuminance, tintLogoInk } from '@/lib/poster/logo-key';
 import { resolveMetrics } from '@/lib/poster/metrics';
 import { renderPlateSpec } from '@/lib/poster/plate-render';
 import { sampleRegionSurface } from '@/lib/poster/plate-ink';
+import { logoReadsOn } from '@/lib/poster/slots';
 import { requiredFaces, resolvePosterTheme } from '@/lib/poster/theme';
 import type { BrandGuideline } from '@/lib/types/brand';
 import { countPhotoSlots, type PosterLayoutSpec } from '@/lib/types/layout-spec';
@@ -203,6 +205,56 @@ export async function renderPoster(
       plateSurfaces.push(await sampleRegionSurface(input.plate.bytes, region));
     }
   }
+
+  /*
+   * The logo is recoloured when it would not read on the ground it lands on.
+   *
+   * A keyed-out logo is a silhouette on transparency, so a dark mark on a dark
+   * poster is invisible. This used to be answered by painting a pale plate
+   * behind it, which is legible and looks like a square of background on artwork
+   * that has none — the operator uploaded a transparent logo precisely so there
+   * would be no square.
+   *
+   * Recolouring keeps the silhouette and changes what fills it, which is what a
+   * designer does with a one-colour mark. The ink is the client's own
+   * `onDark`/`onLight` — contrast-corrected against their palette — rather than
+   * flat white, so the lockup still belongs to the brand.
+   *
+   * **Only when it does not already read.** A mark that is legible as uploaded
+   * is left untouched whatever it is made of, because the recolour flattens a
+   * multi-coloured logo to a single ink. `logoReadsOn` is the same 3:1 test
+   * `LogoLock` used to gate the plate on, and SVG returns a null luminance,
+   * which reads as "leave it alone".
+   *
+   * The canvas ground decides, not the logo cell's own fill: a spec can put its
+   * lockup on a band of the opposite colour, and that is rare enough to accept
+   * against the cost of measuring a cell whose height flex has not settled yet.
+   */
+  const logoSurface = input.plate
+    ? (plateSurfaces[input.plate.spec.text.findIndex((r) => r.slot === 'logo')] ?? null)
+    : null;
+  const groundColor =
+    logoSurface ??
+    (input.layoutSpec.ground === 'dark' ? theme.darkNeutral : theme.lightNeutral);
+  const groundIsDark =
+    relativeLuminance(hexToRgb(groundColor) ?? { r: 0, g: 0, b: 0 }) < 0.5;
+
+  let logoDataUri = logo?.dataUri ?? null;
+  if (logo && !logoReadsOn(logo.inkLuminance, groundColor)) {
+    const ink = groundIsDark ? theme.onDark : theme.onLight;
+    const tinted = await tintLogoInk(
+      Buffer.from(logo.dataUri.split(',')[1] ?? '', 'base64'),
+      ink,
+    );
+    if (tinted) {
+      logoDataUri = toDataUri(tinted, 'image/png');
+      console.info(
+        `[ace:poster] the logo does not read on ${groundColor}; recoloured to ${ink}.`,
+      );
+    }
+  }
+
+  if (logoDataUri !== null) identity.logoDataUri = logoDataUri;
 
   // Stage 1 — lay out the tree and emit SVG.
   const tree = input.plate

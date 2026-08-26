@@ -798,6 +798,99 @@ async function main() {
   }
 
 
+  /*
+   * A transparent logo stays transparent.
+   *
+   * `LogoLock` used to paint a pale rounded plate behind a keyed-out logo whose
+   * ink would not read on a dark ground. Legible, and a square of background on
+   * artwork that has none — an operator who uploads a transparent logo does it
+   * precisely so there will be no square. The mark is recoloured instead.
+   */
+  console.log('');
+  console.log('=== a keyed-out logo on a dark poster ===');
+  {
+    const DARK = { r: 12, g: 30, b: 62 };
+    const plate = await sharp({
+      create: { width: 600, height: 600, channels: 4, background: { ...DARK, alpha: 1 } },
+    })
+      .png()
+      .toBuffer();
+
+    /*
+     * A near-black disc on transparency — invisible on a dark ground as
+     * uploaded, and crucially a shape whose corners are clear. A solid square
+     * would be useless here: recoloured white it is pixel-for-pixel what a white
+     * plate looks like, and the check below could not tell them apart.
+     */
+    const mark = await sharp(
+      Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">' +
+          '<circle cx="60" cy="60" r="58" fill="#0a0a0a"/></svg>',
+      ),
+    )
+      .png()
+      .toBuffer();
+    const markUri = `data:image/png;base64,${mark.toString('base64')}`;
+
+    const spec = parsePlateSpec({
+      version: 1,
+      name: 'dark plate',
+      aspect: 1,
+      photos: [],
+      text: [
+        { x: 0.1, y: 0.05, w: 0.5, h: 0.12, slot: 'logo', align: 'start', valign: 'start', color: null },
+        { x: 0.1, y: 0.3, w: 0.8, h: 0.2, slot: 'headline', align: 'start', valign: 'start', color: null },
+      ],
+    })!;
+
+    const poster = await renderPoster({
+      layoutSpec: FALLBACK_GRID,
+      copy: COPY,
+      guideline: EMPTY_BRAND_GUIDELINE,
+      // `logoIncludesName` so no wordmark is drawn beside it: this measures the
+      // mark alone, and white type would read as a plate to the counter below.
+      identity: { ...IDENTITY, logoUrl: markUri, logoIncludesName: true },
+      photos: [],
+      plate: { spec, bytes: plate, mimeType: 'image/png', useTemplatePalette: false },
+      width: 600,
+      height: 600,
+    });
+
+    /*
+     * Two questions, and the disc's clear corner answers both.
+     *
+     * A plate is a filled rectangle, so it covers the corner of the logo's box.
+     * The disc does not. Sampling just inside that corner therefore reports the
+     * plate if one is painted and the poster's own ground if none is — while a
+     * count over the whole band says whether the mark itself came out visible.
+     */
+    const { data, info } = await sharp(poster.body).raw().toBuffer({ resolveWithObject: true });
+    const px = (x: number, y: number) => {
+      const i = (y * info.width + x) * info.channels;
+      return { r: data[i]!, g: data[i + 1]!, b: data[i + 2]! };
+    };
+
+    let visible = 0;
+    for (let y = Math.round(0.05 * info.height); y < Math.round(0.2 * info.height); y += 1) {
+      for (let x = 0; x < info.width; x += 1) {
+        if (!near(px(x, y), DARK, 60)) visible += 1;
+      }
+    }
+
+    const corner = px(Math.round(0.105 * info.width), Math.round(0.055 * info.height));
+
+    check(
+      'no pale plate is painted behind the logo',
+      near(corner, DARK, 60),
+      `the corner of the logo box reads ${JSON.stringify(corner)}`,
+    );
+    check(
+      'the logo itself is visible on the dark ground',
+      visible > 500,
+      `${visible} px of recoloured mark`,
+    );
+  }
+
   if (failures > 0) {
     console.error(`\n${failures} check(s) failed.`);
     process.exitCode = 1;

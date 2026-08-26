@@ -193,7 +193,7 @@ export interface LogoLockProps extends SlotBase {
  * Unmeasured luminance returns true: the logo is left alone, which is how every
  * logo rendered before the plate existed.
  */
-function logoReadsOn(inkLuminance: number | null, background: string): boolean {
+export function logoReadsOn(inkLuminance: number | null, background: string): boolean {
   if (inkLuminance === null) return true;
 
   const rgb = hexToRgb(background);
@@ -358,15 +358,22 @@ export function LogoLock({
      * needs nothing, and a null luminance (SVG, or bytes we could not measure)
      * renders exactly as it did before this existed.
      */
-    const needsPlate = ground.isDark && !logoReadsOn(logoInkLuminance, theme.darkNeutral);
-
-    const padding = needsPlate ? metrics.s(14) : 0;
-
-    // The bounds shrink by the padding so the lockup occupies the same footprint
-    // either way — a plate must not push the eyebrow and headline down the page.
+    /*
+     * No plate behind the logo, ever.
+     *
+     * A keyed-out logo is a silhouette on transparency, so dark ink on a dark
+     * poster is invisible — and the answer here used to be a pale rounded
+     * rectangle behind it. Legible, and a pale square on artwork that has none:
+     * an operator who uploaded a transparent logo sees the background put back
+     * and reasonably calls it a bug.
+     *
+     * The mark is recoloured instead, before it ever reaches this component —
+     * see `tintLogoInk`, chosen in `renderPoster` where the ground is known.
+     * What arrives here already reads, so there is nothing to hide it behind.
+     */
     const box = containFit(logoDimensions, {
-      width: metrics.logo.boxWidth - padding * 2,
-      height: metrics.logo.boxHeight * 0.62 - padding * 2,
+      width: metrics.logo.boxWidth,
+      height: metrics.logo.boxHeight * 0.62,
     });
 
     return (
@@ -385,13 +392,6 @@ export function LogoLock({
             // `align-items: stretch` would size it to the headline's width rather
             // than the logo's.
             alignSelf: FLEX_ALIGN[align],
-            padding,
-            borderRadius: needsPlate ? metrics.s(10) : 0,
-            // Not pure white: the theme's light neutral is the same surface the
-            // light archetypes use, so a brand that has tuned it stays consistent
-            // across the set. Slightly translucent so it reads as a plate laid on
-            // the poster rather than a hole punched through it.
-            backgroundColor: needsPlate ? withAlpha(theme.lightNeutral, 0.94) : 'transparent',
           }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
