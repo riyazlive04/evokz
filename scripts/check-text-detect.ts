@@ -1,15 +1,18 @@
 /**
- * Prototype harness for measured text detection.
+ * What the plate reader would store for a template, without storing it.
  *
- * Answers one question: can `detectTextBlocks` find the blocks of type on the
- * real references, well enough to replace the vision model's estimates?
+ * Runs the real two-stage read — `detectTextBlocks` measures the blocks from the
+ * pixels, `labelTextBlocks` names them — and prints the resulting regions beside
+ * the ones currently stored for the same template. The overlay draws both, so
+ * the comparison can be made by eye rather than from four decimal places: that
+ * comparison is the point, and on a library read by the old estimator it is
+ * stark.
  *
- * It prints the measured boxes beside the ones currently stored for the same
- * template, and writes an overlay PNG per template so the answer can be judged
- * by eye rather than from four decimal places. The stored boxes are drawn too,
- * in a second colour — that comparison is the point.
+ * Also reports how many stored boxes sit entirely on a 0.05 grid, which is the
+ * signature of a spec that was estimated rather than measured.
  *
- * Costs nothing but a Drive download. No vision call, no fal.ai, no writes.
+ * One vision call per template, the same as the estimator it replaces. No
+ * fal.ai, and no writes of any kind.
  *
  * Run on a machine with DATABASE_URL and the Google credentials:
  *   npx tsx --env-file=.env --tsconfig scripts/tsconfig.json \
@@ -21,7 +24,8 @@ import { PrismaClient } from '@prisma/client';
 import sharp from 'sharp';
 
 import { downloadDriveFile } from '@/lib/google-drive';
-import { detectTextBlocks, type TextBlock } from '@/lib/poster/text-detect';
+import { labelTextBlocks, unionIntoRegions } from '@/lib/ai/plate-labeller';
+import { detectTextBlocks } from '@/lib/poster/text-detect';
 import { parsePlateSpec } from '@/lib/types/plate-spec';
 
 const prisma = new PrismaClient();
@@ -48,7 +52,7 @@ function describe(block: { x: number; y: number; w: number; h: number }): string
  */
 async function overlay(
   reference: Buffer,
-  detected: TextBlock[],
+  detected: Array<{ slot?: string; x: number; y: number; w: number; h: number }>,
   stored: Array<{ slot: string; x: number; y: number; w: number; h: number }>,
 ): Promise<Buffer> {
   const meta = await sharp(reference).metadata();
@@ -75,7 +79,7 @@ async function overlay(
       `<rect x="${x}" y="${y}" width="${box.w * width}" height="${box.h * height}" ` +
         `fill="none" stroke="#12B886" stroke-width="5"/>` +
         `<text x="${x + 8}" y="${y - 10}" font-family="monospace" font-size="26" ` +
-        `fill="#12B886" font-weight="bold">${index + 1}</text>`,
+        `fill="#12B886" font-weight="bold">${box.slot ?? index + 1}</text>`,
     );
   });
 
@@ -126,6 +130,7 @@ async function main() {
   let totalStored = 0;
   let totalRound = 0;
   let totalDetected = 0;
+  let totalMeasured = 0;
 
   for (const template of templates) {
     console.log(`\n=== ${template.label} ===`);
@@ -165,14 +170,31 @@ async function main() {
     }
 
     console.log(`  measured: ${detection.blocks.length} block(s) in ${ms.toFixed(0)}ms`);
-    detection.blocks.forEach((block, index) => {
-      console.log(
-        `    ${String(index + 1).padEnd(9)} ${describe(block)}  ` +
-          `${block.cells} cells, ${block.inkIsDark ? 'dark ink' : 'light ink'}`,
-      );
-    });
 
-    const png = await overlay(reference, detection.blocks, stored);
+    /*
+     * Named as well as measured, so what this prints is the spec that would be
+     * stored rather than an intermediate nobody writes. Costs one vision call
+     * per template, the same as the estimator it replaces.
+     */
+    const shape = await labelTextBlocks({
+      bytes: reference,
+      mimeType: 'image/png',
+      label: template.label,
+      blocks: detection.blocks,
+    });
+    const regions = unionIntoRegions(shape.labelled);
+    const ignored = shape.labelled.filter((entry) => entry.label === 'ignore').length;
+
+    console.log(
+      `  named:    ${regions.length} slot region(s), ${ignored} block(s) rejected as artwork`,
+    );
+    for (const region of regions) {
+      console.log(`    ${region.slot.padEnd(9)} ${describe(region)}  align=${region.align}`);
+    }
+
+    totalMeasured += regions.length;
+
+    const png = await overlay(reference, regions, stored);
     const path = `${outDir}/${template.label}.png`;
     await writeFile(path, png);
     console.log(`  overlay: ${path}`);

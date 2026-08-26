@@ -26,7 +26,8 @@ import {
 import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
 import type { CalendarImportInput } from '@/lib/calendar-parse';
 import { extractLayoutSpec } from '@/lib/ai/layout-extractor';
-import { extractPlateRegions } from '@/lib/ai/plate-extractor';
+import { labelTextBlocks, unionIntoRegions } from '@/lib/ai/plate-labeller';
+import { detectTextBlocks } from '@/lib/poster/text-detect';
 import {
   downloadDriveFile,
   ensureVerticalTemplateFolder,
@@ -52,6 +53,7 @@ import {
   parsePlateSpec,
   posterPlateSpecSchema,
   validatePlateSpec,
+  type PlateTextRegion,
 } from '@/lib/types/plate-spec';
 import {
   dedupeTemplateLabel,
@@ -2371,25 +2373,55 @@ export async function extractTemplatePlateRegions(
       );
     }
 
-    let draft: Awaited<ReturnType<typeof extractPlateRegions>>;
+    /*
+     * Measured from the pixels, then named by the model.
+     *
+     * The same two-stage read `autoplate-vertical.ts` performs, and it has to be
+     * the same or the console and the script disagree about where a template's
+     * type is — with the operator's button being the one that quietly writes the
+     * worse answer. Its predecessor asked a vision model for both at once and
+     * got a grid of tenths back for the geometry.
+     */
+    let regions: PlateTextRegion[];
+    let shape: Awaited<ReturnType<typeof labelTextBlocks>>;
     try {
-      draft = await extractPlateRegions({
+      const detection = await detectTextBlocks(bytes);
+      if (!detection || detection.blocks.length === 0) {
+        return failure(
+          'No blocks of type could be measured on this reference. If the poster really ' +
+            'does carry words, its type may be too small or too low-contrast to detect — ' +
+            'the boxes can still be drawn by hand in the editor.',
+        );
+      }
+
+      shape = await labelTextBlocks({
         bytes,
         mimeType: template.mimeType,
         label: template.label,
+        blocks: detection.blocks,
       });
+      regions = unionIntoRegions(shape.labelled);
     } catch (error) {
       return failure(`The regions could not be read — ${describeError(error)}.`);
     }
 
+    if (regions.length === 0) {
+      return failure(
+        'Every block measured on this reference was identified as artwork rather than ' +
+          'type. Check the template is the reference poster and not its clean plate.',
+      );
+    }
+
     const spec = normalizePlateSpec({
       ...previous,
-      text: draft.regions,
-      featureCount: draft.featureCount,
-      featureStyle: draft.featureStyle,
-      ctaShape: draft.ctaShape,
-      headlineEmphasis: draft.headlineEmphasis,
-      headlineCase: draft.headlineCase,
+      text: regions,
+      featureCount: shape.featureCount,
+      featureStyle: shape.featureStyle,
+      ctaShape: shape.ctaShape,
+      // Measured regions carry no line-by-line emphasis; each region's own ink
+      // colour is sampled by `sampleRegionInk` instead.
+      headlineEmphasis: [],
+      headlineCase: shape.headlineCase,
     });
 
     await prisma.categoryTemplate.update({
@@ -2422,7 +2454,10 @@ export async function extractTemplatePlateRegions(
        * returns. A column for it would be a migration on every deployment for a
        * string whose whole audience is the operator who pressed the button.
        */
-      reading: draft.reading,
+      reading:
+        `Measured ${shape.labelled.length} block(s) from the pixels; the model named ` +
+        `${regions.length} of them and rejected ` +
+        `${shape.labelled.filter((entry) => entry.label === 'ignore').length} as artwork.`,
       problems: validatePlateSpec(spec).map((problem) => `${problem.path} ${problem.message}`),
     });
   } catch (error) {

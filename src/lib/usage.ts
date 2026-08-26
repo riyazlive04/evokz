@@ -48,6 +48,13 @@ export type UsageOperation =
   // template is either rebuilt from its grid or composited onto its plate — and
   // a vertical's split between the two is the thing worth seeing in the ledger.
   | 'plate-regions'
+  // Naming the blocks of type a pixel pass has already measured, once per
+  // upload. Distinct from `plate-regions`, which is what it replaces: that call
+  // was asked for geometry and answered with a grid of tenths, so the geometry
+  // moved to `detectTextBlocks` and the model kept only the classification. A
+  // vertical still accruing `plate-regions` is one whose templates were read
+  // before the split, which is worth being able to see.
+  | 'plate-labels'
   | 'whatsapp';
 
 async function record(data: {

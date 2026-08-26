@@ -41,23 +41,34 @@ import { writeFile } from 'node:fs/promises';
 import { Prisma, PrismaClient } from '@prisma/client';
 import sharp from 'sharp';
 
-import { extractPlateRegions } from '@/lib/ai/plate-extractor';
+import { labelTextBlocks, unionIntoRegions } from '@/lib/ai/plate-labeller';
+import { detectTextBlocks } from '@/lib/poster/text-detect';
 import { resolveFalCredentials } from '@/lib/fal-credentials';
 import { downloadDriveFile, ensureVerticalTemplateFolder, uploadClientAsset } from '@/lib/google-drive';
 import { findPlateHoles } from '@/lib/poster/plate-regions';
-import { validatePlateSpec, posterPlateSpecSchema } from '@/lib/types/plate-spec';
+import {
+  validatePlateSpec,
+  posterPlateSpecSchema,
+  type PosterPlateSpec,
+} from '@/lib/types/plate-spec';
 
 const prisma = new PrismaClient();
 
 /**
- * How far outside a reported region the mask reaches, as a share of the poster.
+ * How far outside a measured block the mask reaches, as a share of the poster.
  *
- * See the header: the extractor reports the column, glyphs overhang it, and a
- * mask that clips them leaves the eraser inventing letters in the middle of the
- * block. Generous is safe — the surrounding artwork reconstructs from its own
- * neighbourhood — while tight is the one setting that produces garbage.
+ * **Small now, and only because the boxes changed.** At 5.5% this was trying to
+ * compensate for boxes that described a column a model had guessed at: the mask
+ * had to be generous enough to cover type that might be anywhere inside it, and
+ * the cost was a moat of erased artwork around every block — plus, when the
+ * guess was wrong, letterforms left standing at the edge for the eraser to
+ * hallucinate from ("G ⌇⌇⌇ H", a phone number as "nnccapci30").
+ *
+ * `detectTextBlocks` returns the extent of the ink itself, so there is nothing
+ * left to compensate for. This is now just enough to take the anti-aliased rim
+ * with the glyphs.
  */
-const DEFAULT_PAD = 0.055;
+const DEFAULT_PAD = 0.012;
 
 /**
  * How much of the poster the mask reaches beyond a reported region.
@@ -347,11 +358,53 @@ async function main() {
       const height = meta.height ?? 0;
       if (width <= 0 || height <= 0) throw new Error('reference has no readable dimensions');
 
-      const draft = await extractPlateRegions({
+      /*
+       * Measured, then named — never estimated.
+       *
+       * `extractPlateRegions` used to do both here, and did the measuring so
+       * badly that it is the root cause of nearly everything wrong with the
+       * plate path: across the live library it returned 59 of 60 boxes with
+       * every coordinate on a 0.05 grid. Those boxes placed the type *and* built
+       * the mask below, so a single bad estimate misplaced the words and cleared
+       * the wrong artwork at the same time.
+       */
+      const detection = await detectTextBlocks(reference);
+      if (!detection || detection.blocks.length === 0) {
+        throw new Error('no type found to erase');
+      }
+
+      const labelling = await labelTextBlocks({
         bytes: reference,
         mimeType: template.mimeType,
         label: template.label,
+        blocks: detection.blocks,
       });
+
+      /*
+       * Only what the labeller recognised as words.
+       *
+       * A block it called `ignore` is a stethoscope, a decorative rule or a
+       * patch of somebody's face — artwork the plate is supposed to keep. This
+       * is what stops the mask eating the design, and it is only possible
+       * because the boxes are real: an invented grid has no notion of a box that
+       * should not be erased.
+       */
+      const wordBlocks = labelling.labelled
+        .filter((entry) => entry.label !== 'ignore')
+        .map((entry) => entry.block);
+
+      if (wordBlocks.length === 0) throw new Error('every measured block was labelled ignore');
+
+      const draft = {
+        regions: unionIntoRegions(labelling.labelled),
+        featureCount: labelling.featureCount,
+        featureStyle: labelling.featureStyle,
+        ctaShape: labelling.ctaShape,
+        headlineCase: labelling.headlineCase,
+        // Measured, so there is no line-by-line emphasis to report any more. The
+        // headline's own colours are sampled per region by `sampleRegionInk`.
+        headlineEmphasis: [] as PosterPlateSpec['headlineEmphasis'],
+      };
       if (draft.regions.length === 0) throw new Error('no type found to erase');
 
       /*
@@ -364,10 +417,29 @@ async function main() {
        * far takes the artwork around them with it.
        */
       const subject = keepModel ? null : await findSubject(reference, template.mimeType, credentials.key);
-      const eraseBoxes = subject
-        ? [...draft.regions, { ...subject, x: subject.x - 0.01, y: subject.y - 0.01, w: subject.w + 0.02, h: subject.h + 0.02 }]
-        : draft.regions;
 
+      /*
+       * The mask is built from the measured *lines*, not from the slot regions.
+       *
+       * A slot region is the union of its lines — the column the copy is allowed
+       * — and masking that would clear the ragged space beside every short line
+       * along with the artwork in it. The lines are what the ink actually
+       * occupies, so the eraser is asked to reconstruct only where there were
+       * words. That is also why the pad below can be small: these boxes already
+       * hug the glyphs.
+       */
+      const eraseBoxes = subject ? [...wordBlocks, subject] : wordBlocks;
+
+      /*
+       * The subject is padded by the same amount as the type and no more.
+       *
+       * It used to be inflated by 0.01 here and then handed to `buildMask`,
+       * which added the full pad again — so the figure got a larger halo than
+       * the words, while the comment beside it claimed a smaller one. A bounding
+       * box round a standing person is mostly not the person, and every extra
+       * percent of it is finished design being thrown away for the eraser to
+       * invent.
+       */
       const mask = await buildMask(width, height, eraseBoxes, pad);
       const erased = await erase(reference, template.mimeType, mask, credentials.key);
 

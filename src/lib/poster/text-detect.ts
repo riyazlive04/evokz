@@ -142,6 +142,16 @@ const MIN_BLOCK_CELLS = 8;
  */
 const MAX_BLOCK_HEIGHT = 0.34;
 
+/**
+ * Most blocks one labelling call is asked to name.
+ *
+ * A poster carries six or seven blocks of type; the rest of what the detector
+ * finds is photographic residue for the labeller to reject. Thirty leaves ample
+ * room for both without turning one image into a page of numbered clutter the
+ * model has to count its way through.
+ */
+const MAX_BLOCKS = 30;
+
 export interface TextBlock {
   /** Normalised 0-1 against the reference's own width and height. */
   x: number;
@@ -239,7 +249,39 @@ export async function detectTextBlocks(bytes: Buffer): Promise<TextDetection | n
 
   blocks.sort((a, b) => b.cells - a.cells);
 
-  return { width, height, blocks, gridWidth, gridHeight, mask: closed };
+  return { width, height, blocks: prune(blocks), gridWidth, gridHeight, mask: closed };
+}
+
+/**
+ * Drops the blocks not worth putting in front of a labeller.
+ *
+ * Deliberately light. The temptation is to filter hard here on size, and it does
+ * not work: measured on a real reference, a patch of the model's face came back
+ * larger than two genuine lines of contact detail. Size does not separate type
+ * from photography — only looking at it does, which is the labeller's job.
+ *
+ * So this removes only what is uncontroversial: a box wholly inside another, and
+ * the tail beyond what one labelling call can attend to. Everything else goes
+ * forward and comes back `ignore`.
+ */
+function prune(blocks: TextBlock[]): TextBlock[] {
+  const kept: TextBlock[] = [];
+
+  for (const block of blocks) {
+    // Blocks arrive largest-first, so anything a later block sits inside has
+    // already been kept — one pass is enough.
+    const swallowed = kept.some(
+      (other) =>
+        block.x >= other.x - 1e-9 &&
+        block.y >= other.y - 1e-9 &&
+        block.x + block.w <= other.x + other.w + 1e-9 &&
+        block.y + block.h <= other.y + other.h + 1e-9,
+    );
+    if (!swallowed) kept.push(block);
+    if (kept.length >= MAX_BLOCKS) break;
+  }
+
+  return kept;
 }
 
 /**
