@@ -16,6 +16,7 @@
     "plate:measure": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-text-detect.ts",
     "check:plate": "tsx --tsconfig scripts/tsconfig.json scripts/check-plate-render.ts",
     "check:import": "tsx --tsconfig scripts/tsconfig.json scripts/check-calendar-import.ts",
+    "layout:apply": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/apply-authored-layout.ts",
     "plate:auto": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/autoplate-vertical.ts",
     "template:snapshot": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/template-snapshot.ts",
     "layouts:approve": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/approve-vertical-layouts.ts",
