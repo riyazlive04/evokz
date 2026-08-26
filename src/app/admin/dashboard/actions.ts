@@ -1867,6 +1867,9 @@ export async function uploadVerticalTemplate(
       where: { id },
       select: {
         name: true,
+        // The vertical's standard layout, when it has one: an upload inherits it
+        // instead of paying a vision call to estimate the same thing worse.
+        defaultLayoutSpec: true,
         _count: { select: { templates: true } },
         // At most 100 rows, served by @@index([categoryId, createdAt]). Needed to
         // suffix a colliding name rather than let the unique constraint reject an
@@ -1906,7 +1909,24 @@ export async function uploadVerticalTemplate(
       new Set(category.templates.map((existing) => normalizeTemplateLabel(existing.label))),
       uploaded.fileId.slice(0, 8),
     );
-    const draft = await readLayoutQuietly(stored.body, stored.mimeType, label, stored);
+    /*
+     * A vertical with a standard layout skips extraction entirely.
+     *
+     * Not an optimisation — a correctness change that happens to be free. The
+     * extraction is a vision model estimating geometry, and it does not measure:
+     * 59 of 60 boxes across the live library sat on a 0.05 grid. Where the
+     * vertical already knows what its templates look like, asking a model to
+     * guess is strictly worse than using the answer, and it costs a call.
+     *
+     * `layoutAuthoredAt` is stamped with it, so the guard on re-reading protects
+     * an inherited layout exactly as it protects one applied by hand — otherwise
+     * the first "re-read" would quietly put the estimate back.
+     */
+    const standard = parseLayoutSpec(category.defaultLayoutSpec);
+
+    const draft = standard
+      ? null
+      : await readLayoutQuietly(stored.body, stored.mimeType, label, stored);
 
     const created = await prisma.categoryTemplate.create({
       data: {
@@ -1917,8 +1937,13 @@ export async function uploadVerticalTemplate(
         mimeType: stored.mimeType,
         width: stored.width,
         height: stored.height,
-        layoutSpec: draft.spec ?? Prisma.DbNull,
-        layoutReading: draft.reading,
+        layoutSpec: standard
+          ? (standard as unknown as Prisma.InputJsonValue)
+          : (draft!.spec ?? Prisma.DbNull),
+        layoutReading: standard
+          ? `Inherited this vertical's standard layout "${standard.name}". No extraction was run.`
+          : draft!.reading,
+        layoutAuthoredAt: standard ? new Date() : null,
         /*
          * Approved on the spot when the extraction came back clean.
          *
@@ -1943,8 +1968,9 @@ export async function uploadVerticalTemplate(
          * every stored spec to a folder, and it is now the only thing standing
          * between a misread and a client.
          */
-        layoutApprovedAt:
-          draft.spec && draft.problems.length === 0 && draft.risks.length === 0
+        layoutApprovedAt: standard
+          ? new Date()
+          : draft!.spec && draft!.problems.length === 0 && draft!.risks.length === 0
             ? new Date()
             : null,
       },
@@ -1970,10 +1996,14 @@ export async function uploadVerticalTemplate(
      */
     return success({
       ...created,
-      approved: Boolean(draft.spec) && draft.problems.length === 0 && draft.risks.length === 0,
+      // An inherited layout is approved by construction: it is the spec the
+      // vertical already renders, with nothing estimated to be faulty.
+      approved: standard
+        ? true
+        : Boolean(draft!.spec) && draft!.problems.length === 0 && draft!.risks.length === 0,
       // Problems first: a structural fault is the more concrete complaint, and
       // an operator reading two lines should read that one first.
-      reasons: [...draft.problems, ...draft.risks],
+      reasons: standard ? [] : [...draft!.problems, ...draft!.risks],
     });
   } catch (error) {
     return toFailure(error, 'Uploading template');

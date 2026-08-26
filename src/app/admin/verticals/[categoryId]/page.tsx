@@ -11,6 +11,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { prisma } from '@/lib/prisma';
+import { parseLayoutSpec } from '@/lib/types/layout-spec';
 import { assessAutoApproval } from '@/lib/poster/layout-risk';
 import { parseLayoutDraft } from '@/lib/types/layout-spec';
 import { parsePlateDraft } from '@/lib/types/plate-spec';
@@ -58,6 +59,9 @@ export default async function VerticalDetailPage({
     select: {
       id: true,
       name: true,
+      // Shown on the panel so an operator can see what a new upload will be
+      // given, without having to upload one to find out.
+      defaultLayoutSpec: true,
       _count: { select: { clients: true, templates: true } },
       templates: {
         orderBy: { createdAt: 'desc' },
@@ -198,6 +202,7 @@ export default async function VerticalDetailPage({
             categoryName={category.name}
             templates={templates}
             totalCount={totalTemplates}
+            standardLayoutName={parseLayoutSpec(category.defaultLayoutSpec)?.name ?? null}
           />
 
           {pageCount > 1 && (

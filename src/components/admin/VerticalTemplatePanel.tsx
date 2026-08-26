@@ -123,6 +123,7 @@ export function VerticalTemplatePanel({
   categoryName,
   templates,
   totalCount,
+  standardLayoutName,
 }: {
   categoryId: string;
   categoryName: string;
@@ -130,6 +131,16 @@ export function VerticalTemplatePanel({
   templates: VerticalTemplateRow[];
   /** Every template in the vertical, across all pages. */
   totalCount: number;
+  /**
+   * The layout a new upload will be given, or null when the vertical still
+   * extracts one from each image.
+   *
+   * Worth stating on the panel rather than leaving to be discovered: the two
+   * behaviours differ in whether a vision model guesses at the geometry, and an
+   * operator uploading a batch should know which they are getting before the
+   * batch is up.
+   */
+  standardLayoutName: string | null;
 }) {
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [progress, setProgress] = React.useState<string | null>(null);
@@ -312,6 +323,21 @@ export function VerticalTemplatePanel({
       <p className="text-[11px] text-muted-foreground/70">
         PNG, JPEG or WebP · up to 6 MB each · select several at once. Stored in this
         vertical&apos;s Drive folder.
+      </p>
+
+      <p className="text-[11px] text-muted-foreground/70">
+        {standardLayoutName ? (
+          <>
+            New uploads are given this vertical&apos;s standard layout,{' '}
+            <span className="font-medium text-foreground">{standardLayoutName}</span>, and are
+            ready to use immediately. No layout is read from the image.
+          </>
+        ) : (
+          <>
+            New uploads have their layout read from the image by a vision model, which
+            estimates it. Give this vertical a standard layout to skip that.
+          </>
+        )}
       </p>
 
       {/* Said at the point of upload, because it changes what an upload *is*:

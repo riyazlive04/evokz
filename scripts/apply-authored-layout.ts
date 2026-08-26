@@ -182,6 +182,35 @@ async function main() {
     );
   }
 
+  /*
+   * The vertical remembers it, so the next upload does not have to be told.
+   *
+   * Applying to the templates that exist fixes today and nothing else: the
+   * very next file an operator uploads runs an extraction and auto-approves
+   * it, and every fault this script exists to remove is back with nobody
+   * warned. Stored on the category, an upload inherits the spec instead — no
+   * vision call, no estimate, right by construction.
+   *
+   * Skipped under `--labels`, which means the caller is fixing named
+   * templates rather than settling what the whole vertical is.
+   */
+  if (labels.length === 0) {
+    await prisma.category.update({
+      where: { id: category.id },
+      data: { defaultLayoutSpec: spec as unknown as Prisma.InputJsonValue },
+    });
+    console.log(
+      `
+"${category.name}" now gives every new upload this layout — no extraction is run.`,
+    );
+  } else {
+    console.log(
+      `
+The vertical's standard layout is unchanged: --labels means named ` +
+        'templates, not what the vertical is. Re-run without it to set the default.',
+    );
+  }
+
   console.log(
     `\n${applied} template(s) now draw "${spec.name}".` +
       (platesWithdrawn > 0

@@ -52,6 +52,22 @@ model Category {
   updatedAt DateTime           @updatedAt
   clients   Client[]
   templates CategoryTemplate[]
+
+  /// The layout every template uploaded to this vertical is given, as a
+  /// `PosterLayoutSpec`.
+  ///
+  /// **What it replaces is a vision call that gets the answer wrong.** Uploading
+  /// a template runs an extraction and approves it if it parses, so a new file
+  /// reaches clients carrying geometry a model estimated — measured across the
+  /// live library, 59 of 60 of those boxes sat on a 0.05 grid, which is a model
+  /// describing a poster rather than measuring one.
+  ///
+  /// A vertical whose templates are all one design does not need any of that:
+  /// the layout is known before the file exists. Set here, every upload inherits
+  /// it, costs no vision call, and is right by construction. Null leaves the
+  /// vertical on extraction, which is still correct for a library of genuinely
+  /// different references somebody else drew.
+  defaultLayoutSpec Json?
 }
 
 /// One operator-uploaded reference poster for a vertical.
