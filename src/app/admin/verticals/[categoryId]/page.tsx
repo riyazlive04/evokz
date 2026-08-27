@@ -155,9 +155,24 @@ export default async function VerticalDetailPage({
 
   // Counted in the database, not over `templates` — that array is now one page,
   // and a per-page figure would report "3 of 24 mapped" on a library of ninety.
-  const approvedLayouts = await prisma.categoryTemplate.count({
-    where: { categoryId: category.id, layoutApprovedAt: { not: null } },
-  });
+  const [approvedLayouts, rereadableCount] = await Promise.all([
+    prisma.categoryTemplate.count({
+      where: { categoryId: category.id, layoutApprovedAt: { not: null } },
+    }),
+    /*
+     * How many templates a bulk re-read would actually touch.
+     *
+     * Counted so the panel can say so *before* the click. `extractVerticalLayouts`
+     * skips every authored layout outright — deliberately, since nobody pressing a
+     * bulk button is asking to discard fourteen hand-written specs — and a vertical
+     * whose templates were all applied from a fixture is now the normal state. That
+     * left the button offering "Re-read all 14?" and then reporting "0 layout(s)
+     * re-read", which reads as a broken button rather than a refused one.
+     */
+    prisma.categoryTemplate.count({
+      where: { categoryId: category.id, layoutAuthoredAt: null },
+    }),
+  ]);
 
   return (
     <>
@@ -203,6 +218,7 @@ export default async function VerticalDetailPage({
             templates={templates}
             totalCount={totalTemplates}
             standardLayoutName={parseLayoutSpec(category.defaultLayoutSpec)?.name ?? null}
+            rereadableCount={rereadableCount}
           />
 
           {pageCount > 1 && (

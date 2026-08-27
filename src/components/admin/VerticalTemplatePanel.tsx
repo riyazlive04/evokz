@@ -124,6 +124,7 @@ export function VerticalTemplatePanel({
   templates,
   totalCount,
   standardLayoutName,
+  rereadableCount,
 }: {
   categoryId: string;
   categoryName: string;
@@ -141,6 +142,18 @@ export function VerticalTemplatePanel({
    * batch is up.
    */
   standardLayoutName: string | null;
+  /**
+   * How many of the vertical's templates a bulk re-read would actually touch.
+   *
+   * Everything else on this panel counts templates; this one counts the ones
+   * without a hand-authored layout, because that is the only number the sweep
+   * acts on. `extractVerticalLayouts` skips authored specs outright rather than
+   * confirm past them, so in a vertical whose layouts were all applied from a
+   * fixture — the normal state now — the sweep can only ever be a no-op. Without
+   * this the button said "Re-read all 14?", spun, and came back "0 layout(s)
+   * re-read": a refusal an operator can only read as a fault.
+   */
+  rereadableCount: number;
 }) {
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [progress, setProgress] = React.useState<string | null>(null);
@@ -184,6 +197,11 @@ export function VerticalTemplatePanel({
     const timer = setTimeout(() => setConfirmAll(false), 5_000);
     return () => clearTimeout(timer);
   }, [confirmAll]);
+
+  // Every template here has a hand-authored layout, so the sweep would skip all
+  // of them. Named rather than inlined because both the button and the line
+  // explaining it turn on the same fact.
+  const nothingToReread = rereadableCount === 0;
 
   // Against the whole library, never the page. Sizing this to `templates.length`
   // would offer room for another twenty-four uploads on every page of a vertical
@@ -284,14 +302,22 @@ export function VerticalTemplatePanel({
                 if (outcome.ok) setSweep(outcome.data);
               });
             }}
-            disabled={rereadAll.pending || upload.pending}
+            // Off when the sweep would skip every template. The action runs
+            // fine and reports nothing done, which is the shape of a broken
+            // button; the line below says why instead.
+            disabled={rereadAll.pending || upload.pending || nothingToReread}
           >
             {rereadAll.pending ? (
               <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
               <RefreshCw className="h-4 w-4" />
             )}
-            {confirmAll ? `Re-read all ${totalCount}?` : 'Re-read all layouts'}
+            {/*
+              Counted over what the sweep will touch, never over the library. A
+              confirmation that says 14 and then reads 0 is worse than no
+              confirmation: it teaches an operator that the button lies.
+            */}
+            {confirmAll ? `Re-read ${rereadableCount}?` : 'Re-read all layouts'}
           </Button>
         )}
 
@@ -304,8 +330,41 @@ export function VerticalTemplatePanel({
         )}
       </div>
 
+      {/*
+        The state of the vertical, stated up front rather than discovered by
+        pressing the button.
+      */}
+      {totalCount > 0 && nothingToReread && (
+        <p className="text-[11px] text-muted-foreground/70">
+          Nothing to re-read: all {totalCount} layout{totalCount === 1 ? '' : 's'} here{' '}
+          {totalCount === 1 ? 'was' : 'were'} written by hand, and a sweep leaves those
+          alone — an extraction over an authored spec is always a downgrade. To replace
+          one anyway, use <span className="text-foreground">Re-read this one</span> on its
+          own card, which asks twice.
+        </p>
+      )}
+
+      {totalCount > 0 && rereadableCount > 0 && rereadableCount < totalCount && (
+        <p className="text-[11px] text-muted-foreground/70">
+          {rereadableCount} of {totalCount} would be re-read. The other{' '}
+          {totalCount - rereadableCount}{' '}
+          {totalCount - rereadableCount === 1 ? 'is' : 'are'} hand-authored and will be
+          left alone.
+        </p>
+      )}
+
       {sweep && (
-        <p className="text-[11px] text-success-ink">
+        <p
+          // Green is for a sweep that did something. One that read nothing, or
+          // that failed on some, is not a success and must not be dressed as
+          // one — that colour is why "0 layout(s) re-read" scanned as a
+          // completed job.
+          className={
+            sweep.read > 0 && sweep.failed === 0
+              ? 'text-[11px] text-success-ink'
+              : 'text-[11px] text-warning-ink'
+          }
+        >
           {sweep.read} layout(s) re-read
           {sweep.failed > 0 ? `, ${sweep.failed} failed` : ''}
           {sweep.skippedAuthored.length > 0

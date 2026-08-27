@@ -156,9 +156,19 @@ model CategoryTemplate {
   ///
   /// The column exists so re-reading cannot throw one away by accident, which is
   /// not hypothetical: fourteen templates were re-extracted over an authored
-  /// layout in five minutes of clicking, and nothing anywhere said so. Written by
-  /// `scripts/apply-authored-layout.ts`; cleared only by an operator who
-  /// confirms a re-read.
+  /// layout in five minutes of clicking, and nothing anywhere said so.
+  ///
+  /// Written by `scripts/apply-authored-layout.ts`, and by an upload into a
+  /// vertical that has a `defaultLayoutSpec` — that upload inherits the standard
+  /// layout instead of paying a vision call to estimate it worse, and an
+  /// inherited layout needs the same protection as one applied by hand or the
+  /// first re-read would quietly put the estimate back. Cleared only by an
+  /// operator who confirms a re-read on that one template.
+  ///
+  /// Consequence worth knowing before reading `extractVerticalLayouts`: once a
+  /// vertical's whole library is authored, the bulk "re-read all" sweep skips
+  /// every row and can only report zero. The console counts the eligible rows
+  /// and says so rather than letting that read as a broken button.
   layoutAuthoredAt DateTime?
 
   // ---- Clean plate ---------------------------------------------------------
