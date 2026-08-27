@@ -37,7 +37,7 @@
       "fill": "dark",
       "cells": [
         {
-          "weight": 64,
+          "weight": 56,
           "fill": "dark",
           "align": "start",
           "valign": "start",
@@ -50,7 +50,7 @@
           ]
         },
         {
-          "weight": 36,
+          "weight": 44,
           "fill": "dark",
           "align": "center",
           "valign": "end",
@@ -65,11 +65,11 @@
     {
       "sizingMode": "fixed",
       "heightFraction": 0.09,
-      "fill": "accent",
+      "fill": "dark",
       "cells": [
         {
           "weight": 100,
-          "fill": "accent",
+          "fill": "dark",
           "align": "start",
           "valign": "center",
           "padded": false,

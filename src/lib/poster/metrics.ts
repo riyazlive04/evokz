@@ -246,7 +246,10 @@ export function resolveMetrics(
       height: Math.max(2, s(6)),
       marginTop: s(30),
       marginBottom: s(32),
-      pulseWidth: s(320),
+      // Measured against Med-SM-16: the reference's trace runs nearly the width
+      // of the copy column, and 320 stopped a third of the way across, reading as
+      // a stray dash rather than a divider.
+      pulseWidth: s(560),
       pulseHeight: s(28),
       pulseStroke: Math.max(2, s(3)),
     },
