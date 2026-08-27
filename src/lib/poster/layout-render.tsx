@@ -561,6 +561,23 @@ function Cell({
           ...(SELF_BLEEDING.has(slot)
             ? { width: '100%', flexGrow: slot === 'photo' ? 1 : 0 }
             : {}),
+          /*
+           * A spacer is a spring, so a spec can push content apart.
+           *
+           * Without this a stack can only hug one edge: everything sits from the
+           * top and whatever is left is bare ground at the bottom. References
+           * routinely put the headline at the top and the feature row near the
+           * floor with the photograph breathing between them, and that shape had
+           * no expression at all — `[headline, spacer, features]` drew exactly the
+           * same poster as `[headline, features]`.
+           *
+           * Safe to make it grow because a spacer draws nothing, and because of
+           * where it actually appears. Swept over the live library and the fixture
+           * suite: every occurrence is either the last slot of a `valign: start`
+           * cell — where the space it now claims was already empty — or alone in
+           * its cell as a deliberate gutter. Nothing moved.
+           */
+          ...(slot === 'spacer' ? { flexGrow: 1 } : {}),
           ...(gap > 0 ? { marginTop: gap } : {}),
         }}
       >
@@ -668,6 +685,21 @@ function Cell({
             padding,
             alignItems: FLEX[cell.align],
             justifyContent: rowIsHug ? 'flex-start' : 'center',
+            /*
+             * Claim the cell's height, but only when something inside wants to
+             * spread into it.
+             *
+             * This wrapper hugs its content by default, which is why a spring
+             * inside it did nothing: `flexGrow` needs a parent with height to
+             * grow into. Growing it unconditionally would re-centre every overlay
+             * that relies on the cell's own `valign` to place this box, so it is
+             * gated on the one thing that needs the room. Swept first: no spec in
+             * the library or the fixture suite puts a `spacer` in an overlay cell,
+             * so this branch is reachable only by specs written after it.
+             */
+            ...(cell.slots.includes('spacer')
+              ? { flexGrow: 1, justifyContent: 'flex-start' as const }
+              : {}),
           }}
         >
           {drawn}
