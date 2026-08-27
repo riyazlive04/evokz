@@ -1,9 +1,15 @@
 # HTML renderer — scope, with one template authored
 
-*Written 2026-08-27, against HEAD `28444dd`. The decision this exists for: whether
-to migrate all 24 templates. Nothing here routes a live poster — the HTML path is
-reachable only from the preview route and `check:templates` until a template file
-is added.*
+*Written 2026-08-27 against HEAD `28444dd`, to answer whether to migrate the
+fleet. **That decision was taken and the migration is done**: 23 of 24 templates
+are authored — both Medicals and Constructions in full — and only the single
+Restaurants template was deliberately left out. Sections 8 to 11 below were
+written when one template existed and are kept as the record of what the decision
+was made on; §10's estimate has been overtaken by the outcome.*
+
+*Nothing routes a live poster yet. The HTML path is reachable from the preview
+route and `check:templates`; the pipeline still does not pass a `templateLabel`,
+so production draws every poster through satori until that one line changes.*
 
 ---
 

@@ -1,0 +1,206 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Int-SM-3",
+  "aspect": 0.5628,
+  "referenceWidth": 941,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "subject",
+      "role": "slot",
+      "width": 520,
+      "height": 900,
+      "reason": "the presenter, cut out, standing to the right of the service list"
+    }
+  ]
+}
+</script>
+
+<!--
+  Int-SM-3 — sage green, a sentence-case headline, a service list down the left
+  and a presenter standing to the right.
+
+  Reference: /api/templates/5c847e9d-4da4-4993-a9a5-19970408969f/thumbnail?full=1
+
+  941×1672 like Int-SM-1, so its stylesheet is written against a 941 reference
+  width and its aspect is 0.5628 rather than 0.5625.
+
+  Its headline runs to three lines with the third accented and set lighter, which
+  is the same per-line treatment Med-SM-7 uses for scale — the copy decides which
+  line is accented, the template decides what accented means, and here it means a
+  paler ink rather than a bigger size.
+-->
+
+<style>
+  .i3 {
+    --hl-size: 60px;
+    --hl-stretch: 94%;
+    --hl-leading: 1.2;
+    --hl-ink: #f2f5ec;
+    --hl-accent: #b9c9a8;
+    --logo-w: 90px;
+    --logo-h: 40px;
+    --logo-filter: brightness(0) invert(1);
+
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(160deg, #7e8f72 0%, #6d7f63 52%, #5d6f55 100%);
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 56px 58px 190px;
+    overflow: hidden;
+  }
+
+  .i3-headline {
+    margin-top: 30px;
+    /* Sentence case, and wrapping allowed: this design's lines are long enough
+       that holding them nowrap would shrink the type below the body copy. */
+    text-transform: none;
+    white-space: normal;
+    max-width: 620px;
+  }
+  .i3-body {
+    margin-top: 22px;
+    max-width: 470px;
+    font-size: 22px;
+    line-height: 1.42;
+    color: #e2e9d9;
+  }
+
+  .i3-figure {
+    position: absolute;
+    right: 0;
+    bottom: 190px;
+    width: 520px;
+    height: 1000px;
+    z-index: 0;
+  }
+  .i3-figure img { --subject-anchor: bottom right; }
+
+  .i3-list {
+    position: relative;
+    z-index: 1;
+    flex: 0 1 auto;
+    min-height: 0;
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+  .i3-item { display: flex; align-items: center; gap: 18px; }
+  .i3-badge {
+    width: 58px;
+    height: 58px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.14);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    color: #eef3e6;
+  }
+  .i3-badge svg { width: 28px; height: 34px; }
+  .i3-text { display: flex; flex-direction: column; min-width: 0; }
+  .i3-label {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 24px;
+    font-stretch: 92%;
+    font-weight: 700;
+    color: #f4f7ee;
+  }
+  .i3-sub { font-size: 19px; line-height: 1.3; color: #d3dcc6; max-width: 330px; }
+
+  .i3-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 130px;
+    background: #3f4a39;
+    border-top-left-radius: 26px;
+    border-top-right-radius: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 22px;
+    padding: 0 40px;
+    z-index: 3;
+    color: #e6ecdc;
+  }
+  .i3-foot-item { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .i3-foot-item svg { width: 36px; height: 36px; flex: none; color: #b9c9a8; }
+  .i3-foot-text { display: flex; flex-direction: column; min-width: 0; }
+  .i3-foot-text i {
+    font-style: normal;
+    font-size: 17px;
+    color: #b3bfa4;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .i3-foot-text span { font-size: 23px; font-weight: 600; white-space: nowrap; }
+</style>
+
+<div class="i3">
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline i3-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <div class="i3-body" data-slot="body"></div>
+
+  <div class="i3-figure"><img class="pk-subject" data-image="hero" alt=""></div>
+
+  <div class="i3-list">
+    <div class="i3-item" data-when="feature1">
+      <div class="i3-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="i3-text">
+        <div class="i3-label" data-slot="feature1Label"></div>
+        <div class="i3-sub" data-slot="feature1Body"></div>
+      </div>
+    </div>
+    <div class="i3-item" data-when="feature2">
+      <div class="i3-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="i3-text">
+        <div class="i3-label" data-slot="feature2Label"></div>
+        <div class="i3-sub" data-slot="feature2Body"></div>
+      </div>
+    </div>
+    <div class="i3-item" data-when="feature3">
+      <div class="i3-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="i3-text">
+        <div class="i3-label" data-slot="feature3Label"></div>
+        <div class="i3-sub" data-slot="feature3Body"></div>
+      </div>
+    </div>
+    <div class="i3-item" data-when="feature4">
+      <div class="i3-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="i3-text">
+        <div class="i3-label" data-slot="feature4Label"></div>
+        <div class="i3-sub" data-slot="feature4Body"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="i3-foot">
+    <div class="i3-foot-item" data-when="website">
+      <svg aria-hidden="true"><use href="#ic-globe"/></svg>
+      <div class="i3-foot-text">
+        <i data-slot="websiteLabel"></i>
+        <span data-slot="website"></span>
+      </div>
+    </div>
+    <div class="i3-foot-item">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="i3-foot-text">
+        <i data-slot="callLabel"></i>
+        <span data-slot="phone" data-fit></span>
+      </div>
+    </div>
+  </div>
+</div>

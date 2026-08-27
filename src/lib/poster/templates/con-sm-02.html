@@ -1,0 +1,173 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Con-SM-2",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 0,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 1000,
+      "reason": "the site, filling the upper two-thirds behind the copy card"
+    }
+  ]
+}
+</script>
+
+<!--
+  Con-SM-2 — orange field, a white card of copy laid over the site photograph.
+
+  Reference: /api/templates/d7c10044-f8ab-4838-992a-cf85dc39f303/thumbnail?full=1
+
+  The card is what makes this design work with any day's still: the type sits on
+  white rather than on the photograph, so a dark or busy image costs legibility
+  nothing. Everywhere else in this vertical that job is done by a scrim, which is
+  cheaper but only works when the image is roughly the tone expected.
+-->
+
+<style>
+  .c2 {
+    --hl-size: 54px;
+    --hl-stretch: 90%;
+    --hl-leading: 1.14;
+    --hl-ink: #c25a05;
+    --hl-accent: #c25a05;
+    --logo-w: 230px;
+    --logo-h: 66px;
+    --logo-filter: brightness(0);
+
+    position: absolute;
+    inset: 0;
+    background: #f47b20;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 40px 40px 380px;
+    overflow: hidden;
+  }
+
+  .c2-photo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 150px;
+    height: 850px;
+    z-index: 0;
+  }
+
+  .c2-logo {
+    background: #ffffff;
+    border: 3px solid #101010;
+    padding: 8px 14px;
+    flex: none;
+    z-index: 2;
+  }
+
+  /* Copy on white, not on the photograph. */
+  .c2-card {
+    position: relative;
+    z-index: 2;
+    margin-top: 42px;
+    width: 470px;
+    min-height: 470px;
+    background: #ffffff;
+    padding: 40px 34px;
+    display: flex;
+    flex-direction: column;
+  }
+  .c2-sub {
+    margin-top: 20px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 34px;
+    font-stretch: 92%;
+    font-weight: 700;
+    line-height: 1.2;
+    color: #f47b20;
+  }
+  .c2-note {
+    margin-top: auto;
+    font-size: 25px;
+    line-height: 1.34;
+    color: #7a6a5e;
+  }
+
+  .c2-band {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 96px;
+    height: 284px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    padding: 0 44px;
+    z-index: 2;
+  }
+  .c2-cta {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 40px;
+    font-stretch: 90%;
+    font-weight: 700;
+    color: #ffffff;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .c2-call { display: flex; align-items: baseline; gap: 16px; max-width: 100%; }
+  .c2-call i,
+  .c2-call span {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-stretch: 86%;
+    color: #ffffff;
+    white-space: nowrap;
+  }
+  .c2-call i { font-style: normal; font-size: 44px; font-weight: 700; }
+  .c2-call span { font-size: 54px; font-weight: 800; min-width: 0; }
+
+  .c2-strip {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 96px;
+    background: #2f2a26;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 3;
+  }
+  .c2-strip span { font-size: 27px; font-weight: 600; color: #ffffff; white-space: nowrap; }
+</style>
+
+<div class="c2">
+  <div class="c2-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-logo c2-logo"><img data-image="logo" alt=""></div>
+
+  <div class="c2-card">
+    <div class="pk-headline" data-fit>
+      <template data-repeat="headline">
+        <div data-slot="line"></div>
+      </template>
+    </div>
+    <div class="c2-sub" data-slot="body"></div>
+    <div class="c2-note" data-slot="websiteLabel"></div>
+  </div>
+
+  <div class="c2-band">
+    <div class="c2-cta" data-slot="ctaLabel"></div>
+    <div class="c2-call">
+      <i data-slot="callLabel"></i>
+      <span data-slot="phone" data-fit></span>
+    </div>
+  </div>
+
+  <div class="c2-strip" data-when="website">
+    <span data-slot="website"></span>
+  </div>
+</div>

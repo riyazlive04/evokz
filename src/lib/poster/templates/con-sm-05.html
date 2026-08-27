@@ -1,0 +1,152 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Con-SM-5",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 0,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "subject",
+      "role": "slot",
+      "width": 780,
+      "height": 560,
+      "reason": "the materials group, cut out, sitting on the olive band"
+    }
+  ]
+}
+</script>
+
+<!--
+  Con-SM-5 — Con-SM-6's arrangement in a warmer register: the band is olive
+  rather than black and the website strip is black rather than yellow, which
+  swaps which of the two feels like the foot of the poster.
+
+  Reference: /api/templates/7ce5779f-e9e7-4dc3-af3b-e4d65f4af9e4/thumbnail?full=1
+
+  Copy maps as it does across this vertical: headline, `body` as the subhead,
+  `ctaLabel` as the invitation, `callLabel` before the number, `website` in the
+  strip. See con-sm-06.html for why.
+-->
+
+<style>
+  .c5 {
+    --hl-size: 80px;
+    --hl-stretch: 88%;
+    --hl-leading: 1.08;
+    --hl-ink: #101010;
+    --hl-accent: #101010;
+    --logo-w: 250px;
+    --logo-h: 74px;
+    --logo-filter: brightness(0);
+
+    position: absolute;
+    inset: 0;
+    background: #ffd400;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 44px 52px 460px;
+    overflow: hidden;
+  }
+
+  .c5-logo { border: 4px solid #101010; padding: 8px 14px; flex: none; }
+  .c5-headline { margin-top: 32px; }
+  .c5-sub {
+    margin-top: 16px;
+    max-width: 520px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 44px;
+    font-stretch: 92%;
+    font-weight: 700;
+    line-height: 1.16;
+    color: #d92b1c;
+  }
+
+  .c5-object {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 286px;
+    height: 600px;
+    z-index: 0;
+  }
+  .c5-object img { --subject-anchor: bottom center; }
+
+  .c5-band {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 78px;
+    height: 286px;
+    background: #8a7a12;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 0 44px;
+    z-index: 1;
+  }
+  .c5-cta {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 36px;
+    font-stretch: 90%;
+    font-weight: 700;
+    color: #101010;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .c5-call { display: flex; align-items: baseline; gap: 16px; max-width: 100%; }
+  .c5-call i,
+  .c5-call span {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-stretch: 86%;
+    font-weight: 800;
+    color: #101010;
+    white-space: nowrap;
+  }
+  .c5-call i { font-style: normal; font-size: 46px; font-weight: 700; }
+  .c5-call span { font-size: 56px; min-width: 0; }
+
+  .c5-strip {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 78px;
+    background: #101010;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+  }
+  .c5-strip span { font-size: 27px; font-weight: 600; color: #ffd400; white-space: nowrap; }
+</style>
+
+<div class="c5">
+  <div class="pk-logo c5-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline c5-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <div class="c5-sub" data-slot="body"></div>
+
+  <div class="c5-object"><img class="pk-subject" data-image="hero" alt=""></div>
+
+  <div class="c5-band">
+    <div class="c5-cta" data-slot="ctaLabel"></div>
+    <div class="c5-call">
+      <i data-slot="callLabel"></i>
+      <span data-slot="phone" data-fit></span>
+    </div>
+  </div>
+
+  <div class="c5-strip" data-when="website">
+    <span data-slot="website"></span>
+  </div>
+</div>

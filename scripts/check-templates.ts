@@ -239,6 +239,98 @@ const FIXTURES: Record<string, { copy?: Partial<PosterCopy>; tagline?: string }>
     },
     tagline: 'Trusted care for you and your family.',
   },
+  /*
+   * Constructions maps PosterCopy differently from Medicals — `body` is the
+   * subhead, `ctaLabel` the line above the number, `callLabel` the word before
+   * it — so its fixtures read differently too. See con-sm-06.html.
+   */
+  'con-sm-01': {
+    copy: {
+      headlineLines: ['WE BUILD', 'MORE THAN STRUCTURES'],
+      accentLineIndex: 1,
+      eyebrow: 'WE BUILD TRUST',
+      ctaLabel: 'FROM VISION TO REALITY',
+      features: [
+        { icon: 'shieldCheck', label: 'Quality', body: 'We deliver excellence.' },
+        { icon: 'hardHat', label: 'Safety', body: 'We build responsibly.' },
+        { icon: 'handshake', label: 'Integrity', body: 'We believe in transparency.' },
+        { icon: 'chart', label: 'Commitment', body: 'We complete with pride.' },
+      ],
+    },
+  },
+  'con-sm-02': {
+    copy: {
+      headlineLines: ['BUILT TO LAST,', 'FINISHED ON TIME'],
+      accentLineIndex: 0,
+      body: 'Groundwork to handover, one team.',
+      ctaLabel: 'Talk to us about your site',
+    },
+  },
+  'con-sm-03': {
+    copy: {
+      headlineLines: ['SAFETY FIRST,', 'ALWAYS'],
+      accentLineIndex: 0,
+      body: 'Every site, every shift, every day.',
+      ctaLabel: 'Book a site inspection',
+    },
+  },
+  'con-sm-04': {
+    copy: {
+      headlineLines: ['PLANNED WELL,', 'BUILT RIGHT'],
+      accentLineIndex: 0,
+      body: 'Survey, design and delivery.',
+    },
+  },
+  'con-sm-05': {
+    copy: {
+      headlineLines: ['MATERIALS YOU', 'CAN RELY ON'],
+      accentLineIndex: 0,
+      body: 'Supplied and delivered on schedule.',
+      ctaLabel: 'Ask us for a quote today',
+    },
+  },
+  'con-sm-06': {
+    copy: {
+      headlineLines: ['HEAVY WORK,', 'HANDLED'],
+      accentLineIndex: 0,
+      body: 'Plant and operators, on hire.',
+      ctaLabel: 'Tell us what you need moved',
+    },
+  },
+  'con-sm-07': {
+    copy: {
+      headlineLines: ['SKILLED HANDS', 'ON EVERY SITE'],
+      accentLineIndex: 0,
+      body: 'Trained crews, ready to start.',
+      ctaLabel: 'Hire a crew this week',
+    },
+  },
+  'int-sm-01': {
+    copy: {
+      headlineLines: ['ROOMS THAT', 'WORK HARDER'],
+      accentLineIndex: 1,
+      eyebrow: 'INTERIOR DESIGN',
+      body: 'We plan, furnish and finish the whole room, so it is ready to live in on the day we hand it back.',
+      features: [
+        { icon: 'houseInHand', label: 'Living', body: 'Layouts that suit how you actually use the room.' },
+        { icon: 'key', label: 'Turnkey', body: 'One team from drawing to final handover.' },
+        { icon: 'leaf', label: 'Finishes', body: 'Materials chosen to wear well, not just photograph well.' },
+      ],
+    },
+  },
+  'int-sm-03': {
+    copy: {
+      headlineLines: ['A home that', 'fits the way', 'you live in it.'],
+      accentLineIndex: 2,
+      body: 'Tell us how the room is used and we will plan it around that, then furnish and finish it end to end.',
+      features: [
+        { icon: 'houseInHand', label: 'Space planning', body: 'Measured, drawn and agreed first.' },
+        { icon: 'blueprint', label: 'Custom joinery', body: 'Built to the room, not to a catalogue.' },
+        { icon: 'leaf', label: 'Styling', body: 'Finishes, lighting and soft furnishing.' },
+        { icon: 'key', label: 'Handover', body: 'Cleaned, snagged and ready to use.' },
+      ],
+    },
+  },
   'med-sm-17': {
     copy: {
       headlineLines: ['Care that keeps', 'pace with your', 'whole family.'],

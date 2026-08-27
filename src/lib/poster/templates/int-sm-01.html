@@ -1,0 +1,222 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Int-SM-1",
+  "aspect": 0.5628,
+  "referenceWidth": 941,
+  "featureCount": 3,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 880,
+      "height": 700,
+      "reason": "the finished room, filling the middle band under the headline"
+    }
+  ]
+}
+</script>
+
+<!--
+  Int-SM-1 — the interiors register: cream, an arch of photograph, three services
+  under it, a brown foot.
+
+  Reference: /api/templates/0398925e-8be0-4dc3-a719-c18d6de106b1/thumbnail?full=1
+
+  **941×1672, not 900×1600.** The only two templates in the library at a
+  different size are these interiors pair, and it matters twice over: the
+  stylesheet is written in the reference's own pixels, so `referenceWidth` is 941
+  and the numbers below are measured against that; and the aspect is 0.5628
+  rather than 0.5625, which `resolvePosterCanvas` will honour — the poster is
+  drawn at the template's proportions, not the preset's.
+-->
+
+<style>
+  .i1 {
+    --hl-size: 74px;
+    --hl-stretch: 92%;
+    --hl-leading: 1.08;
+    --hl-ink: #b1663a;
+    --hl-accent: #b1663a;
+    --logo-w: 300px;
+    --logo-h: 110px;
+    --logo-filter: brightness(0);
+
+    position: absolute;
+    inset: 0;
+    background: #f4efe6;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 56px 62px 300px;
+    overflow: hidden;
+  }
+
+  /*
+   * The copy column is bounded and sits above the arch.
+   *
+   * Without the bound the headline ran under the photograph: it is left-aligned
+   * with nothing to stop it, and the arch starts 320px in from the right. A
+   * template whose blocks overlap only for *some* copy is the failure this
+   * migration exists to end, so the column is given a width rather than left to
+   * discover one.
+   */
+  .i1-eyebrow,
+  .i1-headline,
+  .i1-body {
+    position: relative;
+    z-index: 1;
+    max-width: 430px;
+  }
+
+  .i1-eyebrow {
+    margin-top: 42px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 28px;
+    font-stretch: 92%;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #7d6a55;
+  }
+  .i1-headline { margin-top: 10px; }
+  .i1-body {
+    margin-top: 22px;
+    max-width: 420px;
+    font-size: 24px;
+    line-height: 1.42;
+    color: #6f6152;
+  }
+
+  /*
+   * The arch. A single border-radius on the top corners, which is all the
+   * reference's shape actually is — and unlike a clip path it keeps the
+   * photograph's own aspect handling intact underneath.
+   */
+  .i1-photo {
+    position: absolute;
+    right: 0;
+    top: 330px;
+    width: 620px;
+    height: 700px;
+    border-top-left-radius: 310px;
+    border-top-right-radius: 310px;
+    overflow: hidden;
+    z-index: 0;
+  }
+
+  .i1-services {
+    position: absolute;
+    left: 46px;
+    right: 46px;
+    bottom: 130px;
+    display: flex;
+    justify-content: center;
+    gap: 26px;
+    z-index: 2;
+  }
+  .i1-service {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 0 8px;
+  }
+  .i1-service + .i1-service { border-left: 1px solid #ded2c2; }
+  .i1-badge {
+    width: 74px;
+    height: 74px;
+    border-radius: 50%;
+    background: #c98b3f;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    color: #fdf9f2;
+  }
+  .i1-badge svg { width: 36px; height: 44px; }
+  .i1-label {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 25px;
+    font-stretch: 90%;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #3b3128;
+    text-align: center;
+  }
+  .i1-text {
+    font-size: 20px;
+    line-height: 1.32;
+    color: #7d6a55;
+    text-align: center;
+    max-width: 230px;
+  }
+
+  .i1-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 96px;
+    background: #a35a2e;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 0 44px;
+    z-index: 3;
+    color: #fdf3e8;
+  }
+  .i1-foot-item { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .i1-foot-item svg { width: 34px; height: 34px; flex: none; color: #fdf3e8; }
+  .i1-foot-item span { font-size: 24px; font-weight: 600; white-space: nowrap; }
+</style>
+
+<div class="i1">
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="i1-eyebrow" data-slot="eyebrow"></div>
+
+  <div class="pk-headline i1-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <div class="i1-body" data-slot="body"></div>
+
+  <div class="i1-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="i1-services">
+    <div class="i1-service" data-when="feature1">
+      <div class="i1-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="i1-label" data-slot="feature1Label"></div>
+      <div class="i1-text" data-slot="feature1Body"></div>
+    </div>
+    <div class="i1-service" data-when="feature2">
+      <div class="i1-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="i1-label" data-slot="feature2Label"></div>
+      <div class="i1-text" data-slot="feature2Body"></div>
+    </div>
+    <div class="i1-service" data-when="feature3">
+      <div class="i1-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="i1-label" data-slot="feature3Label"></div>
+      <div class="i1-text" data-slot="feature3Body"></div>
+    </div>
+  </div>
+
+  <div class="i1-foot">
+    <div class="i1-foot-item" data-when="website">
+      <svg aria-hidden="true"><use href="#ic-globe"/></svg>
+      <span data-slot="website"></span>
+    </div>
+    <div class="i1-foot-item">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <span data-slot="phone" data-fit></span>
+    </div>
+  </div>
+</div>

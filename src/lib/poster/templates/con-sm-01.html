@@ -1,0 +1,224 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Con-SM-1",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 760,
+      "reason": "the site at dusk, filling the band between the headline and the values row"
+    }
+  ]
+}
+</script>
+
+<!--
+  Con-SM-1 — the premium end of the vertical: cream and gold, a values row with a
+  sentence under each mark, and a dark foot carrying three ways to make contact.
+
+  Reference: /api/templates/5a621020-3e1c-4134-94d9-d163fb266b5e/thumbnail?full=1
+
+  The only Constructions design with service marks, and the only one that uses
+  `features[].body`. It is therefore the template in this vertical that would
+  catch a copy-stage regression, in the same way Med-SM-17 is in the other.
+
+  Its marks are the Medicals kit used out of register — a shield reads as
+  quality, a handshake as integrity — which is a reminder that the kit is a set
+  of drawings rather than a set of meanings. A Constructions-specific set (hard
+  hat, crane, blueprint) is the obvious next addition and would cost an hour.
+-->
+
+<style>
+  .b1 {
+    --hl-size: 62px;
+    --hl-stretch: 88%;
+    --hl-leading: 1.14;
+    --hl-ink: #2b2113;
+    --hl-accent: #8a6a2f;
+    --logo-w: 300px;
+    --logo-h: 120px;
+    --logo-filter: brightness(0);
+
+    position: absolute;
+    inset: 0;
+    background: #f7f3ea;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 48px 560px;
+    overflow: hidden;
+  }
+
+  .b1-headline { margin-top: 24px; text-align: center; }
+  .b1-sub {
+    margin-top: 12px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 30px;
+    font-stretch: 90%;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #8a6a2f;
+    text-align: center;
+  }
+
+  .b1-photo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 470px;
+    height: 620px;
+    z-index: 0;
+  }
+
+  /* --- the values row --------------------------------------------------- */
+  .b1-values {
+    position: absolute;
+    left: 40px;
+    right: 40px;
+    bottom: 300px;
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    z-index: 2;
+  }
+  .b1-value {
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .b1-badge {
+    width: 76px;
+    height: 76px;
+    border-radius: 50%;
+    background: #8a6a2f;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    color: #f7f3ea;
+  }
+  .b1-badge svg { width: 38px; height: 46px; }
+  .b1-label {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 25px;
+    font-stretch: 90%;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #2b2113;
+    text-align: center;
+  }
+  .b1-body {
+    font-size: 20px;
+    line-height: 1.28;
+    color: #6d5f4a;
+    text-align: center;
+    max-width: 180px;
+  }
+
+  /* --- the dark foot ---------------------------------------------------- */
+  .b1-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 300px;
+    background: #1d2433;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 0 44px;
+    z-index: 3;
+  }
+  .b1-promise {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 36px;
+    font-stretch: 90%;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #d8b25f;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .b1-phone { display: flex; align-items: center; gap: 18px; max-width: 100%; }
+  .b1-phone svg { width: 62px; height: 62px; flex: none; color: #d8b25f; }
+  .b1-phone span {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 62px;
+    font-stretch: 84%;
+    font-weight: 800;
+    color: #ffffff;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .b1-web {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 24px;
+    color: #b9c2d2;
+  }
+  .b1-web svg { width: 32px; height: 32px; flex: none; color: #d8b25f; }
+</style>
+
+<div class="b1">
+  <div class="b1-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline b1-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <div class="b1-sub" data-slot="eyebrow"></div>
+
+  <div class="b1-values">
+    <div class="b1-value" data-when="feature1">
+      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="b1-label" data-slot="feature1Label"></div>
+      <div class="b1-body" data-slot="feature1Body"></div>
+    </div>
+    <div class="b1-value" data-when="feature2">
+      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="b1-label" data-slot="feature2Label"></div>
+      <div class="b1-body" data-slot="feature2Body"></div>
+    </div>
+    <div class="b1-value" data-when="feature3">
+      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="b1-label" data-slot="feature3Label"></div>
+      <div class="b1-body" data-slot="feature3Body"></div>
+    </div>
+    <div class="b1-value" data-when="feature4">
+      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="b1-label" data-slot="feature4Label"></div>
+      <div class="b1-body" data-slot="feature4Body"></div>
+    </div>
+  </div>
+
+  <div class="b1-foot">
+    <div class="b1-promise" data-slot="ctaLabel"></div>
+    <div class="b1-phone">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <span data-slot="phone" data-fit></span>
+    </div>
+    <div class="b1-web" data-when="website">
+      <svg aria-hidden="true"><use href="#ic-globe"/></svg>
+      <span data-slot="website"></span>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,140 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Con-SM-3",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 0,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "subject",
+      "role": "slot",
+      "width": 760,
+      "height": 620,
+      "reason": "the single object, cut out and centred under the headline"
+    }
+  ]
+}
+</script>
+
+<!--
+  Con-SM-3 — centred, on a deep red field, with everything stacked down the
+  middle and a rule above the website.
+
+  Reference: /api/templates/42891e31-bc8d-46da-94ff-5a0ff26a7990/thumbnail?full=1
+
+  The only centred composition in this vertical, and the one that most wants its
+  object cut out: with everything else on the centre line, a rectangular photo
+  edge would be the only straight vertical in the design and would read as a
+  mistake.
+-->
+
+<style>
+  .c3 {
+    --hl-size: 68px;
+    --hl-stretch: 88%;
+    --hl-leading: 1.12;
+    --hl-ink: #ffffff;
+    --hl-accent: #f0b323;
+    --logo-w: 240px;
+    --logo-h: 70px;
+    --logo-filter: brightness(0);
+
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(80% 50% at 50% 62%, #7e2a1f 0%, rgba(126, 42, 31, 0) 72%),
+      linear-gradient(180deg, #6b2118 0%, #571a13 100%);
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 44px 52px 300px;
+    overflow: hidden;
+  }
+
+  .c3-logo {
+    background: #ffffff;
+    border: 3px solid #101010;
+    padding: 8px 14px;
+    flex: none;
+    z-index: 2;
+  }
+
+  .c3-headline { margin-top: 40px; text-align: center; }
+  .c3-sub {
+    margin-top: 20px;
+    max-width: 620px;
+    font-size: 34px;
+    line-height: 1.24;
+    color: #f6e0d8;
+    text-align: center;
+  }
+
+  .c3-object {
+    flex: 1 1 auto;
+    min-height: 150px;
+    width: 100%;
+    margin-top: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+  }
+
+  .c3-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 300px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 0 52px;
+    z-index: 2;
+  }
+  .c3-cta {
+    font-size: 34px;
+    color: #f6e0d8;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .c3-call { display: flex; align-items: baseline; gap: 16px; max-width: 100%; }
+  .c3-call i,
+  .c3-call span {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-stretch: 86%;
+    white-space: nowrap;
+  }
+  .c3-call i { font-style: normal; font-size: 46px; font-weight: 700; color: #ffffff; }
+  .c3-call span { font-size: 56px; font-weight: 800; color: #f0b323; min-width: 0; }
+  .c3-rule { width: 100%; max-width: 620px; height: 3px; background: #f0b323; }
+  .c3-web { font-size: 27px; font-weight: 600; color: #f6e0d8; white-space: nowrap; }
+</style>
+
+<div class="c3">
+  <div class="pk-logo c3-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline c3-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <div class="c3-sub" data-slot="body"></div>
+
+  <div class="c3-object"><img class="pk-subject" data-image="hero" alt=""></div>
+
+  <div class="c3-foot">
+    <div class="c3-cta" data-slot="ctaLabel"></div>
+    <div class="c3-call">
+      <i data-slot="callLabel"></i>
+      <span data-slot="phone" data-fit></span>
+    </div>
+    <div class="c3-rule"></div>
+    <div class="c3-web" data-slot="website" data-when="website"></div>
+  </div>
+</div>

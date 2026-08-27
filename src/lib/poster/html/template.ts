@@ -103,6 +103,15 @@ export interface HtmlTemplate {
  * type error, and `check:templates` proves each entry resolves to a real file.
  */
 export const HTML_TEMPLATE_SLUGS = [
+  'con-sm-01',
+  'con-sm-02',
+  'con-sm-03',
+  'con-sm-04',
+  'con-sm-05',
+  'con-sm-06',
+  'con-sm-07',
+  'int-sm-01',
+  'int-sm-03',
   'med-sm-01',
   'med-sm-03',
   'med-sm-04',

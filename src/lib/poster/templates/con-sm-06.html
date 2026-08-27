@@ -1,0 +1,183 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Con-SM-6",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 0,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "subject",
+      "role": "slot",
+      "width": 820,
+      "height": 620,
+      "reason": "the plant or tool, cut out, standing on the black band"
+    }
+  ]
+}
+</script>
+
+<!--
+  Con-SM-6 — the Constructions house style: one strong field, caps headline, a
+  coloured subhead, a cut-out object, a band carrying the ask, a website strip.
+
+  Reference: /api/templates/69eec1c9-3140-4c60-b5f7-2d05cb765331/thumbnail?full=1
+
+  This vertical maps PosterCopy differently from Medicals, and the mapping is the
+  thing to understand before reading the other eight:
+
+    headlineLines   the caps headline, accent line in the alarm colour
+    body            the subhead under it
+    ctaLabel        the line above the number — an invitation, not a button
+    callLabel       the word before the number ("Call")
+    website         the strip at the very foot
+
+  No service marks at all, which is why `featureCount` is 0. A day's copy still
+  carries features and this draws none of them, exactly as a template without a
+  body slot ignores `body`.
+-->
+
+<style>
+  .c6 {
+    --hl-size: 82px;
+    --hl-stretch: 88%;
+    --hl-leading: 1.08;
+    --hl-ink: #101010;
+    --hl-accent: #101010;
+    --logo-w: 250px;
+    --logo-h: 74px;
+    --logo-filter: brightness(0);
+
+    position: absolute;
+    inset: 0;
+    background: #ffd400;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 44px 52px 470px;
+    overflow: hidden;
+  }
+
+  .c6-logo {
+    border: 4px solid #101010;
+    padding: 8px 14px;
+    flex: none;
+  }
+
+  .c6-headline { margin-top: 34px; }
+  .c6-sub {
+    margin-top: 18px;
+    max-width: 520px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 46px;
+    font-stretch: 92%;
+    font-weight: 700;
+    line-height: 1.16;
+    color: #d92b1c;
+  }
+
+  /* The object stands on the band rather than floating over the field. */
+  .c6-object {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 300px;
+    height: 640px;
+    z-index: 0;
+  }
+  .c6-object img { --subject-anchor: bottom center; }
+
+  .c6-band {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 74px;
+    height: 300px;
+    background: #101010;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    padding: 0 44px;
+    z-index: 1;
+  }
+  .c6-cta {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 38px;
+    font-stretch: 90%;
+    font-weight: 700;
+    color: #ffd400;
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
+  .c6-call {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    max-width: 100%;
+  }
+  .c6-call i {
+    font-style: normal;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 46px;
+    font-stretch: 90%;
+    font-weight: 700;
+    color: #ffffff;
+    white-space: nowrap;
+  }
+  .c6-call span {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 56px;
+    font-stretch: 84%;
+    font-weight: 800;
+    color: #ffffff;
+    white-space: nowrap;
+    min-width: 0;
+  }
+
+  .c6-strip {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 74px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+  }
+  .c6-strip span {
+    font-size: 27px;
+    font-weight: 600;
+    color: #101010;
+    white-space: nowrap;
+  }
+</style>
+
+<div class="c6">
+  <div class="pk-logo c6-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline c6-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <div class="c6-sub" data-slot="body"></div>
+
+  <div class="c6-object"><img class="pk-subject" data-image="hero" alt=""></div>
+
+  <div class="c6-band">
+    <div class="c6-cta" data-slot="ctaLabel"></div>
+    <div class="c6-call">
+      <i data-slot="callLabel"></i>
+      <span data-slot="phone" data-fit></span>
+    </div>
+  </div>
+
+  <div class="c6-strip" data-when="website">
+    <span data-slot="website"></span>
+  </div>
+</div>

@@ -1,0 +1,162 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Con-SM-4",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 0,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 900,
+      "reason": "the crew at work, filling the middle band between the headline and the lockup"
+    }
+  ]
+}
+</script>
+
+<!--
+  Con-SM-4 — dark teal-to-navy, headline top left, photograph through the middle,
+  lockup and number beneath it.
+
+  Reference: /api/templates/1df471e4-7edb-48f2-819f-507e8048ac67/thumbnail?full=1
+
+  Its ground carries a faint circuit tracery in the reference, drawn here as a
+  repeating linear gradient rather than as artwork: at this opacity the pattern
+  is texture rather than an image, and texture that scales with the canvas beats
+  a bitmap that does not.
+-->
+
+<style>
+  .c4 {
+    --hl-size: 62px;
+    --hl-stretch: 90%;
+    --hl-leading: 1.14;
+    --hl-ink: #ffffff;
+    --hl-accent: #ffffff;
+    --logo-w: 240px;
+    --logo-h: 70px;
+    --logo-filter: brightness(0);
+
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(150deg, #0b3a44 0%, #0a2a44 46%, #071c33 100%);
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 60px 52px 430px;
+    overflow: hidden;
+  }
+  /* Texture, not artwork: it scales with the canvas and costs nothing. */
+  .c4::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      repeating-linear-gradient(90deg, rgba(120, 200, 210, 0.10) 0 1px, transparent 1px 64px),
+      repeating-linear-gradient(0deg, rgba(120, 200, 210, 0.07) 0 1px, transparent 1px 64px);
+    z-index: 0;
+  }
+
+  .c4-headline { position: relative; z-index: 1; }
+  .c4-sub {
+    position: relative;
+    z-index: 1;
+    margin-top: 20px;
+    max-width: 480px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 42px;
+    font-stretch: 92%;
+    font-weight: 700;
+    line-height: 1.16;
+    color: #8ed64a;
+  }
+
+  .c4-photo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 520px;
+    height: 700px;
+    z-index: 0;
+  }
+  .c4-photo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, rgba(10, 42, 68, 0.9) 0%, rgba(10, 42, 68, 0) 22%),
+      linear-gradient(0deg, rgba(7, 28, 51, 0.92) 0%, rgba(7, 28, 51, 0) 26%);
+  }
+
+  .c4-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 76px;
+    height: 340px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 26px;
+    padding: 0 52px;
+    z-index: 2;
+  }
+  .c4-logo {
+    background: #ffffff;
+    border: 3px solid #101010;
+    padding: 8px 14px;
+    flex: none;
+  }
+  .c4-call { display: flex; align-items: baseline; gap: 16px; max-width: 100%; }
+  .c4-call i,
+  .c4-call span {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-stretch: 86%;
+    white-space: nowrap;
+  }
+  .c4-call i { font-style: normal; font-size: 44px; font-weight: 700; color: #ffffff; }
+  .c4-call span { font-size: 54px; font-weight: 800; color: #8ed64a; min-width: 0; }
+
+  .c4-strip {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+  }
+  .c4-strip span { font-size: 26px; font-weight: 600; color: #cfe4ea; white-space: nowrap; }
+</style>
+
+<div class="c4">
+  <div class="pk-headline c4-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <div class="c4-sub" data-slot="body"></div>
+
+  <div class="c4-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="c4-foot">
+    <div class="pk-logo c4-logo"><img data-image="logo" alt=""></div>
+    <div class="c4-call">
+      <i data-slot="callLabel"></i>
+      <span data-slot="phone" data-fit></span>
+    </div>
+  </div>
+
+  <div class="c4-strip" data-when="website">
+    <span data-slot="website"></span>
+  </div>
+</div>
