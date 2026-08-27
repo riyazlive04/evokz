@@ -58,7 +58,8 @@
           "photoKind": "subject",
           "slots": [
             "photo"
-          ]
+          ],
+          "backdrop": "blob"
         }
       ]
     },
