@@ -211,6 +211,32 @@ export function validatePlateSpec(spec: PosterPlateSpec): PlateSpecProblem[] {
   });
 
   /*
+   * A region that runs off the bottom cannot grow back onto the canvas.
+   *
+   * Boxes are deliberately allowed outside the frame — a headline bleeding off
+   * the right edge is a real design, and clamping it here would silently move
+   * what somebody placed. The bottom is the exception, because that is the edge
+   * where content is *lost* rather than cropped: a slot's component has a minimum
+   * height of its own, it grows downward from `y`, and the canvas clips. A
+   * contact bar measured at 7% of the plate against a component minimum nearer
+   * 13% is a phone number sliced in half, and nothing downstream can notice.
+   *
+   * Reported rather than clamped, and only for the bottom edge, so the operator
+   * who placed the box is the one who decides where it should have gone.
+   */
+  spec.text.forEach((region, index) => {
+    const bottom = region.y + region.h;
+    if (bottom > 1) {
+      problems.push({
+        path: `text[${index}]`,
+        message:
+          `puts the "${region.slot}" slot ${((bottom - 1) * 100).toFixed(0)}% past the ` +
+          'bottom of the plate, where the canvas clips it. Move it up, or make it shorter.',
+      });
+    }
+  });
+
+  /*
    * Two slots cannot occupy the same pixels.
    *
    * A plate cannot reflow, so overlapping regions are not a tight fit that

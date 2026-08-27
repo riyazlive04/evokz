@@ -1164,6 +1164,21 @@ export interface ContactBarProps {
    */
   variant: 'accent' | 'dark';
   /**
+   * Whether this bar still owes the canvas its margin.
+   *
+   * True on the grid, where the bar is full-canvas-width and `SELF_BLEEDING`
+   * deliberately stops its cell padding it — so the bar applies the margin
+   * itself, once, and every poster in a campaign lines up.
+   *
+   * **False on a plate, where the region box already is the inset.** A measured
+   * footer hugs the ink the designer drew; insetting inside it a second time
+   * subtracts the margin from both the usable room and the padding, which
+   * narrows the bar enough to force `stack` and then pushes the taller stacked
+   * bar off the bottom edge, where the canvas clip eats it. That is the sliced
+   * phone number.
+   */
+  inset?: boolean;
+  /**
    * The colours that read on what is actually behind this bar.
    *
    * Read only when `transparent` is set, and required in practice whenever it
@@ -1217,6 +1232,7 @@ export function ContactBar({
   transparent = false,
   align = 'start',
   width,
+  inset = true,
 }: ContactBarProps) {
   const onAccent = variant === 'accent';
   const background = onAccent ? theme.accent : theme.darkNeutral;
@@ -1287,9 +1303,11 @@ export function ContactBar({
    * halves stay optically matched — a bar whose phone number is set two points
    * larger than its website reads as a mistake.
    */
+  const edgeInset = inset ? metrics.margin : 0;
+
   const roomFor = (columns: number) =>
     barWidth / Math.max(1, columns) -
-    metrics.margin -
+    edgeInset -
     metrics.contact.badge -
     metrics.s(46);
 
@@ -1333,8 +1351,8 @@ export function ContactBar({
         ...(transparent ? {} : { backgroundColor: background }),
         alignItems: stack ? FLEX_ALIGN[align] : 'center',
         justifyContent: 'center',
-        paddingLeft: metrics.margin,
-        paddingRight: metrics.margin,
+        paddingLeft: edgeInset,
+        paddingRight: edgeInset,
         paddingTop: metrics.s(18),
         paddingBottom: metrics.s(18),
       }}

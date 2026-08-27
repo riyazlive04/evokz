@@ -514,6 +514,8 @@ function renderSlot(
           align={align}
           variant="accent"
           transparent
+          // The region box already is the inset — see `ContactBarProps.inset`.
+          inset={false}
           ground={ground}
         />
       );
