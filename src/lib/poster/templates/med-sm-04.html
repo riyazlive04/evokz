@@ -1,0 +1,170 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-4",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "subject",
+      "role": "slot",
+      "width": 520,
+      "height": 700,
+      "reason": "the emblem held in open hands — one object on transparency, right of the copy column"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-4 — "We Care / For You" on navy, with a lit emblem to the right of the
+  service list.
+
+  Reference: /api/templates/9d98d335-ea66-4869-984c-c0e50c2292bb/thumbnail?full=1
+
+  Two things distinguish it from Med-SM-16, which it otherwise resembles. Its
+  service rows are joined by a dotted rule, so the four read as a sequence rather
+  than as four independent marks — drawn here as a border on the row rather than
+  as a separate element, so a dropped feature takes its own connector with it.
+  And its contact bar is a white pill floating clear of the edge rather than a
+  band running to it.
+-->
+
+<style>
+  .p4 {
+    --hl-size: 96px;
+    --hl-stretch: 88%;
+    --hl-leading: 1.12;
+    --hl-ink: #ffffff;
+    --hl-accent: #2fd0e0;
+    --rule-ink: #6fe0ea;
+    --logo-w: 320px;
+    --logo-h: 140px;
+    --logo-filter: brightness(0) invert(1);
+    --bar-h: 0px;
+    --phone-ink: #0f2f6b;
+
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(70% 44% at 74% 52%, #0d4f9c 0%, rgba(13, 79, 156, 0) 70%),
+      linear-gradient(168deg, #04122f 0%, #07234f 46%, #030f28 100%);
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 40px 52px 230px;
+    overflow: hidden;
+  }
+
+  .p4-headline { margin-top: 30px; text-transform: none; }
+  .p4-pulse { margin-top: 18px; width: 340px; height: 50px; }
+
+  .p4-list {
+    flex: 0 1 auto;
+    min-height: 0;
+    margin-top: 30px;
+    display: flex;
+    flex-direction: column;
+    z-index: 1;
+  }
+  .p4-item {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    padding: 22px 0;
+    /* The connector belongs to the row, so a dropped feature removes its own. */
+    border-bottom: 2px dotted rgba(120, 200, 230, 0.45);
+  }
+  .p4-item:last-child { border-bottom: none; }
+  .p4-badge {
+    --ring-size: 82px;
+    --ring-ink: #6fe0ea;
+    --icon-ink: #ffffff;
+    --ring-icon-w: 40px;
+    --ring-icon-h: 50px;
+  }
+  .p4-label {
+    font-size: 33px;
+    font-weight: 600;
+    line-height: 1.16;
+    letter-spacing: -0.008em;
+    color: #ffffff;
+    max-width: 330px;
+  }
+
+  .p4-emblem {
+    position: absolute;
+    right: 10px;
+    top: 560px;
+    width: 470px;
+    height: 620px;
+    z-index: 0;
+  }
+  .p4-emblem img { --subject-anchor: center; }
+
+  /* A pill clear of the edges, not a band running to them. */
+  .p4-pill {
+    position: absolute;
+    left: 44px;
+    right: 44px;
+    bottom: 74px;
+    background: #ffffff;
+    border-radius: 22px;
+    box-shadow: 0 8px 26px rgba(0, 10, 32, 0.4);
+    padding: 20px 30px 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    z-index: 3;
+  }
+  .p4-pill .pk-phone { padding: 0; --phone-gap: 22px; }
+  .p4-pill .pk-phone svg { color: #0f2f6b; }
+  .p4-pill .pk-number { font-size: 74px; }
+  .p4-pill .pk-strapline { padding: 0; --strap-ink: #21618a; --strap-rule-ink: #9fc6d8; }
+</style>
+
+<div class="p4">
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline p4-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="pk-pulse p4-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p4-list">
+    <div class="p4-item" data-when="feature1">
+      <div class="pk-ring p4-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="p4-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p4-item" data-when="feature2">
+      <div class="pk-ring p4-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="p4-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p4-item" data-when="feature3">
+      <div class="pk-ring p4-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="p4-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p4-item" data-when="feature4">
+      <div class="pk-ring p4-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="p4-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="p4-emblem"><img class="pk-subject" data-image="hero" alt=""></div>
+
+  <div class="p4-pill">
+    <div class="pk-phone">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="pk-number" data-slot="phone" data-fit></div>
+    </div>
+    <div class="pk-strapline" data-when="tagline">
+      <i></i><span data-slot="tagline"></span><i></i>
+    </div>
+  </div>
+</div>

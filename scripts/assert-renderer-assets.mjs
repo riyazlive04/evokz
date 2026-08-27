@@ -17,7 +17,16 @@ import { chromium } from 'playwright';
 
 const problems = [];
 
-const templates = read('src/lib/poster/templates').filter((f) => f.endsWith('.html'));
+const dir = read('src/lib/poster/templates');
+const templates = dir.filter((f) => f.endsWith('.html'));
+for (const shared of ['_kit.svg', '_base.css']) {
+  if (!dir.includes(shared)) {
+    problems.push(
+      `${shared} is missing. Every template depends on it, so its absence fails ` +
+        'the whole fleet rather than one poster.',
+    );
+  }
+}
 if (templates.length === 0) {
   problems.push(
     'No poster templates in the image. The runner stage must COPY ' +

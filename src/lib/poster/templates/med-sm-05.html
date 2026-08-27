@@ -1,0 +1,172 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-5",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 820,
+      "reason": "the still life on a pale surface, filling the middle band under the headline"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-5 — "Your Health / Our Commitment" over a still life, with a card row
+  lying across the picture's foot.
+
+  Reference: /api/templates/b96da48b-d36f-49ad-92bb-0c9bd811411d/thumbnail?full=1
+
+  Structurally Med-SM-6 with the photograph cropped to a band rather than run to
+  the bleed, and the card row opaque rather than glass. Worth saying plainly:
+  after ten of these, most of a Medicals template is arrangement. The pieces —
+  logo, two-tone sentence-case headline, heartbeat rule, four marks, a contact
+  bar — are the same pieces every time, which is why they live in _base.css and
+  _kit.svg and not here.
+-->
+
+<style>
+  .p5 {
+    --hl-size: 82px;
+    --hl-stretch: 90%;
+    --hl-leading: 1.16;
+    --hl-ink: #0f2f6b;
+    --hl-accent: #0b7f8c;
+    --rule-ink: #0b7f8c;
+    --logo-w: 320px;
+    --logo-h: 140px;
+    --bar-h: 200px;
+    --bar-bg: #0b7f8c;
+    --phone-ink: #ffffff;
+    --num-size: 78px;
+    --num-stretch: 80%;
+    --phone-icon: 74px;
+    --strap-size: 30px;
+    --strap-ink: #dff2f4;
+    --strap-rule-ink: #7cc7ce;
+
+    position: absolute;
+    inset: 0;
+    background: #f7fafc;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 44px 200px;
+    overflow: hidden;
+  }
+
+  .p5-photo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 470px;
+    bottom: 200px;
+    z-index: 0;
+  }
+  .p5-photo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(247, 250, 252, 0.96) 0%, rgba(247, 250, 252, 0) 20%);
+  }
+  .p5 > .pk-logo,
+  .p5 > .p5-headline,
+  .p5 > .p5-pulse {
+    position: relative;
+    z-index: 1;
+  }
+
+  .p5-headline {
+    margin-top: 28px;
+    text-align: center;
+    text-transform: none;
+  }
+  .p5-pulse { margin-top: 16px; width: 520px; height: 52px; }
+
+  .p5-cards {
+    position: absolute;
+    left: 40px;
+    right: 40px;
+    bottom: 228px;
+    display: flex;
+    justify-content: center;
+    background: #ffffff;
+    border-radius: 16px;
+    box-shadow: 0 6px 22px rgba(9, 60, 80, 0.14);
+    overflow: hidden;
+    z-index: 1;
+  }
+  .p5-card {
+    flex: 1 1 0;
+    min-height: 168px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 20px 8px;
+    color: #0b7f8c;
+  }
+  .p5-card + .p5-card { border-left: 1px solid rgba(11, 127, 140, 0.14); }
+  .p5-card svg { width: 54px; height: 66px; flex: none; }
+  .p5-label {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 25px;
+    font-stretch: 88%;
+    font-weight: 600;
+    line-height: 1.12;
+    text-align: center;
+    color: #123b52;
+    max-width: 176px;
+  }
+</style>
+
+<div class="p5">
+  <div class="p5-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline p5-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="pk-pulse p5-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p5-cards">
+    <div class="p5-card" data-when="feature1">
+      <svg aria-hidden="true"><use href="#ic-stethoscope"/></svg>
+      <div class="p5-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p5-card" data-when="feature2">
+      <svg aria-hidden="true"><use href="#ic-microscope"/></svg>
+      <div class="p5-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p5-card" data-when="feature3">
+      <svg aria-hidden="true"><use href="#ic-therapist"/></svg>
+      <div class="p5-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p5-card" data-when="feature4">
+      <svg aria-hidden="true"><use href="#ic-scanner"/></svg>
+      <div class="p5-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="pk-bar">
+    <div class="pk-phone">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="pk-number" data-slot="phone" data-fit></div>
+    </div>
+    <div class="pk-strapline" data-when="tagline">
+      <i></i><span data-slot="tagline"></span><i></i>
+    </div>
+  </div>
+</div>

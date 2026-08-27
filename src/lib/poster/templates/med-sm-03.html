@@ -1,0 +1,177 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-3",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 560,
+      "height": 1300,
+      "reason": "a tall portrait crop filling the right column behind the curve"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-3 — teal field on the left, photograph on the right, divided by an
+  S-curve rather than a straight edge.
+
+  Reference: /api/templates/c7c24a2f-93f9-4d47-92b3-ac22b44a8c4f/thumbnail?full=1
+
+  The curve is the whole design, and it is the reason this one could not have
+  been drawn before: the layout spec's chrome was a card, a blob and a dome, so a
+  full-height sweep dividing the poster into two fields had no word. Here it is a
+  clip path on the teal field, which means the photograph behind it needs no
+  matching mask — the two always meet exactly, whatever the day's still is.
+-->
+
+<style>
+  .p3 {
+    --hl-size: 84px;
+    --hl-stretch: 90%;
+    --hl-leading: 1.16;
+    --hl-ink: #ffffff;
+    --hl-accent: #7fe3e0;
+    --rule-ink: #7fe3e0;
+    --logo-w: 300px;
+    --logo-h: 130px;
+    --bar-h: 190px;
+    --bar-bg: transparent;
+    --phone-ink: #ffffff;
+    --num-size: 78px;
+    --num-stretch: 80%;
+    --phone-icon: 76px;
+    --strap-size: 30px;
+    --strap-ink: #cfeeee;
+    --strap-rule-ink: #6bbfc0;
+
+    position: absolute;
+    inset: 0;
+    background: #f4f8f9;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 210px 48px 190px;
+    overflow: hidden;
+  }
+
+  .p3-photo { position: absolute; inset: 0; z-index: 0; }
+
+  /*
+   * The teal field, cut by an S-curve. Drawn as an SVG rather than a
+   * border-radius because the sweep crosses the whole height and reverses — no
+   * corner rounding expresses that, and a clip-path on the field keeps the
+   * photograph behind it unmasked.
+   */
+  .p3-field {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+  }
+  .p3 > .pk-logo,
+  .p3 > .p3-headline,
+  .p3 > .p3-pulse,
+  .p3 > .p3-list {
+    position: relative;
+    z-index: 2;
+  }
+
+  .pk-logo { align-self: flex-end; margin-right: 10px; }
+
+  .p3-headline { margin-top: 40px; text-transform: none; }
+  .p3-pulse { margin-top: 18px; width: 360px; height: 50px; }
+
+  .p3-list {
+    flex: 0 1 auto;
+    min-height: 0;
+    margin-top: 34px;
+    display: flex;
+    flex-direction: column;
+  }
+  .p3-item {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    padding: 20px 0;
+    border-bottom: 2px dotted rgba(190, 235, 235, 0.5);
+  }
+  .p3-item:last-child { border-bottom: none; }
+  .p3-badge {
+    --ring-size: 78px;
+    --ring-ink: #b7ecea;
+    --icon-ink: #ffffff;
+    --ring-icon-w: 38px;
+    --ring-icon-h: 48px;
+  }
+  .p3-label {
+    font-size: 32px;
+    font-weight: 600;
+    line-height: 1.16;
+    letter-spacing: -0.008em;
+    color: #ffffff;
+    max-width: 300px;
+  }
+
+  .p3 .pk-bar { z-index: 3; }
+</style>
+
+<div class="p3">
+  <div class="p3-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <svg class="p3-field" viewBox="0 0 900 1600" preserveAspectRatio="none" aria-hidden="true">
+    <defs>
+      <linearGradient id="p3-teal" x1="0" y1="0" x2="0.9" y2="1">
+        <stop offset="0" stop-color="#0e6f74"/>
+        <stop offset="0.55" stop-color="#0a5e66"/>
+        <stop offset="1" stop-color="#07474f"/>
+      </linearGradient>
+    </defs>
+    <path fill="url(#p3-teal)"
+          d="M0 0h430c-60 180 120 300 150 470 34 196-140 300-96 470 36 140 170 200 210 300 30 74 22 220 22 360H0z"/>
+  </svg>
+
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline p3-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="pk-pulse p3-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p3-list">
+    <div class="p3-item" data-when="feature1">
+      <div class="pk-ring p3-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="p3-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p3-item" data-when="feature2">
+      <div class="pk-ring p3-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="p3-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p3-item" data-when="feature3">
+      <div class="pk-ring p3-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="p3-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p3-item" data-when="feature4">
+      <div class="pk-ring p3-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="p3-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="pk-bar">
+    <div class="pk-phone">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="pk-number" data-slot="phone" data-fit></div>
+    </div>
+    <div class="pk-strapline" data-when="tagline">
+      <i></i><span data-slot="tagline"></span><i></i>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,305 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-17",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 3,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "subject",
+      "role": "slot",
+      "width": 430,
+      "height": 620,
+      "reason": "the clinician, cut out, standing over the panel edge on the right"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-17 — the prospectus layout: a headline panel, a card of services with
+  body copy, a call to action, and a three-up contact row.
+
+  Reference: /api/templates/020cc456-55f3-4f26-a329-c70f4a6ff972/thumbnail?full=1
+
+  The one design in the vertical that uses most of PosterCopy. Everywhere else
+  `body`, `ctaLabel` and `websiteLabel` are written by the copy stage and drawn
+  by nobody — which is legal and always has been, in the same way a template with
+  no body slot ignores `body`. Here they all land, which makes this the template
+  that would catch a regression in any of them.
+
+  Two things it does that no other reference does: its headline is sentence case
+  rather than caps, so it overrides the shared `text-transform`; and its services
+  carry a sentence each, so the rows are three rather than four. Ground sampled
+  at #012027 with the panels at #0c5968.
+-->
+
+<style>
+  .p17 {
+    --hl-size: 62px;
+    --hl-stretch: 92%;
+    --hl-leading: 1.16;
+    --hl-ink: #ffffff;
+    --hl-accent: #5cd7dd;
+    --rule-ink: #5cd7dd;
+    --logo-w: 300px;
+    --logo-h: 128px;
+    --logo-filter: brightness(0) invert(1);
+    --bar-h: 0px;
+    --phone-ink: #ffffff;
+
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(80% 50% at 76% 34%, #10606f 0%, rgba(16, 96, 111, 0) 72%),
+      linear-gradient(165deg, #012027 0%, #022b34 55%, #012027 100%);
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 34px 34px 24px;
+    overflow: hidden;
+  }
+
+  /* The dotted field the reference scatters across its corners. */
+  .p17::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(circle, rgba(120, 210, 216, 0.30) 1.6px, transparent 1.8px);
+    background-size: 22px 22px;
+    -webkit-mask-image:
+      radial-gradient(46% 26% at 6% 4%, #000 0%, transparent 100%),
+      radial-gradient(40% 20% at 96% 44%, #000 0%, transparent 100%);
+    z-index: 0;
+  }
+  .p17 > * { position: relative; z-index: 1; }
+
+  /* --- headline panel --------------------------------------------------- */
+  .p17-panel {
+    flex: none;
+    margin-top: 18px;
+    width: 100%;
+    min-height: 300px;
+    border-radius: 34px;
+    background: linear-gradient(150deg, #0d5c6c 0%, #084754 100%);
+    padding: 44px 400px 40px 46px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .p17-headline {
+    /* Sentence case, uniquely in this library. */
+    text-transform: none;
+    white-space: normal;
+  }
+  .p17-pulse {
+    margin-top: 20px;
+    width: 250px;
+    height: 40px;
+    align-self: flex-start;
+  }
+
+  /* --- services --------------------------------------------------------- */
+  .p17-card {
+    flex: 1 1 auto;
+    min-height: 0;
+    margin-top: 22px;
+    width: 100%;
+    border-radius: 30px;
+    background: #f6fbfb;
+    padding: 30px 400px 26px 34px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 22px;
+  }
+  .p17-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
+  }
+  .p17-badge {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    background: #0b5563;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    color: #ffffff;
+  }
+  .p17-badge svg { width: 34px; height: 42px; }
+  .p17-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .p17-label {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 27px;
+    font-stretch: 90%;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: #0b3f4b;
+  }
+  .p17-body {
+    font-size: 22px;
+    line-height: 1.34;
+    color: #4a6b72;
+  }
+
+  .p17-cta {
+    align-self: flex-start;
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: #0b5563;
+    color: #ffffff;
+    border-radius: 999px;
+    padding: 14px 30px 14px 16px;
+    max-width: 460px;
+  }
+  .p17-cta em {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: #5cd7dd;
+    color: #04323c;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+  }
+  .p17-cta em svg { width: 24px; height: 24px; }
+  .p17-cta span {
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    overflow-wrap: anywhere;
+  }
+
+  /* --- figure ----------------------------------------------------------- */
+  .p17-figure {
+    position: absolute;
+    right: 8px;
+    bottom: 168px;
+    width: 400px;
+    height: 800px;
+    z-index: 2;
+  }
+  .p17-figure img { --subject-anchor: bottom right; }
+
+  /* --- three-up contact row --------------------------------------------- */
+  .p17-contacts {
+    flex: none;
+    margin-top: 20px;
+    width: 100%;
+    border-radius: 26px;
+    background: #f6fbfb;
+    padding: 20px 26px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    z-index: 3;
+  }
+  .p17-contact {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+  .p17-contact > svg {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    background: #0b5563;
+    color: #ffffff;
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    font-weight: 700;
+  }
+  .p17-contact svg use { color: #ffffff; }
+  .p17-contact-text { display: flex; flex-direction: column; min-width: 0; }
+  .p17-contact-text i {
+    font-style: normal;
+    font-size: 17px;
+    color: #6d8c92;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+  .p17-contact-text span {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 25px;
+    font-stretch: 88%;
+    font-weight: 700;
+    color: #0b3f4b;
+    overflow-wrap: anywhere;
+  }
+  .p17-divider { width: 1px; align-self: stretch; background: #d6e6e8; flex: none; }
+</style>
+
+<div class="p17">
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="p17-panel">
+    <div class="pk-headline p17-headline" data-fit>
+      <template data-repeat="headline">
+        <div data-slot="line"></div>
+      </template>
+    </div>
+    <svg class="pk-pulse p17-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+  </div>
+
+  <div class="p17-card">
+    <div class="p17-row" data-when="feature1">
+      <div class="p17-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="p17-text">
+        <div class="p17-label" data-slot="feature1Label"></div>
+        <div class="p17-body" data-slot="feature1Body"></div>
+      </div>
+    </div>
+    <div class="p17-row" data-when="feature2">
+      <div class="p17-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="p17-text">
+        <div class="p17-label" data-slot="feature2Label"></div>
+        <div class="p17-body" data-slot="feature2Body"></div>
+      </div>
+    </div>
+    <div class="p17-row" data-when="feature3">
+      <div class="p17-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="p17-text">
+        <div class="p17-label" data-slot="feature3Label"></div>
+        <div class="p17-body" data-slot="feature3Body"></div>
+      </div>
+    </div>
+    <div class="p17-cta">
+      <em><svg aria-hidden="true"><use href="#ic-arrow"/></svg></em>
+      <span data-slot="ctaLabel"></span>
+    </div>
+  </div>
+
+  <div class="p17-figure"><img class="pk-subject" data-image="hero" alt=""></div>
+
+  <div class="p17-contacts">
+    <div class="p17-contact" data-when="website">
+      <svg class="p17-globe" aria-hidden="true"><use href="#ic-globe"/></svg>
+      <div class="p17-contact-text">
+        <i data-slot="websiteLabel"></i>
+        <span data-slot="website"></span>
+      </div>
+    </div>
+    <div class="p17-divider"></div>
+    <div class="p17-contact">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="p17-contact-text">
+        <i data-slot="callLabel"></i>
+        <span data-slot="phone"></span>
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,241 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-1",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "subject",
+      "role": "slot",
+      "width": 500,
+      "height": 780,
+      "reason": "the clinician, cut out, standing beside the services card"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-1 — the densest design in the vertical: logo, headline, body, a titled
+  services card, a figure, a banded promise, a contact bar and a call to action.
+
+  Reference: /api/templates/828b9a5c-f2f8-423e-9731-65be63e0c314/thumbnail?full=1
+
+  It is the only one that draws `body` *and* `ctaLabel` *and* four features with
+  their labels, which makes it the template most likely to catch a copy-stage
+  regression — and the one most sensitive to long copy, since everything is
+  stacked and there is little slack. The services card is therefore the block
+  that gives: it shrinks before anything else does.
+
+  The reference titles that card "OUR SERVICES". That title is not drawn here.
+  There is no field for it, and typing it would be exactly the hardcoded-words
+  fault `check:templates` exists to refuse — a heading is a word, however
+  decorative it looks.
+-->
+
+<style>
+  .p1 {
+    --hl-size: 72px;
+    --hl-stretch: 88%;
+    --hl-leading: 1.1;
+    --hl-ink: #0f2f6b;
+    --hl-accent: #0b8f8a;
+    --rule-ink: #0b8f8a;
+    --logo-w: 300px;
+    --logo-h: 120px;
+    --bar-h: 0px;
+    --phone-ink: #ffffff;
+    --num-size: 60px;
+    --num-stretch: 82%;
+    --phone-icon: 62px;
+
+    position: absolute;
+    inset: 0;
+    background: #f4f7fa;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 34px 44px 430px;
+    overflow: hidden;
+  }
+
+  .p1-photo { position: absolute; inset: 0; z-index: 0; }
+  .p1-photo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      100deg,
+      rgba(244, 247, 250, 0.97) 0%,
+      rgba(244, 247, 250, 0.9) 46%,
+      rgba(244, 247, 250, 0.3) 68%,
+      rgba(244, 247, 250, 0) 84%
+    );
+  }
+  .p1 > .pk-logo,
+  .p1 > .p1-headline,
+  .p1 > .p1-body,
+  .p1 > .p1-card {
+    position: relative;
+    z-index: 2;
+  }
+
+  .p1-headline { margin-top: 26px; }
+  .p1-body {
+    margin-top: 18px;
+    max-width: 400px;
+    font-size: 26px;
+    line-height: 1.32;
+    color: #45607f;
+  }
+
+  /* The block that gives when copy runs long. */
+  .p1-card {
+    flex: 0 1 auto;
+    min-height: 0;
+    margin-top: 24px;
+    width: 430px;
+    background: #ffffff;
+    border-radius: 14px;
+    box-shadow: 0 6px 20px rgba(12, 47, 107, 0.12);
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+  }
+  .p1-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid #e7edf4;
+  }
+  .p1-row:last-child { border-bottom: none; }
+  .p1-badge {
+    --ring-size: 52px;
+    --ring-ink: #0b8f8a;
+    --icon-ink: #0b8f8a;
+    --ring-icon-w: 26px;
+    --ring-icon-h: 32px;
+  }
+  .p1-label {
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 1.14;
+    color: #12345f;
+    max-width: 300px;
+  }
+
+  .p1-figure {
+    position: absolute;
+    right: -20px;
+    bottom: 430px;
+    width: 480px;
+    height: 800px;
+    z-index: 1;
+  }
+  .p1-figure img { --subject-anchor: bottom right; }
+
+  /* --- the banded foot -------------------------------------------------- */
+  .p1-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 430px;
+    background: linear-gradient(120deg, #0b6f77 0%, #0d3f77 52%, #0b2f63 100%);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 26px;
+    padding: 0 44px;
+    z-index: 3;
+  }
+  .p1-promise {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    color: #ffffff;
+  }
+  .p1-promise svg { width: 60px; height: 74px; flex: none; color: #7fe3e0; }
+  .p1-promise div {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 34px;
+    font-stretch: 90%;
+    font-weight: 700;
+    line-height: 1.12;
+    max-width: 520px;
+  }
+  .p1-contact {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 26px;
+  }
+  .p1-contact .pk-phone { width: auto; padding: 0; --phone-gap: 16px; }
+  .p1-cta {
+    background: #12b6a6;
+    color: #04333a;
+    border-radius: 999px;
+    padding: 18px 30px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 25px;
+    font-stretch: 90%;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    text-align: center;
+    max-width: 360px;
+    overflow-wrap: anywhere;
+  }
+</style>
+
+<div class="p1">
+  <div class="p1-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline p1-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <div class="p1-body" data-slot="body"></div>
+
+  <div class="p1-card">
+    <div class="p1-row" data-when="feature1">
+      <div class="pk-ring p1-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="p1-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p1-row" data-when="feature2">
+      <div class="pk-ring p1-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="p1-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p1-row" data-when="feature3">
+      <div class="pk-ring p1-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="p1-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p1-row" data-when="feature4">
+      <div class="pk-ring p1-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="p1-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="p1-figure"><img class="pk-subject" data-image="hero" alt=""></div>
+
+  <div class="p1-foot">
+    <div class="p1-promise" data-when="tagline">
+      <svg aria-hidden="true"><use href="#ic-therapist"/></svg>
+      <div data-slot="tagline"></div>
+    </div>
+    <div class="p1-contact">
+      <div class="pk-phone">
+        <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+        <div class="pk-number" data-slot="phone" data-fit></div>
+      </div>
+      <div class="p1-cta" data-slot="ctaLabel"></div>
+    </div>
+  </div>
+</div>

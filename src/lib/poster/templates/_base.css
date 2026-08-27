@@ -1,0 +1,186 @@
+/*
+ * The chrome every template in the library repeats.
+ *
+ * Med-SM-1 through 17 all carry a logo lockup, a two-tone headline, a heartbeat
+ * rule, and a contact bar holding a phone number over a strapline. They differ
+ * in colour, size and arrangement — never in what those pieces *are*. Writing
+ * them out per template meant twenty-one copies of the same forty lines, each
+ * free to drift, and the fleet is where drift stops being theoretical.
+ *
+ * So the pieces live here and are driven by custom properties. A template sets
+ * its own values on its root and lays them out; it never restates what a phone
+ * number is made of. Anything genuinely particular to one design — a heart mask,
+ * a wave, a card row — stays in that template, because that is the part with no
+ * shared answer.
+ *
+ * Every property has a fallback, so a template that sets none of them still
+ * renders something legible rather than collapsing. That matters because the
+ * failure mode of a missing custom property is silent: `color: var(--x)` with no
+ * `--x` and no fallback inherits, and a headline that inherits body colour looks
+ * like a design decision rather than a bug.
+ *
+ * Injected into every document by `buildDocument`, after the reset and before
+ * the template's own <style>, so a template can override any of it by writing
+ * the same declaration.
+ */
+
+/* --- logo ---------------------------------------------------------------- */
+.pk-logo {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pk-logo img {
+  /*
+   * A fixed box and `contain`, never max-width/max-height.
+   *
+   * An uploaded SVG logo usually carries a viewBox and no width or height, so it
+   * has an intrinsic ratio and no intrinsic size — as a flex item that resolves
+   * to a used size of 0x0. The mark loads, reports a sensible naturalWidth, and
+   * draws nothing at all, leaving the top of the poster empty with no error
+   * anywhere. This rule is why that can only happen once.
+   */
+  width: var(--logo-w, 320px);
+  height: var(--logo-h, 190px);
+  object-fit: contain;
+  /*
+   * The light/dark swap, and the only thing done to a client's own artwork.
+   * `brightness(0)` for a dark mark on a light ground, `brightness(0) invert(1)`
+   * for a light one on a dark ground.
+   */
+  filter: var(--logo-filter, brightness(0));
+}
+
+/* --- headline ------------------------------------------------------------ */
+.pk-headline {
+  flex: none;
+  font-family: 'Archivo', system-ui, sans-serif;
+  font-weight: var(--hl-weight, 700);
+  font-size: var(--hl-size, 90px);
+  font-stretch: var(--hl-stretch, 88%);
+  line-height: var(--hl-leading, 1.05);
+  letter-spacing: var(--hl-track, -0.012em);
+  text-transform: uppercase;
+  /*
+   * The copywriter chose these line breaks — headlineLines is an array precisely
+   * so the renderer does not re-wrap them — so each line is set nowrap and the
+   * block is shrunk to fit by `data-fit`, which measures rather than guessing
+   * from a line count the way the old renderer's headlineSize did.
+   */
+  white-space: nowrap;
+  color: var(--hl-ink, #10242c);
+}
+.pk-headline > div[data-accent] {
+  color: var(--hl-accent, #0b7c85);
+}
+
+/* --- heartbeat rule ------------------------------------------------------ */
+.pk-pulse {
+  flex: none;
+  color: var(--rule-ink, #0d8189);
+}
+
+/* --- contact bar --------------------------------------------------------- */
+.pk-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--bar-h, 210px);
+  background: var(--bar-bg, transparent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bar-gap, 18px);
+  /* Above any figure that stands on it. */
+  z-index: 2;
+}
+.pk-phone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--phone-gap, 20px);
+  width: 100%;
+  padding: 0 var(--phone-pad, 60px);
+}
+.pk-phone svg {
+  width: var(--phone-icon, 84px);
+  height: var(--phone-icon, 84px);
+  flex: none;
+  color: var(--phone-ink, #ffffff);
+}
+.pk-number {
+  font-family: 'Archivo', system-ui, sans-serif;
+  font-weight: 800;
+  font-size: var(--num-size, 84px);
+  font-stretch: var(--num-stretch, 78%);
+  line-height: 1;
+  letter-spacing: -0.005em;
+  color: var(--phone-ink, #ffffff);
+  white-space: nowrap;
+  /* Without this the flex item refuses to go below its content width, so the
+     overflow `data-fit` measures never materialises and a long international
+     number runs off both edges of the bar. */
+  min-width: 0;
+}
+.pk-strapline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--strap-gap, 20px);
+  width: 100%;
+  padding: 0 var(--strap-pad, 80px);
+}
+.pk-strapline span {
+  font-size: var(--strap-size, 34px);
+  font-weight: 400;
+  color: var(--strap-ink, #ffffff);
+  white-space: nowrap;
+}
+.pk-strapline i {
+  display: block;
+  width: var(--strap-rule, 52px);
+  height: 2px;
+  background: var(--strap-rule-ink, #7fc4c9);
+  flex: none;
+}
+
+/* --- service marks ------------------------------------------------------- */
+/* A ring around a kit pictogram, as the icon-list designs use. */
+.pk-ring {
+  width: var(--ring-size, 123px);
+  height: var(--ring-size, 123px);
+  border-radius: 50%;
+  border: var(--ring-weight, 2px) solid var(--ring-ink, #2ab8d2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--icon-ink, #ffffff);
+}
+.pk-ring svg {
+  width: var(--ring-icon-w, 54px);
+  height: var(--ring-icon-h, 68px);
+}
+
+/* --- the photograph ------------------------------------------------------ */
+/*
+ * `cover` for a scene, `contain` anchored to the floor for a cut-out. A cut-out
+ * is a figure standing on something, not a fill: cropping one is how you behead
+ * a doctor. satori ignored object-position entirely, which is most of why
+ * figures never landed where the references had them.
+ */
+.pk-scene {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--scene-anchor, center);
+}
+.pk-subject {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: var(--subject-anchor, bottom center);
+}

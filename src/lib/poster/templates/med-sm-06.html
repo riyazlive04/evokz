@@ -1,0 +1,173 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-6",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 1000,
+      "reason": "the team, filling the lower two-thirds with the card row overlapping its foot"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-6 — "Advanced Care / Closer to You" over a team photograph, with a card
+  row lying across the bottom of the still.
+
+  Reference: /api/templates/69eec1c9-3140-4c60-b5f7-2d05cb765331/thumbnail?full=1
+
+  Ground sampled at #c5e0f2 falling to white behind the type. The card row
+  overlapping the photograph is the arrangement worth noting: the cards are
+  translucent white, so whatever the day's still happens to be shows faintly
+  through them, and the row reads as glass laid on the picture rather than as a
+  panel that has covered part of it.
+-->
+
+<style>
+  .p6 {
+    --hl-size: 84px;
+    --hl-stretch: 90%;
+    --hl-leading: 1.14;
+    --hl-ink: #0f2f6b;
+    --hl-accent: #0b7f8c;
+    --rule-ink: #0b7f8c;
+    --logo-w: 320px;
+    --logo-h: 132px;
+    --bar-h: 208px;
+    --bar-bg: #0b7f8c;
+    --phone-ink: #ffffff;
+    --num-size: 78px;
+    --num-stretch: 80%;
+    --phone-icon: 74px;
+    --strap-size: 31px;
+    --strap-ink: #dff2f4;
+    --strap-rule-ink: #7cc7ce;
+
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, #eef7fd 0%, #d9ecf7 44%, #c5e0f2 100%);
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 48px 208px;
+    overflow: hidden;
+  }
+
+  .p6-photo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 520px;
+    bottom: 208px;
+    z-index: 0;
+  }
+  .p6-photo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(233, 244, 251, 0.96) 0%, rgba(233, 244, 251, 0) 22%);
+  }
+  .p6 > .pk-logo,
+  .p6 > .p6-headline,
+  .p6 > .p6-pulse {
+    position: relative;
+    z-index: 1;
+  }
+
+  .p6-headline {
+    margin-top: 26px;
+    text-align: center;
+    text-transform: none;
+  }
+  .p6-pulse { margin-top: 18px; width: 540px; height: 54px; }
+
+  /* Glass, not a panel: the still shows faintly through. */
+  .p6-cards {
+    position: absolute;
+    left: 44px;
+    right: 44px;
+    bottom: 238px;
+    display: flex;
+    justify-content: center;
+    gap: 0;
+    background: rgba(255, 255, 255, 0.82);
+    border-radius: 20px;
+    box-shadow: 0 6px 20px rgba(9, 60, 80, 0.16);
+    overflow: hidden;
+    z-index: 1;
+  }
+  .p6-card {
+    flex: 1 1 0;
+    min-height: 156px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 18px 8px;
+    color: #0b7f8c;
+  }
+  .p6-card + .p6-card { border-left: 1px solid rgba(11, 127, 140, 0.16); }
+  .p6-card svg { width: 52px; height: 64px; flex: none; }
+  .p6-label {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 24px;
+    font-stretch: 88%;
+    font-weight: 600;
+    line-height: 1.1;
+    text-align: center;
+    color: #12475a;
+    max-width: 168px;
+  }
+</style>
+
+<div class="p6">
+  <div class="p6-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline p6-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="pk-pulse p6-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p6-cards">
+    <div class="p6-card" data-when="feature1">
+      <svg aria-hidden="true"><use href="#ic-stethoscope"/></svg>
+      <div class="p6-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p6-card" data-when="feature2">
+      <svg aria-hidden="true"><use href="#ic-microscope"/></svg>
+      <div class="p6-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p6-card" data-when="feature3">
+      <svg aria-hidden="true"><use href="#ic-therapist"/></svg>
+      <div class="p6-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p6-card" data-when="feature4">
+      <svg aria-hidden="true"><use href="#ic-scanner"/></svg>
+      <div class="p6-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="pk-bar">
+    <div class="pk-phone">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="pk-number" data-slot="phone" data-fit></div>
+    </div>
+    <div class="pk-strapline" data-when="tagline">
+      <i></i><span data-slot="tagline"></span><i></i>
+    </div>
+  </div>
+</div>

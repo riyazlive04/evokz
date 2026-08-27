@@ -8,7 +8,11 @@ import type { Page } from 'playwright';
 
 import { posterBrowser, renderTimeoutMs } from '@/lib/poster/html/browser';
 import { fontFaceCss } from '@/lib/poster/html/typefaces';
-import { loadKitSprite, type HtmlTemplate } from '@/lib/poster/html/template';
+import {
+  loadBaseCss,
+  loadKitSprite,
+  type HtmlTemplate,
+} from '@/lib/poster/html/template';
 import type { PosterCopy, PosterIdentity, PosterPhoto } from '@/lib/types/poster';
 
 /**
@@ -179,7 +183,11 @@ async function buildDocument(
   width: number,
   height: number,
 ): Promise<string> {
-  const [fonts, kit] = await Promise.all([fontFaceCss(), loadKitSprite()]);
+  const [fonts, kit, base] = await Promise.all([
+    fontFaceCss(),
+    loadKitSprite(),
+    loadBaseCss(),
+  ]);
 
   /*
    * The template's stylesheet is written in the reference's own pixels — the
@@ -220,6 +228,9 @@ async function buildDocument(
     '  -webkit-font-smoothing: antialiased;',
     '  text-rendering: geometricPrecision;',
     '}',
+    // After the reset and before the template's own rules, so a template
+    // overrides any of it by simply restating the declaration.
+    base,
     '</style></head><body>',
     // The sprite first, so a `<use>` in the template always resolves against a
     // symbol that is already in the document.

@@ -1,0 +1,147 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-7",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 0,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 880,
+      "reason": "the vehicle, filling the lower half at speed — a scene, not a cut-out"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-7 — the emergency variant. Red on navy, no service list, a sentence of
+  body copy where every other template in the vertical puts icons.
+
+  Reference: /api/templates/91215d95-ac0e-47a1-8d42-0bde196f430b/thumbnail?full=1
+
+  **This is the template the old renderer named as impossible.** Its first line
+  is set at roughly twice the size of the rest — "24/7" over "Emergency Care" —
+  and `headlineSize` took a line *count*, so every line in a headline was the
+  same size by construction. Here it is one rule: the accented line gets its own
+  scale, and which line is accented is already a decision the copy makes.
+
+  It is also the only Medicals design with `featureCount: 0`. A day's copy still
+  carries features; this template draws none of them, exactly as templates
+  without a body slot ignore `body`.
+-->
+
+<style>
+  .p7 {
+    --hl-size: 82px;
+    --hl-stretch: 90%;
+    --hl-leading: 1.12;
+    --hl-ink: #ffffff;
+    --hl-accent: #e8232a;
+    --rule-ink: #e8232a;
+    --logo-w: 300px;
+    --logo-h: 140px;
+    --logo-filter: brightness(0) invert(1);
+    --bar-h: 214px;
+    --bar-bg: #c8161d;
+    --phone-ink: #ffffff;
+    --num-size: 80px;
+    --num-stretch: 80%;
+    --phone-icon: 76px;
+    --strap-size: 31px;
+    --strap-ink: #ffe3e4;
+    --strap-rule-ink: #f08f93;
+
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(170deg, #010f2b 0%, #04234c 48%, #010c22 100%);
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 44px 56px 214px;
+    overflow: hidden;
+  }
+
+  .p7-photo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 700px;
+    bottom: 160px;
+    z-index: 0;
+  }
+  /* Feathered into the ground on three sides so the vehicle arrives out of the
+     night rather than inside a rectangle. */
+  .p7-photo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, rgba(1, 15, 43, 0.95) 0%, rgba(1, 15, 43, 0) 26%),
+      linear-gradient(0deg, rgba(1, 12, 34, 0.85) 0%, rgba(1, 12, 34, 0) 22%);
+  }
+  .p7 > .pk-logo,
+  .p7 > .p7-headline,
+  .p7 > .p7-pulse,
+  .p7 > .p7-body {
+    position: relative;
+    z-index: 1;
+  }
+
+  .pk-logo { align-self: center; }
+
+  .p7-headline { margin-top: 34px; }
+  /*
+   * Per-line scale — the mark the layout spec had no word for.
+   *
+   * `headlineSize` resolved from the number of lines, so a headline could not
+   * have one line twice the size of another however the design wanted it. The
+   * copy already decides which line is accented; this decides what accented
+   * means, and here it means big and red rather than just red.
+   */
+  .p7-headline > div[data-accent] {
+    font-size: 1.95em;
+    line-height: 1;
+    letter-spacing: -0.03em;
+  }
+
+  .p7-pulse { margin-top: 16px; width: 300px; height: 44px; }
+
+  .p7-body {
+    margin-top: 26px;
+    max-width: 360px;
+    font-size: 34px;
+    line-height: 1.35;
+    color: #dbe6f6;
+  }
+</style>
+
+<div class="p7">
+  <div class="p7-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline p7-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="pk-pulse p7-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p7-body" data-slot="body"></div>
+
+  <div class="pk-bar">
+    <div class="pk-phone">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="pk-number" data-slot="phone" data-fit></div>
+    </div>
+    <div class="pk-strapline" data-when="tagline">
+      <i></i><span data-slot="tagline"></span><i></i>
+    </div>
+  </div>
+</div>

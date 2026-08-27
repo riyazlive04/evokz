@@ -135,6 +135,116 @@ const FIXTURES: Record<string, { copy?: Partial<PosterCopy>; tagline?: string }>
     copy: { headlineLines: ['EXPERT CARE', 'FOR A', 'HEALTHIER YOU'], accentLineIndex: 2 },
     tagline: 'Better Health, Better Life.',
   },
+  'med-sm-14': {
+    copy: { headlineLines: ['GOOD HEALTH', 'HAPPIER LIFE'], accentLineIndex: 0 },
+    tagline: 'Prevention. Diagnosis. Care.',
+  },
+  'med-sm-13': {
+    copy: { headlineLines: ['GOOD HEALTH', 'HAPPIER LIFE'], accentLineIndex: 0 },
+    tagline: 'Prevention. Diagnosis. Care.',
+  },
+  'med-sm-12': {
+    copy: { headlineLines: ['GOOD HEALTH', 'HAPPIER LIFE'], accentLineIndex: 0 },
+    tagline: 'Prevention. Diagnosis. Care.',
+  },
+  'med-sm-11': {
+    copy: { headlineLines: ['GOOD HEALTH', 'HAPPIER LIFE'], accentLineIndex: 0 },
+    tagline: 'Prevention. Diagnosis. Care.',
+  },
+  'med-sm-08': {
+    copy: {
+      headlineLines: ['Trusted Care', 'Every Step', 'of the Way'],
+      accentLineIndex: 0,
+      features: [
+        { icon: 'people', label: 'Patient Focused', body: 'x' },
+        { icon: 'shieldCheck', label: 'Safe & Hygienic', body: 'x' },
+        { icon: 'building', label: 'Advanced Facilities', body: 'x' },
+        { icon: 'award', label: 'Expert Doctors', body: 'x' },
+      ],
+    },
+    tagline: 'Better Health, Brighter Tomorrow.',
+  },
+  'med-sm-07': {
+    copy: {
+      headlineLines: ['24/7', 'Emergency', 'Care'],
+      accentLineIndex: 0,
+      body: 'We are here when you need us most.',
+    },
+    tagline: 'Better Health, Brighter Tomorrow.',
+  },
+  'med-sm-06': {
+    copy: {
+      headlineLines: ['Advanced Care', 'Closer to You'],
+      accentLineIndex: 0,
+      features: [
+        { icon: 'people', label: 'Expert Team', body: 'x' },
+        { icon: 'chart', label: 'Modern Technology', body: 'x' },
+        { icon: 'stopwatch', label: '24/7 Care', body: 'x' },
+        { icon: 'handshake', label: 'Patient First', body: 'x' },
+      ],
+    },
+    tagline: 'Better Health, Brighter Tomorrow.',
+  },
+  'med-sm-05': {
+    copy: {
+      headlineLines: ['Your Health', 'Our Commitment'],
+      accentLineIndex: 1,
+      features: [
+        { icon: 'chart', label: 'Advanced Care', body: 'x' },
+        { icon: 'award', label: 'Expert Doctors', body: 'x' },
+        { icon: 'shieldCheck', label: 'Trusted Care', body: 'x' },
+        { icon: 'people', label: 'Patient Focused', body: 'x' },
+      ],
+    },
+    tagline: 'Better Health, Brighter Tomorrow.',
+  },
+  'med-sm-04': {
+    copy: {
+      headlineLines: ['We Care', 'For You'],
+      accentLineIndex: 1,
+      features: [
+        { icon: 'people', label: 'Expert Medical Team', body: 'x' },
+        { icon: 'chart', label: 'Modern Facilities', body: 'x' },
+        { icon: 'shieldCheck', label: 'Safe & Trusted Care', body: 'x' },
+        { icon: 'stopwatch', label: '24/7 Emergency Support', body: 'x' },
+      ],
+    },
+    tagline: 'Better Health, Brighter Tomorrow.',
+  },
+  'med-sm-03': {
+    copy: {
+      headlineLines: ['Better Care', 'Better Life'],
+      accentLineIndex: 1,
+      features: [
+        { icon: 'award', label: 'Expert Doctors', body: 'x' },
+        { icon: 'chart', label: 'Advanced Technology', body: 'x' },
+        { icon: 'stopwatch', label: '24/7 Care & Support', body: 'x' },
+        { icon: 'people', label: 'Patient Focused Care', body: 'x' },
+      ],
+    },
+    tagline: 'Better Health, Brighter Tomorrow.',
+  },
+  'med-sm-01': {
+    copy: {
+      headlineLines: ['YOUR HEALTH', 'OUR PRIORITY'],
+      accentLineIndex: 1,
+      body: 'Expert care. Advanced technology. Healthier you.',
+      ctaLabel: 'BOOK YOUR APPOINTMENT NOW',
+      features: [
+        { icon: 'star', label: 'General Consultation', body: 'x' },
+        { icon: 'shieldCheck', label: 'Preventive Health Checkups', body: 'x' },
+        { icon: 'chart', label: 'Accurate Diagnostics', body: 'x' },
+        { icon: 'people', label: 'Patient Care & Support', body: 'x' },
+      ],
+    },
+    tagline: 'Trusted care for you and your family.',
+  },
+  'med-sm-17': {
+    copy: {
+      headlineLines: ['Care that keeps', 'pace with your', 'whole family.'],
+      accentLineIndex: 2,
+    },
+  },
 };
 
 function fixtureFor(slug: string): { copy: PosterCopy; identity: PosterIdentity } {

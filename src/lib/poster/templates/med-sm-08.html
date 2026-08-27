@@ -1,0 +1,182 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-8",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 1300,
+      "reason": "a full-bleed clinical still whose subject sits right of centre, behind the copy column"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-8 — "Trusted Care / Every Step / of the Way".
+
+  Reference: /api/templates/b872f5bf-cbdc-4cc9-89e3-dc91456f9c46/thumbnail?full=1
+
+  Sentence case, left-aligned, over a photograph that runs the full bleed. Ground
+  sampled at #f5f7fb with #038a97 on the rules and badges.
+
+  The scrim here is a *column* rather than a band: this design puts its type down
+  the left while the still's subject sits right, so a top-to-bottom fade would
+  either wash out the subject or leave the type unprotected. Fading left-to-right
+  does both jobs at once.
+
+  The reference's contact bar carries two straplines either side of a divider.
+  There is one `brandTagline`, so this draws the one it has, centred — inventing a
+  second string to fill a slot is how a template starts lying about a client.
+-->
+
+<style>
+  .p8 {
+    --hl-size: 76px;
+    --hl-stretch: 92%;
+    --hl-leading: 1.14;
+    --hl-ink: #0f2f6b;
+    --hl-accent: #0f2f6b;
+    --rule-ink: #038a97;
+    --logo-w: 330px;
+    --logo-h: 150px;
+    --bar-h: 0px;
+    --phone-ink: #ffffff;
+    --num-size: 80px;
+    --num-stretch: 80%;
+    --phone-icon: 78px;
+    --strap-size: 32px;
+    --strap-ink: #dff2f4;
+    --strap-rule-ink: #7cc7ce;
+
+    position: absolute;
+    inset: 0;
+    background: #f5f7fb;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 44px 56px 320px;
+    overflow: hidden;
+  }
+
+  .p8-photo { position: absolute; inset: 0; z-index: 0; }
+  .p8-photo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      100deg,
+      rgba(245, 247, 251, 0.97) 0%,
+      rgba(245, 247, 251, 0.92) 42%,
+      rgba(245, 247, 251, 0.45) 62%,
+      rgba(245, 247, 251, 0) 80%
+    );
+  }
+  .p8 > .pk-logo,
+  .p8 > .p8-headline,
+  .p8 > .p8-pulse,
+  .p8 > .p8-list {
+    position: relative;
+    z-index: 1;
+  }
+
+  .pk-logo { align-self: center; }
+
+  .p8-headline {
+    margin-top: 30px;
+    /* Sentence case, as the reference sets it. */
+    text-transform: none;
+  }
+  .p8-pulse { margin-top: 20px; width: 380px; height: 52px; }
+
+  .p8-list {
+    flex: 0 1 auto;
+    min-height: 0;
+    margin-top: 34px;
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+  }
+  .p8-item { display: flex; align-items: center; gap: 24px; }
+  .p8-badge {
+    --ring-size: 74px;
+    --ring-ink: #0f2f6b;
+    --ring-weight: 2px;
+    --icon-ink: #0f2f6b;
+    --ring-icon-w: 36px;
+    --ring-icon-h: 44px;
+  }
+  .p8-label {
+    font-size: 34px;
+    font-weight: 600;
+    letter-spacing: -0.008em;
+    color: #0f2f6b;
+    max-width: 400px;
+  }
+
+  .p8-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 348px;
+    z-index: 2;
+  }
+  .p8-wave { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .p8-foot .pk-bar { height: 232px; background: transparent; }
+</style>
+
+<div class="p8">
+  <div class="p8-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-logo"><img data-image="logo" alt=""></div>
+
+  <div class="pk-headline p8-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="pk-pulse p8-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p8-list">
+    <div class="p8-item" data-when="feature1">
+      <div class="pk-ring p8-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="p8-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p8-item" data-when="feature2">
+      <div class="pk-ring p8-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="p8-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p8-item" data-when="feature3">
+      <div class="pk-ring p8-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="p8-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p8-item" data-when="feature4">
+      <div class="pk-ring p8-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="p8-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="p8-foot">
+    <svg class="p8-wave" viewBox="0 0 900 348" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 118C140 52 320 30 520 58c156 22 272 0 380-46v316H0z" fill="#5bbcc4" opacity="0.4"/>
+      <path d="M0 150C140 88 320 66 520 94c156 22 272 0 380-48v302H0z" fill="#0b7f8c"/>
+    </svg>
+    <div class="pk-bar">
+      <div class="pk-phone">
+        <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+        <div class="pk-number" data-slot="phone" data-fit></div>
+      </div>
+      <div class="pk-strapline" data-when="tagline">
+        <i></i><span data-slot="tagline"></span><i></i>
+      </div>
+    </div>
+  </div>
+</div>

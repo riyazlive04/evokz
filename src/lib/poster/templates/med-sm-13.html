@@ -1,0 +1,197 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-13",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 1400,
+      "reason": "a full-bleed natural still — foliage and water — bright at the top, deepening toward the footer"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-13 — the wellness variant: "GOOD HEALTH / HAPPIER LIFE" over foliage.
+
+  Reference: /api/templates/67122ee5-93ec-44c1-a7ae-f8a45abdb910/thumbnail?full=1
+
+  The only green template in the vertical. Its palette is sampled rather than
+  derived from the others: ground foliage, #336716 in the footer band, #2d710f
+  on the accent line and #082158 navy on the second.
+
+  Structurally it is Med-SM-14 with the service list turned on its side — four
+  filled badges in a row rather than four rows down the left — which is worth
+  noticing, because it means the two designs differ in almost nothing the
+  renderer has to understand.
+-->
+
+<style>
+  .p13 {
+    --hl-size: 96px;
+    --hl-stretch: 86%;
+    --hl-leading: 1.03;
+    --hl-ink: #082158;
+    --hl-accent: #2d710f;
+    --rule-ink: #2d710f;
+    --logo-w: 300px;
+    --logo-h: 150px;
+    --bar-h: 0px;
+    --phone-ink: #ffffff;
+    --num-size: 80px;
+    --num-stretch: 80%;
+    --phone-icon: 78px;
+    --strap-size: 32px;
+    --strap-ink: #e7f2d8;
+    --strap-rule-ink: #9dc07a;
+
+    position: absolute;
+    inset: 0;
+    background: #eef4e2;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 96px 56px 300px;
+    overflow: hidden;
+  }
+
+  .p13-photo { position: absolute; inset: 0; z-index: 0; }
+  /* Lighter than Med-SM-14's scrim: this design wants the foliage to read, and
+     its type sits high where a landscape is usually brightest. */
+  .p13-photo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      180deg,
+      rgba(247, 251, 238, 0.82) 0%,
+      rgba(247, 251, 238, 0.62) 30%,
+      rgba(247, 251, 238, 0.12) 52%,
+      rgba(247, 251, 238, 0) 68%
+    );
+  }
+  /*
+   * Named rather than `> *:not(.photo)`, which is how the footer broke.
+   * That selector carries two classes and beat the footer's own single-class
+   * rule, forcing `position: relative` onto an element that has to be
+   * absolute — so it became a shrink-to-fit flex item of zero width and the
+   * phone number wrapped to one digit per line.
+   */
+  .p13 > .p13-headline,
+  .p13 > .p13-pulse,
+  .p13 > .p13-row {
+    position: relative;
+    z-index: 1;
+  }
+
+  .p13-headline { text-align: center; }
+
+  .p13-pulse {
+    margin-top: 20px;
+    width: 540px;
+    height: 58px;
+  }
+
+  /* Four filled badges in a row, labels beneath. */
+  .p13-row {
+    flex: none;
+    margin-top: 40px;
+    display: flex;
+    justify-content: center;
+    gap: 34px;
+    width: 100%;
+  }
+  .p13-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .p13-badge {
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    background: #3f7a17;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    color: #ffffff;
+  }
+  .p13-badge svg { width: 46px; height: 58px; }
+  .p13-label {
+    font-size: 30px;
+    font-weight: 600;
+    letter-spacing: -0.008em;
+    color: #2d5c12;
+    text-align: center;
+    max-width: 190px;
+  }
+
+  .p13-foot {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 340px;
+    z-index: 2;
+  }
+  .p13-wave { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .p13-foot .pk-bar { height: 226px; background: transparent; }
+</style>
+
+<div class="p13">
+  <div class="p13-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-headline p13-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="pk-pulse p13-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p13-row">
+    <div class="p13-item" data-when="feature1">
+      <div class="p13-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="p13-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p13-item" data-when="feature2">
+      <div class="p13-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="p13-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p13-item" data-when="feature3">
+      <div class="p13-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="p13-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p13-item" data-when="feature4">
+      <div class="p13-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="p13-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="p13-foot">
+    <svg class="p13-wave" viewBox="0 0 900 340" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 108C160 46 340 30 530 58c146 22 258 2 370-42v324H0z" fill="#5c9a2c" opacity="0.35"/>
+      <path d="M0 138C160 80 340 64 530 92c146 22 258 0 370-44v292H0z" fill="#336716"/>
+    </svg>
+    <div class="pk-bar">
+      <div class="pk-phone">
+        <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+        <div class="pk-number" data-slot="phone" data-fit></div>
+      </div>
+      <div class="pk-strapline" data-when="tagline">
+        <i></i><span data-slot="tagline"></span><i></i>
+      </div>
+    </div>
+  </div>
+</div>

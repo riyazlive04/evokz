@@ -97,6 +97,25 @@
   </g>
 </symbol>
 
+<symbol id="ic-globe" viewBox="0 0 84 84">
+  <!-- The website mark. Added because the lint refused a typed "@" in Med-SM-17,
+       which is the rule working: a glyph standing in for a drawing is literal
+       text, and the next template would have typed a different one. -->
+  <g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round">
+    <circle cx="42" cy="42" r="30"/>
+    <path d="M12 42h60"/>
+    <path d="M42 12c10 11 10 49 0 60-10-11-10-49 0-60z"/>
+  </g>
+</symbol>
+
+<symbol id="ic-arrow" viewBox="0 0 84 84">
+  <!-- The call-to-action's arrow, for the same reason as the globe. -->
+  <g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 42h42"/>
+    <path d="M45 25l19 17-19 17"/>
+  </g>
+</symbol>
+
 <symbol id="mk-pulse" viewBox="0 0 580 70" preserveAspectRatio="xMidYMid meet">
   <!--
     The heartbeat rule. Present on every Medicals reference looked at so far, at

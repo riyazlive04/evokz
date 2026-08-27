@@ -102,7 +102,22 @@ export interface HtmlTemplate {
  * mistyped file a *runtime* miss on one client's poster; the list makes it a
  * type error, and `check:templates` proves each entry resolves to a real file.
  */
-export const HTML_TEMPLATE_SLUGS = ['med-sm-15', 'med-sm-16'] as const;
+export const HTML_TEMPLATE_SLUGS = [
+  'med-sm-01',
+  'med-sm-03',
+  'med-sm-04',
+  'med-sm-05',
+  'med-sm-06',
+  'med-sm-07',
+  'med-sm-08',
+  'med-sm-11',
+  'med-sm-12',
+  'med-sm-13',
+  'med-sm-14',
+  'med-sm-15',
+  'med-sm-16',
+  'med-sm-17',
+] as const;
 
 export type HtmlTemplateSlug = (typeof HTML_TEMPLATE_SLUGS)[number];
 
@@ -140,21 +155,38 @@ const cache = new Map<string, Promise<HtmlTemplate>>();
  * traced copies each being wrong in a different way.
  */
 export function loadKitSprite(): Promise<string> {
-  if (!kitSprite) {
-    kitSprite = readFile(join(templateDir(), '_kit.svg'), 'utf8').catch(
-      (error: unknown) => {
-        kitSprite = null;
-        throw new Error(
-          `The poster mark kit (_kit.svg) could not be read: ${describe(error)}. ` +
-            'Every template references it, so this fails all of them at once.',
-        );
-      },
-    );
-  }
-  return kitSprite;
+  return shared('_kit.svg', 'mark kit');
 }
 
-let kitSprite: Promise<string> | null = null;
+/**
+ * The stylesheet for the chrome every template repeats — logo box, headline,
+ * contact bar, service rings — driven by custom properties a template sets.
+ * Injected before the template's own <style>, so a template can override any of
+ * it by restating the declaration.
+ */
+export function loadBaseCss(): Promise<string> {
+  return shared('_base.css', 'base stylesheet');
+}
+
+const sharedFiles = new Map<string, Promise<string>>();
+
+function shared(file: string, label: string): Promise<string> {
+  const cached = sharedFiles.get(file);
+  if (cached) return cached;
+
+  const request = readFile(join(templateDir(), file), 'utf8').catch((error: unknown) => {
+    // Not remembered as a failure: every template depends on this, so a
+    // transient read on a OneDrive-synced working copy must not poison the
+    // process for the rest of its life.
+    sharedFiles.delete(file);
+    throw new Error(
+      `The poster ${label} (${file}) could not be read: ${describe(error)}. ` +
+        'Every template depends on it, so this fails all of them at once.',
+    );
+  });
+  sharedFiles.set(file, request);
+  return request;
+}
 
 export async function loadHtmlTemplate(slug: HtmlTemplateSlug): Promise<HtmlTemplate> {
   const cached = cache.get(slug);

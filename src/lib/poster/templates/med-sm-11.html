@@ -1,0 +1,153 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-11",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 900,
+      "height": 940,
+      "reason": "the lower two-thirds, full bleed — a room with a figure in it"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-11 — headline and services over the top third, photograph over the rest.
+
+  Reference: /api/templates/98ba13d8-ea62-4199-8baf-9aef647abb72/thumbnail?full=1
+
+  Measured: no logo at all (the band scan opens on the headline at row 141),
+  headline caps 141-217 and 253-327 both centred on x 450, inks #038081 and
+  #0c2c6c, card row 485-663, photograph from 671 to the foot.
+
+  The absence of a logo is the interesting part and is not an oversight in the
+  reference: this design gives its top third entirely to type. `data-image="logo"`
+  is simply not present, and the renderer drops what it is not asked for — the
+  client's mark does not appear on this one.
+-->
+
+<style>
+  .p11 {
+    --hl-size: 96px;
+    --hl-stretch: 86%;
+    --hl-leading: 1.06;
+    --hl-ink: #0c2c6c;
+    --hl-accent: #038081;
+    --rule-ink: #0b7c85;
+    --bar-h: 214px;
+    --bar-bg: #077985;
+    --phone-ink: #ffffff;
+    --num-size: 78px;
+    --num-stretch: 80%;
+    --phone-icon: 74px;
+    --strap-size: 31px;
+    --strap-ink: #dff1f1;
+    --strap-rule-ink: #86c6c8;
+
+    position: absolute;
+    inset: 0;
+    background: #f3f3f3;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 141px 40px 0;
+    overflow: hidden;
+  }
+
+  .p11-headline { text-align: center; }
+  .p11-pulse { margin-top: 26px; width: 560px; height: 60px; }
+
+  .p11-cards {
+    flex: none;
+    margin-top: 46px;
+    width: 772px;
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+  }
+  .p11-card {
+    flex: 1 1 0;
+    min-height: 178px;
+    background: #fbfdfd;
+    border: 1px solid rgba(11, 124, 133, 0.16);
+    border-radius: 16px;
+    box-shadow: 0 3px 9px rgba(4, 60, 66, 0.07);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 22px 6px 16px;
+    color: #0b7c85;
+  }
+  .p11-card svg { width: 58px; height: 72px; flex: none; }
+  .p11-label {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 26px;
+    font-stretch: 88%;
+    font-weight: 600;
+    line-height: 1;
+    text-align: center;
+    color: #0d6570;
+    max-width: 178px;
+  }
+
+  /* The photograph owns everything below the cards, and the contact bar sits on
+     top of it rather than beside it. */
+  .p11-photo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 671px;
+    bottom: 0;
+    z-index: 0;
+  }
+</style>
+
+<div class="p11">
+  <div class="pk-headline p11-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="pk-pulse p11-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p11-cards">
+    <div class="p11-card" data-when="feature1">
+      <svg aria-hidden="true"><use href="#ic-stethoscope"/></svg>
+      <div class="p11-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p11-card" data-when="feature2">
+      <svg aria-hidden="true"><use href="#ic-microscope"/></svg>
+      <div class="p11-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p11-card" data-when="feature3">
+      <svg aria-hidden="true"><use href="#ic-therapist"/></svg>
+      <div class="p11-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p11-card" data-when="feature4">
+      <svg aria-hidden="true"><use href="#ic-scanner"/></svg>
+      <div class="p11-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="p11-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+
+  <div class="pk-bar">
+    <div class="pk-phone">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="pk-number" data-slot="phone" data-fit></div>
+    </div>
+    <div class="pk-strapline" data-when="tagline">
+      <i></i><span data-slot="tagline"></span><i></i>
+    </div>
+  </div>
+</div>
