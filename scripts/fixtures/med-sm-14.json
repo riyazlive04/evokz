@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "name": "Medicals light centred",
+  "ground": "light",
+  "aspect": 0.5625,
+  "headlineEmphasis": [
+    "accent",
+    "heavy"
+  ],
+  "headlineCase": "upper",
+  "featureCount": 4,
+  "featureStyle": "labelOnly",
+  "ctaShape": "pill",
+  "accentRuleStyle": "pulse",
+  "rows": [
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.17,
+      "fill": "light",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "light",
+          "align": "center",
+          "valign": "center",
+          "padded": true,
+          "slots": [
+            "logo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "hug",
+      "heightFraction": 0,
+      "fill": "light",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "light",
+          "align": "center",
+          "valign": "center",
+          "padded": true,
+          "slots": [
+            "headline",
+            "accentRule"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "flex",
+      "heightFraction": 0,
+      "fill": "light",
+      "cells": [
+        {
+          "weight": 50,
+          "fill": "light",
+          "align": "start",
+          "valign": "center",
+          "padded": true,
+          "slots": [
+            "features"
+          ]
+        },
+        {
+          "weight": 50,
+          "fill": "light",
+          "align": "center",
+          "valign": "center",
+          "padded": false,
+          "photoKind": "scene",
+          "slots": [
+            "photo"
+          ]
+        }
+      ]
+    },
+    {
+      "sizingMode": "fixed",
+      "heightFraction": 0.16,
+      "fill": "dark",
+      "edge": "curveTop",
+      "cells": [
+        {
+          "weight": 100,
+          "fill": "dark",
+          "align": "center",
+          "valign": "center",
+          "padded": false,
+          "slots": [
+            "contact",
+            "body"
+          ]
+        }
+      ]
+    }
+  ]
+}
