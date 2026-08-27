@@ -40,7 +40,10 @@ import {
 } from '@/lib/poster/html/template';
 import { BUNDLED_FAMILIES } from '@/lib/poster/html/typefaces';
 import { resolveTemplatePhotoRequests } from '@/lib/poster/photo-request';
-import { createPlaceholderPhoto } from '@/lib/poster/placeholder-photo';
+import {
+  createPlaceholderPhoto,
+  createPlaceholderSubject,
+} from '@/lib/poster/placeholder-photo';
 import type { PosterCopy, PosterIdentity } from '@/lib/types/poster';
 
 let failures = 0;
@@ -110,6 +113,37 @@ const HOSTILE_COPY: PosterCopy = {
  */
 const PLACEHOLDER_LOGO =
   'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMTAgMjA0Ij48cGF0aCBkPSJNMTM4IDhoMzR2MjZoMjZ2MzRoLTI2djI2aC0zNFY2OGgtMjZWMzRoMjZ6IiBmaWxsPSIjMTIzYTYzIi8+PHBhdGggZD0iTTE4MCAxNGMyMiAxMCAzMCAzNCAyMiA1Ni04IDIxLTMwIDMwLTUyIDI2IDI2LTYgNDAtMjIgNDItNDIgMS0xNi00LTMwLTEyLTQweiIgZmlsbD0iIzBkODE4OSIvPjxyZWN0IHg9IjE2IiB5PSIxMTIiIHdpZHRoPSIyNzgiIGhlaWdodD0iMzQiIHJ4PSI2IiBmaWxsPSIjMTIzYTYzIi8+PHJlY3QgeD0iNjAiIHk9IjE2NCIgd2lkdGg9IjE5MCIgaGVpZ2h0PSIxMiIgcng9IjYiIGZpbGw9IiMwZDgxODkiLz48L3N2Zz4=';
+
+/**
+ * Per-template copy, matched to what its own reference says.
+ *
+ * Not decoration. The render is judged by holding it beside the reference JPEG,
+ * and a template set with someone else's headline cannot be judged that way —
+ * Med-SM-16's design is three lines with the accent on the third, and reviewing
+ * it against two lines accented on the first says nothing about whether the
+ * template is right. Templates not listed here fall back to `COPY`.
+ *
+ * The *hostile* pass deliberately does not do this: proving a template survives
+ * arbitrary copy is a different job from proving it reproduces its reference.
+ */
+const FIXTURES: Record<string, { copy?: Partial<PosterCopy>; tagline?: string }> = {
+  'med-sm-15': {
+    copy: { headlineLines: ['GOOD HEALTH', 'HAPPIER LIFE'], accentLineIndex: 0 },
+    tagline: 'Prevention. Diagnosis. Care.',
+  },
+  'med-sm-16': {
+    copy: { headlineLines: ['EXPERT CARE', 'FOR A', 'HEALTHIER YOU'], accentLineIndex: 2 },
+    tagline: 'Better Health, Better Life.',
+  },
+};
+
+function fixtureFor(slug: string): { copy: PosterCopy; identity: PosterIdentity } {
+  const fixture = FIXTURES[slug];
+  return {
+    copy: { ...COPY, ...(fixture?.copy ?? {}) },
+    identity: { ...IDENTITY, ...(fixture?.tagline ? { brandTagline: fixture.tagline } : {}) },
+  };
+}
 
 const IDENTITY: PosterIdentity = {
   companyName: 'Lorem Ipsum Clinic',
@@ -284,6 +318,7 @@ async function renderTemplate(
   template: HtmlTemplate,
   copy: PosterCopy,
   inspect?: Parameters<typeof renderHtmlPoster>[0]['inspect'],
+  identity: PosterIdentity = IDENTITY,
 ): Promise<Buffer> {
   const preset = getImageSizePreset('whatsapp-status') ?? { width: 1080, height: 1920 };
   const canvas = resolvePosterCanvas(
@@ -295,14 +330,30 @@ async function renderTemplate(
   // no fal.ai spend — the same bargain `check:layouts` strikes.
   const requests = resolveTemplatePhotoRequests(template.manifest, canvas);
   const photos = requests.map((request) => {
-    const bytes = createPlaceholderPhoto(request.width, request.height, 'daylight');
-    return { dataUri: `data:image/png;base64,${bytes.toString('base64')}`, width: request.width, height: request.height };
+    /*
+     * A `subject` frame gets a transparent silhouette, not a landscape.
+     *
+     * The first version handed every frame the same rectangular placeholder,
+     * which made a cut-out template impossible to judge: Med-SM-16 stands a
+     * figure on its contact bar, and reviewing it with a photograph of a skyline
+     * in that slot tells you nothing about whether the figure lands correctly.
+     * The preview route has always drawn this distinction; the check had not.
+     */
+    const bytes =
+      request.kind === 'subject'
+        ? createPlaceholderSubject(request.width, request.height)
+        : createPlaceholderPhoto(request.width, request.height, 'daylight');
+    return {
+      dataUri: `data:image/png;base64,${bytes.toString('base64')}`,
+      width: request.width,
+      height: request.height,
+    };
   });
 
   return renderHtmlPoster({
     template,
     copy,
-    identity: IDENTITY,
+    identity,
     photos,
     width: canvas.width,
     height: canvas.height,
@@ -377,7 +428,8 @@ async function main(): Promise<void> {
 
     console.log(`\n${slug} — render`);
     try {
-      const first = await renderTemplate(template, COPY);
+      const fixture = fixtureFor(slug);
+      const first = await renderTemplate(template, fixture.copy, undefined, fixture.identity);
       const path = join(outDir, `${slug}.png`);
       await writeFile(path, first);
       check(`renders (${first.byteLength} bytes) → ${path}`, first.byteLength > 0);
@@ -389,7 +441,7 @@ async function main(): Promise<void> {
        * date or a random in a template) all break it completely rather than
        * subtly.
        */
-      const second = await renderTemplate(template, COPY);
+      const second = await renderTemplate(template, fixture.copy, undefined, fixture.identity);
       check(
         're-renders byte-identically',
         sha(first) === sha(second),

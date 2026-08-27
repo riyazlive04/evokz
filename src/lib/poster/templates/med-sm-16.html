@@ -1,0 +1,304 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-16",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "subject",
+      "role": "slot",
+      "width": 460,
+      "height": 720,
+      "reason": "the standing clinician, cut out, stood on the contact bar"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-16 — "EXPERT CARE / FOR A / HEALTHIER YOU".
+
+  Reference: /api/templates/61d317c8-de7b-49d2-8de6-5973e85c8b1a/thumbnail?full=1
+
+  The second template authored, and deliberately the opposite of Med-SM-15 in
+  every way that matters to the renderer: dark rather than light, left-aligned
+  rather than centred, a cut-out figure rather than a masked photograph, an icon
+  *list* rather than a card row. If the kit and the format survive both, they
+  will survive the rest of the vertical.
+
+  Its ground is a gradient, which is the mark the old renderer could not paint at
+  all — proven with a magenta probe over four renders, none of which produced a
+  pixel. Here it is one line of CSS.
+
+  Measured anchors, in the reference's own 900×1600 pixels:
+
+    logo box      55 … 239, 307 wide, centred on x 444
+    headline      caps at 306, 403, 500 — 63px caps, 97px apart, left edge x 65
+    pulse rule    rows 597 … 649, x 62 … 541 (left-aligned, not centred)
+    icon rings    123 across, left edge x 58, centres 732 / 893 / 1053 / 1214
+    icon labels   x 203, 31px caps
+    figure        x 450 … 893, y 673 … 1392
+    contact bar   1392 … 1600, #000d24
+    phone         rows 1432 … 1504
+    strapline     rows 1536 … 1570
+-->
+
+<style>
+  /*
+   * The gradient ground.
+   *
+   * Sampled rather than guessed: #010f2c at the top-left corner, brightening to
+   * #0b4e8e at (800, 850) — so the light sits low and to the right, behind the
+   * figure, which is what stops the cut-out looking pasted on. The old renderer
+   * answered this with a flat panel and a painted ellipse, because it had no
+   * word for a gradient.
+   */
+  .p16 {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(120% 70% at 78% 58%, #0d5296 0%, #03356e 42%, rgba(1, 20, 50, 0) 100%),
+      #01102c;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    padding: 55px 62px 208px;
+  }
+
+  /* --- logo ------------------------------------------------------------- */
+  .p16-logo {
+    flex: none;
+    height: 184px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .p16-logo img {
+    /* Fixed box and `contain`, never max-width: an uploaded SVG carries a
+       viewBox and no intrinsic size, and lays out at 0×0 as a flex item. */
+    width: 320px;
+    height: 184px;
+    object-fit: contain;
+    /* The dark half of the agreed swap. A dark mark on this ground would be
+       invisible; a light one on Med-SM-15's ground would be. */
+    filter: brightness(0) invert(1);
+  }
+
+  /* --- headline --------------------------------------------------------- */
+  .p16-headline {
+    flex: none;
+    margin-top: 51px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-weight: 700;
+    /* 63px caps, 97px apart, solved from a render the way Med-SM-15's were. */
+    font-size: 88px;
+    font-stretch: 86%;
+    line-height: 1.1;
+    letter-spacing: -0.012em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: #ffffff;
+  }
+  .p16-headline > div[data-accent] {
+    color: #00c2d0;
+  }
+
+  /* --- pulse rule ------------------------------------------------------- */
+  /* Left-aligned and short, unlike Med-SM-15's centred full-width rule — the
+     same mark from the kit, used differently. */
+  .p16-pulse {
+    flex: none;
+    margin-top: 17px;
+    width: 479px;
+    height: 52px;
+    color: #00b4c8;
+  }
+
+  /* --- the service list ------------------------------------------------- */
+  /*
+   * The flexible block. A four-line headline takes its room from the gaps
+   * between these rows rather than pushing them into the contact bar.
+   */
+  .p16-list {
+    /*
+     * Shrink but never grow, and hold the rings at a fixed pitch.
+     *
+     * `flex: 1 1 auto` with `space-around` spread them 182px apart against the
+     * reference's measured 161, because it shared out every spare pixel. The
+     * reference leaves its slack *below* the last ring instead, which is what
+     * `flex-start` plus a fixed gap gives. A longer headline pushes the rings
+     * down into that slack; `data-fit` shrinks the headline before it runs out.
+     */
+    flex: 0 1 auto;
+    min-height: 0;
+    margin-top: 25px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 38px;
+    align-items: flex-start;
+    /* Above the figure, so a wide cut-out never lands on a label. */
+    position: relative;
+    z-index: 1;
+  }
+  .p16-item {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+  .p16-ring {
+    width: 123px;
+    height: 123px;
+    border-radius: 50%;
+    border: 2px solid #2ab8d2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    color: #ffffff;
+  }
+  .p16-ring svg {
+    width: 54px;
+    height: 68px;
+  }
+  .p16-item-label {
+    font-size: 44px;
+    font-weight: 600;
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+    color: #ffffff;
+    /* Wraps rather than running under the figure. */
+    max-width: 300px;
+  }
+
+  /* --- the figure ------------------------------------------------------- */
+  .p16-figure {
+    position: absolute;
+    right: 0;
+    bottom: 208px;
+    width: 460px;
+    height: 725px;
+    z-index: 0;
+  }
+  .p16-figure img {
+    width: 100%;
+    height: 100%;
+    /*
+     * `contain`, anchored bottom-right. A cut-out is a figure standing on the
+     * bar, not a fill — cropping one is how you behead a doctor. satori ignored
+     * object-position entirely, which is most of why figures never landed where
+     * the references had them.
+     */
+    object-fit: contain;
+    object-position: bottom right;
+  }
+
+  /* --- contact bar ------------------------------------------------------ */
+  .p16-bar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 208px;
+    background: #000d24;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    z-index: 2;
+  }
+  .p16-phone {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    width: 100%;
+    padding: 0 60px;
+  }
+  .p16-phone svg {
+    width: 74px;
+    height: 74px;
+    flex: none;
+    color: #ffffff;
+  }
+  .p16-phone-number {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-weight: 800;
+    font-size: 84px;
+    font-stretch: 82%;
+    line-height: 1;
+    letter-spacing: -0.005em;
+    color: #ffffff;
+    white-space: nowrap;
+    /* Without this the flex item will not shrink below its content width, so the
+       overflow `data-fit` measures never materialises. */
+    min-width: 0;
+  }
+  .p16-strapline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    width: 100%;
+    padding: 0 90px;
+  }
+  .p16-strapline span {
+    font-size: 38px;
+    font-weight: 400;
+    color: #ffffff;
+    white-space: nowrap;
+  }
+  .p16-strapline i {
+    display: block;
+    width: 52px;
+    height: 2px;
+    background: #2ab8d2;
+    flex: none;
+  }
+</style>
+
+<div class="p16">
+  <div class="p16-logo"><img data-image="logo" alt=""></div>
+
+  <div class="p16-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="p16-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p16-list">
+    <div class="p16-item" data-when="feature1">
+      <div class="p16-ring"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="p16-item-label" data-slot="feature1Label"></div>
+    </div>
+    <div class="p16-item" data-when="feature2">
+      <div class="p16-ring"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="p16-item-label" data-slot="feature2Label"></div>
+    </div>
+    <div class="p16-item" data-when="feature3">
+      <div class="p16-ring"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="p16-item-label" data-slot="feature3Label"></div>
+    </div>
+    <div class="p16-item" data-when="feature4">
+      <div class="p16-ring"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="p16-item-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="p16-figure"><img data-image="hero" alt=""></div>
+
+  <div class="p16-bar">
+    <div class="p16-phone">
+      <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+      <div class="p16-phone-number" data-slot="phone" data-fit></div>
+    </div>
+    <div class="p16-strapline" data-when="tagline">
+      <i></i><span data-slot="tagline"></span><i></i>
+    </div>
+  </div>
+</div>

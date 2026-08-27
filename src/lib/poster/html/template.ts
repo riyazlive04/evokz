@@ -102,7 +102,7 @@ export interface HtmlTemplate {
  * mistyped file a *runtime* miss on one client's poster; the list makes it a
  * type error, and `check:templates` proves each entry resolves to a real file.
  */
-export const HTML_TEMPLATE_SLUGS = ['med-sm-15'] as const;
+export const HTML_TEMPLATE_SLUGS = ['med-sm-15', 'med-sm-16'] as const;
 
 export type HtmlTemplateSlug = (typeof HTML_TEMPLATE_SLUGS)[number];
 
