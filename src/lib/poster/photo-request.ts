@@ -32,6 +32,19 @@ export interface PhotoRequest {
    * with the request rather than being re-derived from the spec downstream.
    */
   kind: LayoutPhotoKind;
+  /**
+   * Which brief this frame is drawn from.
+   *
+   * `slot` frames come from the day's `imagePrompt` — the subject of the poster.
+   * `backdrop` frames come from its `backgroundPrompt` and sit behind a cut-out,
+   * so the two cannot share a prompt: one asks for a person against nothing, the
+   * other for a place with nobody in it.
+   *
+   * Travels on the request rather than being re-derived downstream, for the same
+   * reason `kind` does — by the time the pipeline is spending money on a frame it
+   * no longer has the cell that asked for it.
+   */
+  role: 'slot' | 'backdrop';
   /** Reported so the pipeline can log what it asked for and why. */
   reason: string;
 }
@@ -124,10 +137,43 @@ export function resolveSpecPhotoRequests(
           : HUG_SHARE);
 
     for (const cell of row.cells) {
+      const cellWidth = (canvas.width * cell.weight) / totalWeight;
+
+      /*
+       * The backdrop claims its frame before the cell's own slots do.
+       *
+       * The renderer walks a single cursor over `photos` in draw order, and the
+       * backdrop is drawn first because everything else stands on it. Emitting it
+       * first here is what keeps the cursor and this list describing the same
+       * frames — get the order wrong and the poster still renders, with the
+       * subject and its background swapped.
+       *
+       * Always a `scene`: it is a place, and it must not be background-removed.
+       * Sized to the cell rather than to the figure's column, and `cover`-fitted
+       * at render, so a frame that comes back a little off still fills it.
+       */
+      if (cell.backdrop === 'scene') {
+        const aspect = clamp(
+          rowHeight > 0 ? cellWidth / rowHeight : 1,
+          SPEC_ASPECT_MIN,
+          SPEC_ASPECT_MAX,
+        );
+        const long = Math.min(FAL_MAX_EDGE, Math.max(cellWidth, rowHeight, FAL_MIN_EDGE));
+
+        requests.push({
+          width: clampEdge(aspect >= 1 ? long : long * aspect),
+          height: clampEdge(aspect >= 1 ? long / aspect : long),
+          kind: 'scene',
+          role: 'backdrop',
+          reason:
+            `spec "${spec.name}" row ${rowIndex + 1} backdrop is about ` +
+            `${aspect.toFixed(2)}:1`,
+        });
+      }
+
       for (const slot of cell.slots) {
         if (slot !== 'photo') continue;
 
-        const cellWidth = (canvas.width * cell.weight) / totalWeight;
 
         /*
          * A cut-out subject is allowed a taller frame than a scene.
@@ -158,6 +204,7 @@ export function resolveSpecPhotoRequests(
           width,
           height,
           kind: cell.photoKind,
+          role: 'slot',
           reason:
             `spec "${spec.name}" row ${rowIndex + 1} ${cell.photoKind} cell is about ` +
             `${aspect.toFixed(2)}:1`,
@@ -201,6 +248,9 @@ export function resolvePlatePhotoRequests(
       width,
       height,
       kind: region.kind,
+      // A plate's regions are all slot frames; a plate has no backdrop concept —
+      // its background is the artwork itself.
+      role: 'slot' as const,
       reason:
         `plate "${spec.name}" region ${index + 1} is ${aspect.toFixed(2)}:1, ` +
         'measured from the artwork',

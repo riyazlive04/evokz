@@ -293,6 +293,36 @@ export async function runCreativePipeline(
        */
       const photos: Buffer[] = [];
       for (const request of photoRequests) {
+        /*
+         * A backdrop is drawn from its own brief, and skipped when there is none.
+         *
+         * The two prompts ask for opposite frames — the slot wants a figure
+         * against nothing, the backdrop wants a place with nobody in it — so
+         * reusing `imagePrompt` here would put a second doctor behind the first.
+         * A day whose sheet carries no `backgroundPrompt` spends nothing and the
+         * renderer falls back to the painted `blob`.
+         */
+        if (request.role === 'backdrop') {
+          const brief = entry.backgroundPrompt?.trim();
+          if (!brief) {
+            console.warn(
+              `[ace:pipeline] day ${entry.dayNumber} asks for a scene backdrop but ` +
+                'the sheet carries no background prompt; falling back to the painted one.',
+            );
+            photos.push(EMPTY_FRAME);
+            continue;
+          }
+
+          const backdrop = await generateCreativeAsset(brief, request, falCredentials);
+          await recordImageUsage(
+            getFalEndpoint(),
+            { clientId: client.id, calendarId: entry.id },
+            falCredentials.source,
+          );
+          photos.push(backdrop.body);
+          continue;
+        }
+
         const frame = await generateCreativeAsset(
           request.kind === 'subject'
             ? `${entry.imagePrompt}${SUBJECT_PROMPT_SUFFIX}`
@@ -743,6 +773,15 @@ export function getFalCutoutEndpoint(): string {
  * frame separable — a plain backdrop and a whole figure, so the matte has a
  * clean edge to find and nothing important is cropped at the bottom.
  */
+/**
+ * The placeholder pushed when a `scene` backdrop has no brief to draw from.
+ *
+ * Zero bytes rather than a dropped entry: the renderer walks `photos` by index,
+ * so a shorter array would hand the subject's frame to the backdrop and leave the
+ * figure drawing whatever came next.
+ */
+const EMPTY_FRAME = Buffer.alloc(0);
+
 const SUBJECT_PROMPT_SUFFIX =
   ', a single person, full body in frame, standing against a plain seamless ' +
   'studio backdrop, evenly lit, no props, no furniture, no text';

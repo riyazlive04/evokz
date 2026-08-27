@@ -538,6 +538,13 @@ function Cell({
    */
   const overlayIsDark = effectiveFill === 'inherit' ? canvasIsDark : effectiveFill !== 'light';
   const overlayGround = isOverlay ? groundFor(theme, overlayIsDark) : ground;
+  /*
+   * Claimed before the overlay's and before any slot's, matching the order
+   * `resolveSpecPhotoRequests` emits them in. The cursor is shared and
+   * monotonic, so this line and that loop have to agree or the subject and its
+   * background swap places.
+   */
+  const backdropPhoto = cell.backdrop === 'scene' ? photoIndexAt() : -1;
   const overlayPhoto = isOverlay ? photoIndexAt() : -1;
 
   const drawn = drawnSlots.map((slot, index) => {
@@ -607,6 +614,34 @@ function Cell({
     >
       {/* Behind everything, including the photograph it exists to support. */}
       {cell.backdrop === 'blob' && <SubjectBackdrop color={theme.accent} width={width} />}
+
+      {/*
+       * A generated place for the cut-out to stand in.
+       *
+       * Falls back to the painted blob when no frame arrived — a day whose sheet
+       * carries no `backgroundPrompt`, or a fal call that failed. A figure on a
+       * shape is a worse poster than a figure in a room and a better one than a
+       * figure floating on flat colour, so the degrade is to `blob` rather than
+       * to nothing.
+       */}
+      {cell.backdrop === 'scene' &&
+        (props.photos[backdropPhoto]?.dataUri ? (
+          <img
+            src={props.photos[backdropPhoto].dataUri}
+            width={width}
+            height={metrics.height}
+            style={{
+              position: 'absolute',
+              left: 0,
+              top: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+            }}
+          />
+        ) : (
+          <SubjectBackdrop color={theme.accent} width={width} />
+        ))}
 
       {isCard && <CardSurface color={cardColor} borderColor={ground.hairline} radius={metrics.s(28)} />}
 

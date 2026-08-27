@@ -259,6 +259,7 @@ interface RowCopy {
   caption: string;
   hashtags: string;
   imagePrompt: string;
+  backgroundPrompt: string | null;
   scheduledDate: Date;
   /** The template this day must be laid out from. Always set — the column is required. */
   posterTemplateId: string;
@@ -364,6 +365,7 @@ function planWrites(
       caption: row.caption,
       hashtags: normalizeHashtags(row.hashtags),
       imagePrompt: row.imagePrompt,
+      backgroundPrompt: row.backgroundPrompt,
       // Day 1 lands on the campaign start date. Calendar-day arithmetic, so a
       // DST transition mid-campaign cannot shift a row into the adjacent day.
       scheduledDate: nthDeliveryDate(startDate, dayNumber, deliveryDays, timeZone),

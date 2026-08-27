@@ -106,6 +106,17 @@ export const calendarImportRowSchema = z.object({
     .min(IMPORT_FIELD_LIMITS.imagePrompt.min, 'Image prompt is too short')
     .max(IMPORT_FIELD_LIMITS.imagePrompt.max, 'Image prompt is too long'),
   /**
+   * Brief for a `scene` backdrop's frame. Optional, and empty means "no
+   * backdrop" — a template asking for one degrades to the painted `blob` rather
+   * than failing, so a sheet written before this column existed still delivers.
+   */
+  backgroundPrompt: z
+    .string()
+    .trim()
+    .max(IMPORT_FIELD_LIMITS.imagePrompt.max, 'Background prompt is too long')
+    .nullable()
+    .default(null),
+  /**
    * Hand-authored poster text layer, already repaired and validated by
    * `coercePosterCopy`. Null leaves `ContentCalendar.posterCopy` unset, which is
    * the signal `ensurePosterCopy` uses to write it at render time.
@@ -128,7 +139,13 @@ export type CalendarImportInput = z.input<typeof calendarImportSchema>;
 // Column recognition
 // ---------------------------------------------------------------------------
 
-type ContentColumn = 'dayNumber' | 'templateName' | 'caption' | 'hashtags' | 'imagePrompt';
+type ContentColumn =
+  | 'dayNumber'
+  | 'templateName'
+  | 'caption'
+  | 'hashtags'
+  | 'imagePrompt'
+  | 'backgroundPrompt';
 
 type PosterColumn =
   | 'headline'
@@ -156,6 +173,10 @@ export const CONTENT_COLUMN_LABELS: Record<ContentColumn, string> = {
   caption: 'caption',
   hashtags: 'hashtags',
   imagePrompt: 'image prompt',
+  // Optional. Only read by a template whose spec asks for a `scene` backdrop;
+  // everywhere else it is carried and ignored, which is why it is not in
+  // REQUIRED_COLUMNS and why a sheet written before it existed still imports.
+  backgroundPrompt: 'background prompt',
 };
 
 /** Canonical spelling of every poster column, in template order. */
@@ -216,6 +237,10 @@ const HEADER_ALIASES: Record<string, SheetColumn> = {
   imagedescription: 'imagePrompt',
   imagebrief: 'imagePrompt',
   photobrief: 'imagePrompt',
+  backgroundprompt: 'backgroundPrompt',
+  backgroundbrief: 'backgroundPrompt',
+  backdropprompt: 'backgroundPrompt',
+  scenebrief: 'backgroundPrompt',
 
   // ---- Poster ----
   headline: 'headline',
@@ -703,6 +728,7 @@ function parseJsonSheet(text: string): CalendarImportParse {
         caption: '',
         hashtags: '',
         imagePrompt: '',
+        backgroundPrompt: null,
         poster: null,
         issues: ['Entry is not an object'],
         templateId: null,
@@ -795,6 +821,10 @@ function draftRow(
   const caption = read('caption');
   const hashtags = normalizeHashtags(read('hashtags'));
   const imagePrompt = read('imagePrompt');
+  // Empty means "no backdrop", not "invalid row": the column is optional and the
+  // renderer degrades to `blob` without it.
+  const backgroundPromptCell = read('backgroundPrompt');
+  const backgroundPrompt = backgroundPromptCell.length > 0 ? backgroundPromptCell : null;
 
   // Length only. Whether the name is empty or unknown is settled in `finalize`,
   // where the catalogue is in hand, so exactly one place composes the sentence
@@ -804,6 +834,9 @@ function draftRow(
   }
   checkLength(issues, 'Caption', caption, IMPORT_FIELD_LIMITS.caption);
   checkLength(issues, 'Image prompt', imagePrompt, IMPORT_FIELD_LIMITS.imagePrompt);
+  if (backgroundPrompt !== null) {
+    checkLength(issues, 'Background prompt', backgroundPrompt, IMPORT_FIELD_LIMITS.imagePrompt);
+  }
 
   if (hashtags.length > IMPORT_FIELD_LIMITS.hashtags.max) {
     issues.push(`Hashtags exceed ${IMPORT_FIELD_LIMITS.hashtags.max} characters`);
@@ -821,6 +854,7 @@ function draftRow(
     caption,
     hashtags,
     imagePrompt,
+    backgroundPrompt,
     poster,
     issues,
     // Filled by `finalize`, which holds the catalogue.

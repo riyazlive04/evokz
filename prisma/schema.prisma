@@ -370,6 +370,13 @@ model ContentCalendar {
   // Background-photo prompt only. The poster's text is never diffusion-rendered;
   // it is composited as vector type from `posterCopy`.
   imagePrompt        String            @db.Text
+  /// Brief for the frame a `scene` backdrop composites the cut-out onto.
+  ///
+  /// Separate from `imagePrompt` because the two ask for opposite things: the
+  /// slot brief wants a figure against nothing, the backdrop wants a place with
+  /// nobody in it. Optional — a spec asking for a `scene` backdrop on a day with
+  /// no brief here degrades to the painted `blob` rather than failing.
+  backgroundPrompt   String?           @db.Text
   // Slot content for the poster layer: headline lines, accent line index, body,
   // feature items, CTA labels. Shape validated by `posterCopySchema`
   // (src/lib/types/poster.ts). Null on rows seeded before the poster layer

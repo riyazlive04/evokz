@@ -157,6 +157,18 @@ export async function renderPoster(
   }
 
   const photos: PosterPhoto[] = input.photos.map((bytes, index) => {
+    /*
+     * A zero-length frame is a deliberate hole, not a failure.
+     *
+     * The pipeline pushes one when a `scene` backdrop was asked for and the day
+     * carried no `backgroundPrompt`, because dropping the entry instead would
+     * shift every later index and swap a subject with its background. The
+     * renderer tests `dataUri` and falls back to the painted backdrop.
+     */
+    if (bytes.length === 0) {
+      return { dataUri: '', width: 0, height: 0 };
+    }
+
     const dimensions = readImageDimensions(bytes);
     if (!dimensions) {
       throw new Error(

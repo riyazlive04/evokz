@@ -191,8 +191,25 @@ export const layoutSurfaceSchema = z.enum(LAYOUT_SURFACES);
  *
  * Painted in the theme accent, never a stored hex, for the reason on
  * `LAYOUT_FILLS`: one template has to serve every tenant.
+ *
+ * `scene` is the photographic version of the same job, and it exists because
+ * `blob` did not solve it. A painted shape behind a cut-out stops the figure
+ * floating but leaves the poster reading as a figure on a panel; what the
+ * references have behind their subject is a *place* — a corridor, a ward, a room
+ * with depth in it. So `scene` generates a second frame and composites the
+ * cut-out over it.
+ *
+ * **It costs a second diffusion call per poster.** That is the whole reason it is
+ * a per-cell opt-in rather than a default, and why `countPhotoSlots` counts it:
+ * the two-photo cap is a budget, and a backdrop spends half of it. See
+ * `docs/layout-backlog.md` for the arithmetic across a campaign.
+ *
+ * The brief comes from the day's `backgroundPrompt`, never from the spec — a
+ * spec holds no strings. A `scene` backdrop on a day that has no background
+ * prompt falls back to `blob`, so a sheet that has not been updated still draws
+ * something behind its figure rather than nothing.
  */
-export const LAYOUT_BACKDROPS = ['none', 'blob'] as const;
+export const LAYOUT_BACKDROPS = ['none', 'blob', 'scene'] as const;
 
 export type LayoutBackdrop = (typeof LAYOUT_BACKDROPS)[number];
 
@@ -733,7 +750,13 @@ export function countPhotoSlots(spec: PosterLayoutSpec): number {
       total +
       row.cells.reduce(
         (cellTotal, cell) =>
-          cellTotal + cell.slots.filter((slot) => slot === 'photo').length,
+          cellTotal +
+          cell.slots.filter((slot) => slot === 'photo').length +
+          // A `scene` backdrop is a second generated frame, not chrome. It costs a
+          // diffusion call exactly as a slot does, so everything that budgets,
+          // caps or orders photographs has to see it — including the two-photo
+          // limit and `render.tsx`'s "declares N photo cell(s)" guard.
+          (cell.backdrop === 'scene' ? 1 : 0),
         0,
       ),
     0,
