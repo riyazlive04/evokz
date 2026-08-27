@@ -37,7 +37,7 @@
       "fill": "dark",
       "cells": [
         {
-          "weight": 56,
+          "weight": 64,
           "fill": "dark",
           "align": "start",
           "valign": "start",
@@ -50,7 +50,7 @@
           ]
         },
         {
-          "weight": 44,
+          "weight": 36,
           "fill": "dark",
           "align": "center",
           "valign": "end",
