@@ -38,6 +38,7 @@ export const SAMPLE_LAYOUT_SPEC: PosterLayoutSpec = normalizeLayoutSpec({
   featureCount: 3,
   featureStyle: 'labelAndBody',
   ctaShape: 'pill',
+  accentRuleStyle: 'bar',
   // Empty, so the headline renders through the legacy `accentLineIndex` path —
   // one accent line, everything heavy. This preview is about colour and type,
   // and an emphasis pattern here would be a claim about a template that does

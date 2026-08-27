@@ -24,8 +24,15 @@
  *
  * Every template is snapshotted first, exactly as `autoplate-vertical.ts` does.
  *
+ * **It refuses to collapse distinct layouts.** If the templates it is pointed at
+ * do not already share one layout, applying a single spec would replace several
+ * designs with one — see the guard below for how that reached production.
+ * `--replace-differing` is the override, and it should be rare: a vertical whose
+ * templates differ wants one spec per design, applied with `--labels`.
+ *
  * Run: DATABASE_URL=… scripts/apply-authored-layout.ts \
- *        <vertical> <spec.json> <snapshotDir> [--labels a,b] [--keep-plates]
+ *        <vertical> <spec.json> <snapshotDir> [--labels a,b] [--keep-plates] \
+ *        [--replace-differing]
  */
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -34,6 +41,7 @@ import { Prisma, PrismaClient } from '@prisma/client';
 
 import {
   normalizeLayoutSpec,
+  parseLayoutSpec,
   posterLayoutSpecSchema,
   validateLayoutSpec,
 } from '@/lib/types/layout-spec';
@@ -51,6 +59,7 @@ function valueOf(args: string[], flag: string): string | null {
 async function main() {
   const args = process.argv.slice(2);
   const keepPlates = args.includes('--keep-plates');
+  const replaceDiffering = args.includes('--replace-differing');
 
   const labelsValue = valueOf(args, '--labels');
   const labelsIndex =
@@ -148,6 +157,50 @@ async function main() {
    */
   if (templates.length === 0 && labels.length > 0) {
     console.error(`No templates matched: ${labels.join(', ')}.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  /*
+   * Refuses to collapse several distinct layouts into one.
+   *
+   * This command was written for a vertical that is one design reused — where
+   * overwriting every template with the same spec is the whole point. Pointed at
+   * a vertical that is *fourteen* designs, it did exactly what it was told and
+   * said nothing: fourteen templates, each holding its own layout, were replaced
+   * by one, "layout applied and approved" printed fourteen times, and every
+   * poster the vertical drew from then on was the same card. The reference images
+   * are never read at render time, so nothing downstream could notice either.
+   *
+   * The targets' existing specs were already being read — to write the snapshot —
+   * and never compared. Comparing them is the whole guard: more than one distinct
+   * layout among the targets means this is a collapse, not an update.
+   *
+   * It mirrors the console's re-read guard, which refuses rather than warns for
+   * the same reason — the failure is silent, and the click is cheap.
+   */
+  const byLayout = new Map<string, string[]>();
+  for (const template of templates) {
+    const existing = parseLayoutSpec(template.layoutSpec);
+    if (!existing) continue;
+    const key = JSON.stringify(existing);
+    byLayout.set(key, [...(byLayout.get(key) ?? []), template.label]);
+  }
+
+  if (byLayout.size > 1 && !replaceDiffering) {
+    console.error(
+      `Refusing: these ${templates.length} template(s) hold ${byLayout.size} different layouts, ` +
+        `and applying "${spec.name}" would replace all of them with one.\n`,
+    );
+    for (const [key, labels] of byLayout) {
+      const name = (JSON.parse(key) as { name: string }).name;
+      console.error(`  "${name}"  ${labels.join(', ')}`);
+    }
+    console.error(
+      '\nA vertical whose templates differ needs one spec per design, applied with\n' +
+        '--labels. Pass --replace-differing only if every one of these really is\n' +
+        'meant to become the same layout.',
+    );
     process.exitCode = 1;
     return;
   }

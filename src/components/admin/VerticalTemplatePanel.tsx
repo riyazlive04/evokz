@@ -368,7 +368,7 @@ export function VerticalTemplatePanel({
           {sweep.read} layout(s) re-read
           {sweep.failed > 0 ? `, ${sweep.failed} failed` : ''}
           {sweep.skippedAuthored.length > 0
-            ? `. Left alone: ${sweep.skippedAuthored.join(', ')} — hand-authored, and a re-read would replace them with an extraction.`
+            ? `. Left alone: ${sweep.skippedAuthored.join(', ')} — hand-authored or carrying this vertical's standard layout, and a sweep would replace them with an extraction. Use "Re-read this one" on a card to override.`
             : '.'}
         </p>
       )}

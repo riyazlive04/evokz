@@ -35,6 +35,7 @@ import {
   uploadClientAsset,
 } from '@/lib/google-drive';
 import {
+  isInheritedLayout,
   normalizeLayoutSpec,
   parseLayoutSpec,
   posterLayoutSpecSchema,
@@ -1918,9 +1919,21 @@ export async function uploadVerticalTemplate(
      * vertical already knows what its templates look like, asking a model to
      * guess is strictly worse than using the answer, and it costs a call.
      *
-     * `layoutAuthoredAt` is stamped with it, so the guard on re-reading protects
-     * an inherited layout exactly as it protects one applied by hand — otherwise
-     * the first "re-read" would quietly put the estimate back.
+     * **Inherited is not authored, and this no longer claims it is.**
+     * `layoutAuthoredAt` used to be stamped here so that re-reading was refused
+     * on an inherited spec exactly as on a hand-authored one. That protected the
+     * spec and cost something worse: nobody had authored this layout *for this
+     * image*, so a genuinely different design uploaded into the vertical was
+     * given the standard layout, marked hand-authored, and then locked against
+     * the one action that could have corrected it. Fourteen Medicals templates
+     * reached production that way — every poster drew the same card, and the
+     * console reported all fourteen as "written by hand".
+     *
+     * So the stamp is left null and the protection moves to where it belongs:
+     * `isInheritedLayout` derives inheritance by comparing the stored spec with
+     * the vertical's default, and the *sweep* still skips those. A single
+     * "re-read" on one card is a deliberate act on a template somebody is
+     * looking at, and that is exactly the correction this needs to allow.
      */
     const standard = parseLayoutSpec(category.defaultLayoutSpec);
 
@@ -1943,7 +1956,9 @@ export async function uploadVerticalTemplate(
         layoutReading: standard
           ? `Inherited this vertical's standard layout "${standard.name}". No extraction was run.`
           : draft!.reading,
-        layoutAuthoredAt: standard ? new Date() : null,
+        // Never stamped on an upload. Only `layout:apply` authors a layout; an
+        // inherited one is recognised by `isInheritedLayout`, not by this column.
+        layoutAuthoredAt: null,
         /*
          * Approved on the spot when the extraction came back clean.
          *
@@ -3563,19 +3578,38 @@ export async function extractVerticalLayouts(
     const templates = await prisma.categoryTemplate.findMany({
       where: { categoryId: id },
       orderBy: { label: 'asc' },
-      select: { id: true, label: true, layoutAuthoredAt: true },
+      select: { id: true, label: true, layoutAuthoredAt: true, layoutSpec: true },
     });
 
     if (templates.length === 0) {
       return failure('This vertical has no templates to read.');
     }
 
+    /*
+     * The sweep protects inherited layouts as well as authored ones.
+     *
+     * An inherited spec is no longer stamped `layoutAuthoredAt` — see the upload
+     * path for why that claim was false — so without this the first "re-read all"
+     * would replace every inherited layout with a vision estimate, which is the
+     * downgrade this sweep exists to avoid. A *single* re-read is still allowed
+     * on an inherited template: that is one deliberate click on a card somebody
+     * is looking at, and it is how a design that is not the vertical's standard
+     * gets corrected.
+     */
+    const category = await prisma.category.findUnique({
+      where: { id },
+      select: { defaultLayoutSpec: true },
+    });
+
     const skippedAuthored: string[] = [];
     let read = 0;
     let failed = 0;
 
     for (const template of templates) {
-      if (template.layoutAuthoredAt !== null) {
+      if (
+        template.layoutAuthoredAt !== null ||
+        isInheritedLayout(template.layoutSpec, category?.defaultLayoutSpec)
+      ) {
         skippedAuthored.push(template.label);
         continue;
       }

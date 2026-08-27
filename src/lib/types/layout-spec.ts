@@ -219,6 +219,29 @@ export type LayoutCtaShape = (typeof LAYOUT_CTA_SHAPES)[number];
 export const layoutCtaShapeSchema = z.enum(LAYOUT_CTA_SHAPES);
 
 /**
+ * What the `accentRule` slot draws.
+ *
+ * `bar` is the original: a short solid rectangle in the accent colour.
+ *
+ * `pulse` is an ECG trace — a hairline with a heartbeat spike near its centre.
+ * It exists because it is not decoration in a medical vertical, it is the mark
+ * every reference in the library shares: all fourteen Medicals templates set one
+ * under the headline, and a spec that drew a plain bar there could not match any
+ * of them however carefully the rest of its geometry was written. A vocabulary
+ * that cannot say the one thing every design says is the thing stopping those
+ * designs from being restated at all.
+ *
+ * Kept a separate style rather than a separate slot: it occupies the same place
+ * in the stack, takes the same colour, and answers the same question about
+ * vertical rhythm, so a spec should be able to switch it without restructuring.
+ */
+export const LAYOUT_ACCENT_RULE_STYLES = ['bar', 'pulse'] as const;
+
+export type LayoutAccentRuleStyle = (typeof LAYOUT_ACCENT_RULE_STYLES)[number];
+
+export const layoutAccentRuleStyleSchema = z.enum(LAYOUT_ACCENT_RULE_STYLES);
+
+/**
  * How one headline line is set against its siblings.
  *
  * A structural property of the template, not of the day's words: references
@@ -371,6 +394,11 @@ export const posterLayoutSpecSchema = z.object({
    * could apply.
    */
   ctaShape: layoutCtaShapeSchema.default('pill'),
+  /**
+   * What an `accentRule` slot draws. Defaults to `bar`, so every spec stored
+   * before this field existed keeps the rule it has always drawn.
+   */
+  accentRuleStyle: layoutAccentRuleStyleSchema.default('bar'),
   /**
    * How each headline line is set, indexed by line.
    *
@@ -669,6 +697,33 @@ export function parseLayoutDraft(value: unknown): LayoutDraft {
 
   const spec = normalizeLayoutSpec(parsed.data);
   return { spec, problems: validateLayoutSpec(spec) };
+}
+
+/**
+ * Whether a template is carrying its vertical's standard layout rather than one
+ * written for its own reference image.
+ *
+ * **Why this is derived and not a column.** An upload inherits
+ * `Category.defaultLayoutSpec` so it does not burn a vision call on an estimate,
+ * which is right. What was wrong was recording that as `layoutAuthoredAt`:
+ * nobody authored that spec *for this image*, and the stamp bought it the
+ * protection of a hand-authored layout — re-reading refused — so a genuinely
+ * different design could be assimilated into the vertical and then locked
+ * against correction. Inheritance is a fact about two rows, so it is read from
+ * the rows.
+ *
+ * Both sides are parsed before comparing: Zod emits keys in schema order, so two
+ * specs that mean the same thing serialise identically regardless of how they
+ * were stored. An unreadable spec on either side is not inheritance.
+ */
+export function isInheritedLayout(stored: unknown, categoryDefault: unknown): boolean {
+  const mine = parseLayoutSpec(stored);
+  if (!mine) return false;
+
+  const standard = parseLayoutSpec(categoryDefault);
+  if (!standard) return false;
+
+  return JSON.stringify(mine) === JSON.stringify(standard);
 }
 
 /** Every photo slot in the spec, in render order. Drives the diffusion requests. */

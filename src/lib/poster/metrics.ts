@@ -82,7 +82,21 @@ export interface PosterMetrics {
   logo: { boxWidth: number; boxHeight: number; wordmark: number; gap: number };
   eyebrow: { size: number; tracking: number };
   headline: { size: number; lineHeight: number; tracking: number };
-  accentRule: { width: number; height: number; marginTop: number; marginBottom: number };
+  accentRule: {
+    width: number;
+    height: number;
+    marginTop: number;
+    marginBottom: number;
+    /**
+     * The `pulse` style is drawn wider and taller than the bar: it is a trace
+     * that has to read as a heartbeat, and a 120px box renders it as a squiggle.
+     * `pulseStroke` is floored at 2px because a sub-pixel stroke disappears
+     * entirely once resvg rasterises it.
+     */
+    pulseWidth: number;
+    pulseHeight: number;
+    pulseStroke: number;
+  };
   body: { size: number; lineHeight: number; maxWidth: number };
   feature: {
     iconBox: number;
@@ -232,6 +246,9 @@ export function resolveMetrics(
       height: Math.max(2, s(6)),
       marginTop: s(30),
       marginBottom: s(32),
+      pulseWidth: s(320),
+      pulseHeight: s(28),
+      pulseStroke: Math.max(2, s(3)),
     },
     body: {
       size: s(28),

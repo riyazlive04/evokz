@@ -13,7 +13,11 @@ import {
   fitHeadline,
   type PosterMetrics,
 } from '@/lib/poster/metrics';
-import type { LayoutCtaShape, LayoutEmphasis } from '@/lib/types/layout-spec';
+import type {
+  LayoutAccentRuleStyle,
+  LayoutCtaShape,
+  LayoutEmphasis,
+} from '@/lib/types/layout-spec';
 import type {
   CopyAlign,
   PosterCopy,
@@ -730,7 +734,51 @@ export function CtaButton({
  * carrying most of the "designed" signal — omitting it makes an otherwise correct
  * poster read as an unstyled text dump.
  */
-export function AccentRule({ metrics, ground }: SlotBase) {
+export function AccentRule({
+  metrics,
+  ground,
+  style = 'bar',
+}: SlotBase & { style?: LayoutAccentRuleStyle }) {
+  if (style === 'pulse') {
+    const { pulseWidth: w, pulseHeight: h, pulseStroke } = metrics.accentRule;
+
+    /*
+     * Explicit pixel `width`/`height` against a fixed `viewBox`, never a
+     * percentage.
+     *
+     * satori renders a percentage-sized SVG carrying `preserveAspectRatio="none"`
+     * as a filled rectangle — the path is discarded and the box is painted solid.
+     * A rule that silently became a slab is exactly the failure this element is
+     * here to avoid, so the box is sized in real pixels and the geometry below is
+     * written in the viewBox's own units.
+     *
+     * The trace: a hairline in from the left, six segments of heartbeat centred
+     * on the box, a hairline out to the right. `strokeLinecap: round` keeps the
+     * ends from reading as cut-off stubs at small scales.
+     */
+    return (
+      <div
+        style={{
+          display: 'flex',
+          width: w,
+          height: h,
+          marginTop: metrics.accentRule.marginTop,
+          marginBottom: metrics.accentRule.marginBottom,
+        }}
+      >
+        <svg width={w} height={h} viewBox="0 0 320 28" fill="none">
+          <path
+            d="M0 14 H142 l6 -4 l6 8 l6 -16 l6 24 l6 -18 l6 6 H320"
+            stroke={ground.accentFill}
+            strokeWidth={(pulseStroke / w) * 320}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{

@@ -795,7 +795,15 @@ function Slot({
       );
 
     case 'accentRule':
-      return <AccentRule metrics={metrics} theme={theme} ground={ground} align={copyAlign} />;
+      return (
+        <AccentRule
+          metrics={metrics}
+          theme={theme}
+          ground={ground}
+          align={copyAlign}
+          style={spec.accentRuleStyle}
+        />
+      );
 
     case 'body':
       return (
