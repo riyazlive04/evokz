@@ -7,6 +7,8 @@ import satori from 'satori';
 import { intEnv, optionalEnv } from '@/lib/env';
 import { loadFonts } from '@/lib/poster/fonts';
 import { renderLayoutSpec } from '@/lib/poster/layout-render';
+import { renderHtmlPoster } from '@/lib/poster/html/render';
+import { findHtmlTemplateFor, type HtmlTemplate } from '@/lib/poster/html/template';
 import {
   readImageDimensions,
   readSvgDimensions,
@@ -99,6 +101,17 @@ export interface RenderPosterInput {
     /** Whether the reference's sampled colours win over the client's brand. */
     useTemplatePalette: boolean;
   };
+  /**
+   * The `CategoryTemplate.label` this poster is being drawn from, when the
+   * caller knows it.
+   *
+   * The only thing that selects the HTML renderer. A template migrates by
+   * having a file added under `src/lib/poster/templates/` whose manifest claims
+   * this label — no database change, no flag, and no effect on the other
+   * twenty-three. A caller that does not pass it gets the spec renderer, which
+   * is why adding the path routes nothing on its own.
+   */
+  templateLabel?: string;
   /** Output canvas, from the client's `imageSizePreset`. */
   width: number;
   height: number;
@@ -119,6 +132,17 @@ export interface RenderedPoster {
 export async function renderPoster(
   input: RenderPosterInput,
 ): Promise<RenderedPoster> {
+  /*
+   * The migration seam.
+   *
+   * A template that has been authored as HTML draws in Chromium; everything else
+   * still draws through satori. Checked before anything else because the HTML
+   * path needs none of what follows — no theme, no metrics, no reference grid —
+   * and computing them to throw them away would be misleading to read.
+   */
+  const template = await findHtmlTemplateFor(input.templateLabel);
+  if (template) return renderViaTemplate(input, template);
+
   const theme = resolvePosterTheme(input.guideline);
   /*
    * The spec's measured aspect is passed so the design can be re-proportioned to
@@ -156,32 +180,7 @@ export async function renderPoster(
     );
   }
 
-  const photos: PosterPhoto[] = input.photos.map((bytes, index) => {
-    /*
-     * A zero-length frame is a deliberate hole, not a failure.
-     *
-     * The pipeline pushes one when a `scene` backdrop was asked for and the day
-     * carried no `backgroundPrompt`, because dropping the entry instead would
-     * shift every later index and swap a subject with its background. The
-     * renderer tests `dataUri` and falls back to the painted backdrop.
-     */
-    if (bytes.length === 0) {
-      return { dataUri: '', width: 0, height: 0 };
-    }
-
-    const dimensions = readImageDimensions(bytes);
-    if (!dimensions) {
-      throw new Error(
-        `Background photo ${index + 1} is not a recognisable PNG, JPEG, WebP or GIF — ` +
-          'the poster layer cannot lay out an image of unknown size.',
-      );
-    }
-    return {
-      dataUri: toDataUri(bytes, dimensions.mimeType),
-      width: dimensions.width,
-      height: dimensions.height,
-    };
-  });
+  const photos = toPosterPhotos(input.photos);
 
   const logo = await loadLogo(input.identity.logoUrl);
 
@@ -377,6 +376,114 @@ export async function renderPoster(
     layoutName: input.layoutSpec.name,
     canvasMode: metrics.mode,
   };
+}
+
+/**
+ * The HTML path: hand a template the client's words and pictures, screenshot it.
+ *
+ * Notice what is *not* here, because it is most of what the spec path does.
+ *
+ *   - **No theme.** Template colours are hardcoded in its CSS, so
+ *     `resolvePosterTheme` and its contrast machinery have nothing to decide.
+ *     One client using this template gets this template's colours.
+ *   - **No metrics.** There is no reference grid; the template's stylesheet is
+ *     its geometry, scaled by `zoom` to whatever canvas was resolved.
+ *   - **No `assertRenderableCanvas`.** That guard exists because `@resvg/resvg-js`
+ *     is a native addon that panics in Rust on impossible geometry and takes the
+ *     whole Node process with it, uncatchable. Chromium is a child process with
+ *     no such hazard: a page that cannot lay out produces a bad poster or a
+ *     timeout, both of which are ordinary errors on one row.
+ *   - **No logo tinting.** `tintLogoInk` flattened a mark to one ink so it would
+ *     read on a ground the spec had chosen at runtime. A template knows its own
+ *     ground at authoring time, so the light/dark swap is one line of CSS in the
+ *     file — `filter: brightness(0) invert(1)` or `filter: brightness(0)` — and
+ *     the sharp round-trip goes away with it.
+ */
+async function renderViaTemplate(
+  input: RenderPosterInput,
+  template: HtmlTemplate,
+): Promise<RenderedPoster> {
+  const wanted = template.manifest.photos.length;
+  if (wanted > 0 && input.photos.length === 0) {
+    throw new Error(
+      `The template "${template.manifest.label}" declares ${wanted} photo frame(s) but ` +
+        'the poster layer was given no background photo.',
+    );
+  }
+  if (wanted > input.photos.length && input.photos.length > 0) {
+    // Same policy and same reason as the spec path: repeating the last frame is
+    // right, and doing it silently would ship a two-photo poster carrying one
+    // image twice after a diffusion call failed.
+    console.warn(
+      `[ace:poster] template "${template.manifest.label}" wants ${wanted} photos but ` +
+        `${input.photos.length} were supplied — the last frame will be repeated.`,
+    );
+  }
+
+  const logo = await loadLogo(input.identity.logoUrl);
+
+  const identity: PosterIdentity = {
+    companyName: input.identity.companyName,
+    logoDataUri: logo?.dataUri ?? null,
+    logoIncludesName: input.identity.logoIncludesName === true,
+    brandTagline: normalizeTagline(input.identity.brandTagline),
+    phone: formatPhone(input.identity.displayPhone, input.identity.whatsappNumber),
+    website: normalizeWebsite(input.identity.websiteUrl),
+  };
+
+  const body = await renderHtmlPoster({
+    template,
+    copy: input.copy,
+    identity,
+    photos: toPosterPhotos(input.photos),
+    width: input.width,
+    height: input.height,
+  });
+
+  return {
+    body,
+    mimeType: 'image/png',
+    layoutName: template.manifest.label,
+    // There are no canvas modes on this path — the template is drawn at its own
+    // proportions and scaled. Reported as the renderer that drew it so the
+    // preview route's `X-Poster-Canvas-Mode` header stays a useful thing to read.
+    canvasMode: 'template',
+  };
+}
+
+/**
+ * Background frames as data URIs, in slot order.
+ *
+ * Shared by both renderers because the rule about holes is the same for each
+ * and is easy to get subtly wrong in one of them.
+ */
+function toPosterPhotos(buffers: Buffer[]): PosterPhoto[] {
+  return buffers.map((bytes, index) => {
+    /*
+     * A zero-length frame is a deliberate hole, not a failure.
+     *
+     * The pipeline pushes one when a `scene` backdrop was asked for and the day
+     * carried no `backgroundPrompt`, because dropping the entry instead would
+     * shift every later index and swap a subject with its background. Both
+     * renderers test `dataUri` and fall back to the painted backdrop.
+     */
+    if (bytes.length === 0) {
+      return { dataUri: '', width: 0, height: 0 };
+    }
+
+    const dimensions = readImageDimensions(bytes);
+    if (!dimensions) {
+      throw new Error(
+        `Background photo ${index + 1} is not a recognisable PNG, JPEG, WebP or GIF — ` +
+          'the poster layer cannot lay out an image of unknown size.',
+      );
+    }
+    return {
+      dataUri: toDataUri(bytes, dimensions.mimeType),
+      width: dimensions.width,
+      height: dimensions.height,
+    };
+  });
 }
 
 /** Filesystem-safe form of a layout name, for the debug SVG filename. */

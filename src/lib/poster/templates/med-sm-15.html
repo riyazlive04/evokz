@@ -1,0 +1,478 @@
+<script type="application/json" id="poster-manifest">
+{
+  "label": "Med-SM-15",
+  "aspect": 0.5625,
+  "referenceWidth": 900,
+  "featureCount": 4,
+  "photos": [
+    {
+      "name": "hero",
+      "kind": "scene",
+      "role": "slot",
+      "width": 600,
+      "height": 400,
+      "reason": "the heart mask, cropped square-ish and centred on the subject's hands"
+    }
+  ]
+}
+</script>
+
+<!--
+  Med-SM-15 — "GOOD HEALTH / HAPPIER LIFE".
+
+  Authored against the reference JPEG (900×1600), which is the source of truth:
+  /api/templates/6f3e7788-22dc-4497-9ec0-5d29556bb0e7/thumbnail?full=1
+
+  Every number below was measured off that image rather than estimated, because
+  estimating geometry off a reference is exactly the failure that killed the
+  vision-model extraction path — 59 of its 60 boxes landed on a 0.05 grid.
+
+  This is the template the previous renderer provably could not draw. Four marks
+  in it have no word in the layout-spec vocabulary:
+
+    · the heart-shaped photo mask — an arbitrary path clipping a photograph
+    · the gradient in the heart's ring
+    · the two-tone headline, one colour per line
+    · the wave-topped footer, where the vocabulary offers only a dome
+
+  Colours are hardcoded and intentional. Words are not: every string arrives
+  through a data-slot. See html/template.ts for the whole vocabulary and
+  check:templates for the lint that keeps literal copy out of this file.
+
+  Measured anchors, in the reference's own 900×1600 pixels. The vertical rhythm
+  below is derived from these rather than eyeballed, so a change to one block's
+  size has to be paid for out of another's:
+
+    logo box      43 … 247
+    headline      caps at 314 … 384 and 414 … 480 (70px caps, 100px apart)
+    pulse rule    trace centred on y 540
+    heart         585 … 1062, 734 wide, centred on x 450
+    cards         1078 … 1239, four of 168 across 756, gaps of 28
+    card labels   1218 … 1237 (19px caps)
+    wave crest    (0,1373) (220,1334) (600,1359) (899,1277)
+    phone         1411 … 1472 (61px caps)
+    strapline     1513 … 1548
+-->
+
+<style>
+  /*
+   * The page ground. Flat #f6f6f6 in the reference — sampled, not guessed; the
+   * apparent warmth at the top is JPEG noise rather than a gradient.
+   */
+  .p15 {
+    position: absolute;
+    inset: 0;
+    background: #f6f6f6;
+    font-family: 'Inter', system-ui, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    /* Room for the footer band, which is taken out of flow below. */
+    padding: 43px 38px 361px;
+  }
+
+  /* --- logo ------------------------------------------------------------- */
+  .p15-logo {
+    flex: none;
+    height: 204px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .p15-logo img {
+    /*
+     * A fixed box with `contain`, never `max-width`/`max-height`.
+     *
+     * An uploaded SVG logo usually carries a viewBox and no width or height, so
+     * it has an intrinsic *ratio* and no intrinsic size. As a flex item that
+     * resolves to a used size of 0×0 — the mark loads, reports a sensible
+     * naturalWidth, and draws nothing at all, leaving the top fifth of the
+     * poster empty with no error anywhere. `object-fit: contain` also lets one
+     * rule hold for a wordmark and a square mark alike, which is the whole
+     * reason the box is fixed rather than hugging.
+     */
+    width: 330px;
+    height: 204px;
+    object-fit: contain;
+    /*
+     * The one client-specific mark, and the only place a client's own artwork
+     * changes this design. Flattened to solid black because the ground is
+     * light and a white-on-transparent logo would otherwise vanish entirely.
+     * This is the light half of the agreed light/dark swap; a dark template
+     * uses `brightness(0) invert(1)`.
+     *
+     * Worth naming what the swap costs: the reference's own lockup is navy and
+     * teal, and flattening to one ink cannot keep that. It is the price of
+     * having no per-client palette.
+     */
+    filter: brightness(0);
+  }
+
+  /* --- headline --------------------------------------------------------- */
+  .p15-headline {
+    flex: none;
+    margin-top: 53px;
+    width: 100%;
+    text-align: center;
+    font-family: 'Archivo', system-ui, sans-serif;
+    /*
+     * 700, not 800. Measured off the reference's stems: at 800 the letterforms
+     * close up and the counters in G, O and P go noticeably tighter than the
+     * reference's, which reads as a heavier face rather than a bigger one.
+     */
+    font-weight: 700;
+    /*
+     * Size and spacing are measured, not chosen. The reference's caps are 70px
+     * tall and its two lines sit 100px apart, which is 96px at Archivo's
+     * cap-height ratio and a line-height of 1.042. At the default width that
+     * type is 70px too wide for the column, so the width axis takes it back —
+     * the reference face is a condensed grotesque, and matching its proportions
+     * needs the axis rather than a smaller size.
+     */
+    font-size: 99px;
+    font-stretch: 85%;
+    line-height: 1.01;
+    letter-spacing: -0.006em;
+    text-transform: uppercase;
+    /*
+     * The copywriter chose these line breaks — `headlineLines` is an array
+     * precisely so the renderer does not get to re-wrap them — so each line is
+     * set nowrap and the *block* is shrunk to fit by `data-fit`. That is the
+     * difference from the old `headlineSize`, which took a line count and
+     * guessed; this measures.
+     */
+    white-space: nowrap;
+    /*
+     * Flat, both lines. The reference looks gradient-filled at a glance and is
+     * not: sampled down the stem of the H in HAPPIER it holds #023468 from cap
+     * to baseline. The apparent falloff is JPEG ringing on the counters.
+     */
+    color: #03396b;
+  }
+  .p15-headline > div[data-accent] {
+    color: #02828c;
+  }
+
+  /* --- pulse rule ------------------------------------------------------- */
+  .p15-pulse {
+    flex: none;
+    margin-top: 5px;
+    width: 580px;
+    height: 70px;
+    /* The kit draws in currentColor, so the ink is set here and the mark follows. */
+    color: #0d8189;
+  }
+
+  /* --- heart ------------------------------------------------------------ */
+  /*
+   * The only element that absorbs reflow. A four-line headline, or one long
+   * enough to have been shrunk, takes its height from here — the hero scales
+   * and stays centred instead of pushing the cards into the footer.
+   */
+  .p15-heart {
+    flex: 1 1 auto;
+    min-height: 180px;
+    width: 734px;
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /*
+     * The reference's artwork sits on a soft shadow — measured as a ~#d6d8d7
+     * smudge under the bottom point. Applied to the whole SVG rather than to
+     * one path so it follows the silhouette, which is the whole reason to use
+     * drop-shadow over a box-shadow on a rectangular element.
+     */
+    filter: drop-shadow(0 10px 16px rgba(2, 60, 72, 0.20));
+  }
+  .p15-heart svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  /* --- feature cards ---------------------------------------------------- */
+  .p15-cards {
+    flex: none;
+    margin-top: 16px;
+    width: 756px;
+    display: flex;
+    justify-content: center;
+    gap: 28px;
+  }
+  .p15-card {
+    flex: 1 1 0;
+    min-height: 161px;
+    /*
+     * Barely lighter than the ground and faintly cyan — sampled at #f7ffff
+     * against a #f6f6f6 page. The cards read as cards almost entirely through
+     * the shadow, so a whiter face would make them look like cut-outs.
+     */
+    background: #f9fdfd;
+    border-radius: 16px;
+    /*
+     * Tight and close, not soft and far. Under the reference's cards the ground
+     * drops to #d6d8d7 within a few pixels and is back to #f5f5f5 by twenty —
+     * a short, fairly dark contact shadow.
+     */
+    box-shadow: 0 3px 8px rgba(0, 52, 62, 0.13), 0 10px 18px -8px rgba(0, 52, 62, 0.10);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 20px 4px 0;
+  }
+  .p15-card svg {
+    /*
+     * 72×90, from the reference's own 69×88 stethoscope. The first pass drew
+     * these in a 68px square, which is what made them read as thin decoration
+     * rather than as pictograms.
+     */
+    width: 72px;
+    height: 90px;
+    flex: none;
+    color: #0d7c86;
+  }
+  .p15-card-label {
+    /*
+     * 26px, from the reference's 19px caps. The labels very nearly fill their
+     * card — "Scan Center" is 136px inside a 168px box — which is why the card
+     * has almost no horizontal padding and why the label may spill past the
+     * face rather than wrap. That overhang is in the reference and reads as
+     * deliberate.
+     */
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 29px;
+    font-stretch: 88%;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: -0.004em;
+    text-align: center;
+    /*
+     * Wider than its card on purpose: 168px of card plus 11px of overhang each
+     * side, which is half the 28px gutter. "Scan Center" is 136px and stays on
+     * one line exactly as the reference has it, while a service name long enough
+     * to reach 190px wraps rather than climbing into the next card.
+     */
+    max-width: 190px;
+    color: #10606b;
+  }
+
+  /* --- footer ----------------------------------------------------------- */
+  .p15-footer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 346px;
+  }
+  .p15-wave {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .p15-footer-inner {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 52px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+  }
+  .p15-phone {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    width: 100%;
+    /* 108px in the reference, either side of an icon-plus-number lockup 683
+       wide. Trimmed to 70 so a longer international number has somewhere to go
+       before `data-fit` has to shrink it. */
+    padding: 0 70px;
+  }
+  .p15-phone svg {
+    width: 88px;
+    height: 88px;
+    flex: none;
+    color: #ffffff;
+  }
+  .p15-phone-number {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-weight: 800;
+    /*
+     * 69px at 83% width, for the reference's 61px digits set 579px wide.
+     *
+     * Solved from a render rather than from a cap-height ratio, which is what
+     * the two wrong passes before it were. Archivo's lining figures stand at
+     * 0.88em, not the 0.73em a cap-height table implies, so the size that looked
+     * right on paper was a fifth too big — and the width axis was then dragged
+     * down to 66% to compensate, which made the digits both too tall and too
+     * narrow at once.
+     */
+    font-size: 88px;
+    font-stretch: 77%;
+    line-height: 1;
+    letter-spacing: -0.005em;
+    color: #ffffff;
+    white-space: nowrap;
+    /* Without this the flex item refuses to go below its content width, so the
+       overflow `data-fit` measures never materialises. */
+    min-width: 0;
+  }
+  .p15-strapline {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    width: 100%;
+    padding: 0 80px;
+  }
+  .p15-strapline span {
+    font-size: 34px;
+    font-weight: 400;
+    color: #e6f7f9;
+    text-align: center;
+    white-space: nowrap;
+  }
+  .p15-strapline i {
+    display: block;
+    width: 58px;
+    height: 3px;
+    background: #9ed2d6;
+    flex: none;
+  }
+</style>
+
+<div class="p15">
+  <div class="p15-logo"><img data-image="logo" alt=""></div>
+
+  <div class="p15-headline" data-fit>
+    <template data-repeat="headline">
+      <div data-slot="line"></div>
+    </template>
+  </div>
+
+  <svg class="p15-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
+
+  <div class="p15-heart">
+    <!--
+      Four stacked hearts, not a ring.
+
+      The first pass drew one path with a concentric inset, which reads as a
+      border. The reference is layered artwork: a dark navy heart offset down and
+      right shows as a crescent along the right and under the point, the gradient
+      heart sits on top of it, then a white gap, then the photograph. That offset
+      is the whole reason the left of the ribbon looks lighter and thicker than
+      the right, and it cannot be had from a single stroked path.
+
+      Scaling about the shape's own centre keeps the gap even without needing
+      four hand-drawn paths that would drift apart. `slice` on the image is the
+      equivalent of object-fit: cover — satori ignored object-position entirely,
+      which is a large part of why photographs never sat where the reference had
+      them.
+
+      The silhouette is measured: 734 wide, 477 tall, widest at y=160, cleft
+      bottoming at y=96, lobe tops at x=145 and x=589.
+    -->
+    <svg viewBox="0 0 734 477" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <defs>
+        <linearGradient id="p15-ring" x1="0.05" y1="0" x2="0.95" y2="0.85">
+          <stop offset="0" stop-color="#17a9a8"/>
+          <stop offset="0.42" stop-color="#0e8e97"/>
+          <stop offset="1" stop-color="#014c63"/>
+        </linearGradient>
+        <path id="p15-heart-path"
+              d="M367 477C290 445 0 300 0 160 0 55 55 0 145 0c92 0 178 40 222 96C411 40 497 0 589 0c90 0 145 55 145 160 0 140-290 285-367 317Z"/>
+        <clipPath id="p15-heart-clip">
+          <use href="#p15-heart-path" transform="translate(-13 -9) translate(367 238) scale(0.808) translate(-367 -238)"/>
+        </clipPath>
+      </defs>
+      <!--
+        The dark heart is the full silhouette; the gradient one is very slightly
+        smaller and pushed up and left inside it, so the navy reads as a crescent
+        along the right and under the point. That, and not a thicker stroke, is
+        what makes the reference look like layered artwork.
+      -->
+      <use href="#p15-heart-path" fill="#01475e"/>
+      <use href="#p15-heart-path" fill="url(#p15-ring)"
+           transform="translate(-13 -9) translate(367 238) scale(0.965) translate(-367 -238)"/>
+      <use href="#p15-heart-path" fill="#fbfefe"
+           transform="translate(-13 -9) translate(367 238) scale(0.855) translate(-367 -238)"/>
+      <image data-image="hero" x="0" y="0" width="734" height="477"
+             preserveAspectRatio="xMidYMid slice" clip-path="url(#p15-heart-clip)"/>
+    </svg>
+  </div>
+
+  <div class="p15-cards">
+    <!--
+      Four cards, four of the designer's own icons, in the reference's order.
+      The icon belongs to the card rather than to the copy: a repeat would clone
+      one card four times and give all four the same drawing, which is how the
+      old renderer ended up choosing from its own icon set instead of the
+      designer's. A day with fewer features drops the surplus cards whole.
+
+      The marks themselves live in _kit.svg and are shared: Med-SM-14 and
+      Med-SM-16 carry the same four in the same order, because the references
+      are one image model's output in one style rather than a designer's kit.
+      Drawing them once there beats tracing them twenty-three times here.
+    -->
+    <div class="p15-card" data-when="feature1">
+      <svg aria-hidden="true"><use href="#ic-stethoscope"/></svg>
+      <div class="p15-card-label" data-slot="feature1Label"></div>
+    </div>
+
+    <div class="p15-card" data-when="feature2">
+      <svg aria-hidden="true"><use href="#ic-microscope"/></svg>
+      <div class="p15-card-label" data-slot="feature2Label"></div>
+    </div>
+
+    <div class="p15-card" data-when="feature3">
+      <svg aria-hidden="true"><use href="#ic-therapist"/></svg>
+      <div class="p15-card-label" data-slot="feature3Label"></div>
+    </div>
+
+    <div class="p15-card" data-when="feature4">
+      <svg aria-hidden="true"><use href="#ic-scanner"/></svg>
+      <div class="p15-card-label" data-slot="feature4Label"></div>
+    </div>
+  </div>
+
+  <div class="p15-footer">
+    <!--
+      The wave. Traced from the measured top edge rather than drawn by feel: it
+      falls from (0,1373), crests at (220,1334), sags to (600,1359) and then
+      climbs hard to (899,1277). The first pass missed that last climb entirely
+      and read as a gentle curve rather than a wave.
+
+      The pale layer above it is real — sampled at #d8ebe9 over the #f6f6f6
+      ground — and hugs the teal rather than floating free of it.
+
+      Expressed in the footer's own 346px-tall box, which starts at y=1254.
+    -->
+    <svg class="p15-wave" viewBox="0 0 900 346" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 133C88 106 158 94 240 95c112 2 232 22 372 17 124-4 212-58 288-116v350H0z"
+            fill="#d8ebe9"/>
+      <path d="M0 119C80 92 150 80 230 81c110 2 230 22 370 24 122 2 212-52 300-82v323H0z"
+            fill="#017b84"/>
+    </svg>
+
+    <div class="p15-footer-inner">
+      <!--
+        `data-fit` on the lockup, not only on the headline. A fifteen-character
+        Indian number is what the reference was set for; a longer international
+        one would otherwise run off both edges of the band.
+      -->
+      <div class="p15-phone">
+        <svg aria-hidden="true"><use href="#ic-phone"/></svg>
+        <div class="p15-phone-number" data-slot="phone" data-fit></div>
+      </div>
+
+      <div class="p15-strapline" data-when="tagline">
+        <i></i><span data-slot="tagline"></span><i></i>
+      </div>
+    </div>
+  </div>
+</div>

@@ -17,11 +17,18 @@ const nextConfig = {
     // node_modules. For sharp the addon is resolved per-platform out of
     // `@img/sharp-<platform>`, so the lockfile has to carry the linux entries
     // even though it is generated on Windows; see the note in logo-key.ts.
+    // `playwright` is here for a different reason from the addons below it: it
+    // is pure JS, but it resolves its browser registry, its driver and its
+    // injected page scripts from paths computed relative to its own files at
+    // runtime. Bundled, those paths point inside the webpack output and the
+    // launch fails with a missing-driver error that names a directory nobody
+    // wrote.
     serverComponentsExternalPackages: [
       'googleapis',
       'google-auth-library',
       '@resvg/resvg-js',
       'sharp',
+      'playwright',
     ],
   },
 };

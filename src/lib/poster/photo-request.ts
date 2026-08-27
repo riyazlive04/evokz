@@ -5,6 +5,7 @@ import {
 } from '@/lib/image-sizes';
 import type { LayoutPhotoKind, PosterLayoutSpec } from '@/lib/types/layout-spec';
 import type { PosterPlateSpec } from '@/lib/types/plate-spec';
+import type { TemplateManifest } from '@/lib/poster/html/template';
 
 /**
  * What size to ask fal.ai for — the *background photo*, not the delivered canvas.
@@ -304,4 +305,41 @@ function clampEdge(value: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+/**
+ * One request per photo an HTML template declares, in manifest order.
+ *
+ * Nothing is estimated here, and that is the whole difference from
+ * `resolveSpecPhotoRequests`. A spec's photo cell has no height until the copy
+ * above it has been laid out, so its aspect has to be inferred from row sizing
+ * modes and column weights; a template's frame is a box its author measured off
+ * the reference JPEG and wrote into the manifest. The numbers are scaled from
+ * the template's reference width to the real canvas and otherwise believed.
+ *
+ * The practical effect is on spend rather than on correctness — the CSS crops a
+ * mismatched frame either way — but it is the difference between buying a frame
+ * that is cropped by a few per cent and one that is cropped by half.
+ */
+export function resolveTemplatePhotoRequests(
+  manifest: TemplateManifest,
+  canvas: PhotoCanvas,
+): PhotoRequest[] {
+  const scale = canvas.width / manifest.referenceWidth;
+
+  return manifest.photos.map((photo) => {
+    const frameWidth = Math.max(1, photo.width * scale);
+    const frameHeight = Math.max(1, photo.height * scale);
+    const aspect = frameWidth / frameHeight;
+
+    const long = Math.min(FAL_MAX_EDGE, Math.max(frameWidth, frameHeight, FAL_MIN_EDGE));
+
+    return {
+      width: clampEdge(aspect >= 1 ? long : long * aspect),
+      height: clampEdge(aspect >= 1 ? long / aspect : long),
+      kind: photo.kind,
+      role: photo.role,
+      reason: `template "${manifest.label}" frame "${photo.name}": ${photo.reason}`,
+    };
+  });
 }

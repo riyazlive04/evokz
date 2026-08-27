@@ -15,9 +15,11 @@ import {
 } from '@/lib/poster/placeholder-photo';
 import { downloadDriveFile } from '@/lib/google-drive';
 import { resolvePosterCanvas } from '@/lib/poster/canvas';
+import { findHtmlTemplateFor } from '@/lib/poster/html/template';
 import {
   resolvePlatePhotoRequests,
   resolveSpecPhotoRequests,
+  resolveTemplatePhotoRequests,
 } from '@/lib/poster/photo-request';
 import { renderPoster } from '@/lib/poster/render';
 import { verticalKeyFor } from '@/lib/ai/vertical-vocabulary';
@@ -135,6 +137,7 @@ export async function GET(request: NextRequest) {
      * the operator's signal that the vertical is not shippable.
      */
     let resolved: PosterLayoutSpec = draft?.spec ?? SAMPLE_LAYOUT_SPEC;
+    let clientLayoutLabel: string | null = null;
     if (!templateId && context) {
       const layout = await resolveDayLayout({
         categoryId: context.categoryId,
@@ -154,6 +157,7 @@ export async function GET(request: NextRequest) {
         );
       }
       resolved = layout.spec;
+      clientLayoutLabel = layout.label;
     }
 
     // Shaped exactly as the pipeline would shape it, so a cropping problem shows up
@@ -179,19 +183,44 @@ export async function GET(request: NextRequest) {
      * only, so an operator can see both readings side by side before committing
      * one to the column.
      */
+    /*
+     * An authored HTML template wins over both other paths.
+     *
+     * The preview is the review surface, and approval means an operator has seen
+     * the template rendered — so it has to render what production would render.
+     * Once a template has an HTML file that is what production draws, and a
+     * preview still showing the spec interpretation would be approving the wrong
+     * artefact.
+     *
+     * Resolved from the label rather than from a flag, exactly as `renderPoster`
+     * resolves it, so the two cannot disagree about which renderer owns a
+     * template.
+     */
+    const htmlTemplate = await findHtmlTemplateFor(draft?.label ?? clientLayoutLabel);
+
     const paletteParam = params.get('palette');
-    const plate = templateId
+    // Never loaded for an authored template: the HTML *is* the artwork, so
+    // compositing type onto an erased JPEG of the same design would draw it
+    // twice.
+    const plate = templateId && !htmlTemplate
       ? await loadTemplatePlate(
           templateId,
           paletteParam === 'template' ? true : paletteParam === 'client' ? false : null,
         )
       : null;
 
-    const canvas = resolvePosterCanvas(plate?.spec ?? resolved, preset);
+    const canvas = resolvePosterCanvas(
+      htmlTemplate
+        ? { aspect: htmlTemplate.manifest.aspect, name: htmlTemplate.manifest.label }
+        : (plate?.spec ?? resolved),
+      preset,
+    );
 
-    const requests = plate
-      ? resolvePlatePhotoRequests(plate.spec, canvas)
-      : resolveSpecPhotoRequests(resolved, canvas);
+    const requests = htmlTemplate
+      ? resolveTemplatePhotoRequests(htmlTemplate.manifest, canvas)
+      : plate
+        ? resolvePlatePhotoRequests(plate.spec, canvas)
+        : resolveSpecPhotoRequests(resolved, canvas);
 
     const photos = requests.map((request, index) => {
       const placeholder = capLongEdge(request.width, request.height, 1280);
@@ -217,6 +246,7 @@ export async function GET(request: NextRequest) {
       identity: context?.identity ?? SAMPLE_IDENTITY,
       photos,
       ...(plate ? { plate } : {}),
+      ...(htmlTemplate ? { templateLabel: htmlTemplate.manifest.label } : {}),
       width: canvas.width,
       height: canvas.height,
     });
@@ -237,7 +267,7 @@ export async function GET(request: NextRequest) {
         'X-Poster-Canvas-Reason': canvas.reason,
         // Which path drew this, so a caller can tell a composited poster from a
         // rebuilt one without reading the pixels.
-        'X-Poster-Path': plate ? 'plate' : 'grid',
+        'X-Poster-Path': htmlTemplate ? 'template' : plate ? 'plate' : 'grid',
       },
     });
   } catch (error) {
@@ -282,11 +312,19 @@ async function loadTemplateLayout(templateId: string) {
     where: { id: templateId },
     // The vertical comes along so the preview can stand the template up in its
     // own trade's words rather than in commercial-property copy.
-    select: { layoutSpec: true, category: { select: { name: true } } },
+    select: {
+      layoutSpec: true,
+      // The label is the registry key for the HTML renderer — see
+      // `findHtmlTemplateFor`. Without it this route could only ever preview the
+      // spec path, which would leave an authored template unreviewable.
+      label: true,
+      category: { select: { name: true } },
+    },
   });
   if (!template) return null;
   return {
     ...parseLayoutDraft(template.layoutSpec),
+    label: template.label,
     categoryName: template.category.name,
   };
 }

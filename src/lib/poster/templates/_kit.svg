@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" id="poster-kit" aria-hidden="true" style="display:none">
+<!--
+  The marks that repeat across a vertical.
+
+  Med-SM-14, Med-SM-15 and Med-SM-16 carry the same four service pictograms in
+  the same order, the same heartbeat rule and the same handset — because the
+  references are one image model's output in one style, not a designer's kit. So
+  the cheapest and best answer is to draw each mark once, properly, and let every
+  template reference it. Tracing them per template would be twenty-three copies
+  of the same drawing, each slightly wrong in its own way.
+
+  These are deliberately *better* than the references rather than faithful to
+  them. A diffusion model's idea of a CT scanner is decorative; this one has a
+  gantry, a bore and a bed, and will still read as a scanner at 70px.
+
+  Every mark is drawn in `currentColor`, so a template sets `color:` on the
+  container and the mark follows. That is what lets one sprite serve a teal-on-
+  white template and a white-on-navy one.
+
+  Injected into every document by `buildDocument`, so a template uses a mark with
+  `<svg class="…"><use href="#ic-stethoscope"/></svg>` and nothing else. The
+  symbol carries the viewBox; the template supplies the size.
+
+  Stroke widths are set against each symbol's own viewBox, so the four service
+  icons share a 72×90 box and therefore share an apparent weight. Adding a mark
+  in a different box means matching its weight by eye, which is a good reason to
+  keep them all in this one.
+-->
+
+<!-- ============================ service marks ============================ -->
+
+<symbol id="ic-stethoscope" viewBox="0 0 72 90">
+  <g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Binaural headset, the tube down to the chest piece, and the spring. -->
+    <path d="M16 9v17a20 20 0 0 0 40 0V9"/>
+    <path d="M9 9h13M50 9h13"/>
+    <path d="M36 47v10a17 17 0 0 1-17 17"/>
+    <circle cx="19" cy="74" r="11"/>
+  </g>
+  <circle cx="19" cy="74" r="4" fill="currentColor"/>
+  <circle cx="55" cy="55" r="7" fill="currentColor"/>
+</symbol>
+
+<symbol id="ic-microscope" viewBox="0 0 72 90">
+  <!-- Eyepiece and body tube filled, the rest drawn, on a solid plinth. -->
+  <path d="M43 3l16 16-10 10-16-16z" fill="currentColor"/>
+  <path d="M35 21L19 37l10 10 16-16z" fill="currentColor"/>
+  <g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M25 43l-7 7"/>
+    <path d="M9 58h33"/>
+    <path d="M49 23c11 11 12 28 3 39"/>
+    <path d="M22 74h30"/>
+  </g>
+  <path d="M8 88a6 6 0 0 1 6-6h44a6 6 0 0 1 6 6z" fill="currentColor"/>
+</symbol>
+
+<symbol id="ic-therapist" viewBox="0 0 72 90">
+  <!-- A therapist working over a patient lying on a table. -->
+  <circle cx="17" cy="15" r="10" fill="currentColor"/>
+  <circle cx="53" cy="47" r="8" fill="currentColor"/>
+  <g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M7 42c0-8 5-13 10-13s10 5 10 13"/>
+    <path d="M25 42c9 3 17 9 22 15"/>
+    <path d="M28 62c8-6 19-8 27-5"/>
+  </g>
+  <path d="M13 68h46a9 9 0 0 1 9 9H4a9 9 0 0 1 9-9z" fill="currentColor"/>
+</symbol>
+
+<symbol id="ic-scanner" viewBox="0 0 72 90">
+  <!--
+    A boxy gantry with a bore through it, on a bed.
+
+    Two wrong versions before this one. An outlined *arch* read as a doorway at
+    70px, because an arch is the one shape a scanner shares with a door. A fully
+    filled body read as a scanner but sat far heavier than the other three marks,
+    which broke the set. A rounded rectangle carries the machine's mass while
+    staying on the outline weight the rest of the kit uses.
+  -->
+  <g fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 16h46a9 9 0 0 1 9 9v37H4V25a9 9 0 0 1 9-9z"/>
+    <circle cx="36" cy="40" r="15"/>
+  </g>
+  <circle cx="36" cy="40" r="7" fill="currentColor"/>
+  <path d="M3 66h66a3 3 0 0 1 3 3v11H0V69a3 3 0 0 1 3-3z" fill="currentColor"/>
+</symbol>
+
+<!-- ============================ chrome marks ============================= -->
+
+<symbol id="ic-phone" viewBox="0 0 84 84">
+  <!-- Handset in a ring with signal arcs; every reference's contact bar has it. -->
+  <circle cx="42" cy="42" r="36" fill="none" stroke="currentColor" stroke-width="4"/>
+  <path d="M31 25c-4 0-7 3-7 7 0 15 12 27 27 27 4 0 7-3 7-7v-4l-9-4-4 5c-6-3-10-7-13-13l5-4-6-7z"
+        fill="currentColor"/>
+  <g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round">
+    <path d="M54 29a14 14 0 0 1 7 11"/>
+    <path d="M52 20a23 23 0 0 1 13 19"/>
+  </g>
+</symbol>
+
+<symbol id="mk-pulse" viewBox="0 0 580 70" preserveAspectRatio="xMidYMid meet">
+  <!--
+    The heartbeat rule. Present on every Medicals reference looked at so far, at
+    the same proportions: two hairlines with a narrow, tall trace between them.
+    The trace is 68 units of a 580 rule — drawn wider than that it flattens into
+    a zigzag and stops reading as an ECG.
+  -->
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M0 35H256" stroke-width="1.8"/>
+    <path d="M324 35H580" stroke-width="1.8"/>
+    <path d="M256 35h5l4 4 5-8 6 27 7-41 6 27 5-9h4" stroke-width="2.6"/>
+  </g>
+</symbol>
+
+</svg>
