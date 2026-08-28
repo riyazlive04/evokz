@@ -9,6 +9,7 @@ import {
   type ConflictMode,
 } from '@/lib/calendar-parse';
 import { checkRowFit, type FitWarning } from '@/lib/calendar-fit';
+import { findHtmlTemplateFor } from '@/lib/poster/html/template';
 import { prisma } from '@/lib/prisma';
 import { getAppTimeZone, nthDeliveryDate } from '@/lib/time';
 import { countSubjectSlots, parseLayoutSpec } from '@/lib/types/layout-spec';
@@ -220,6 +221,13 @@ export async function applyCalendarImport(
     const template = templateId ? specByTemplate.get(templateId) : undefined;
     if (!template?.spec) continue;
 
+    /*
+     * The authored template, when this label has one, is the authority on what
+     * will be drawn — including whether the photograph is a cut-out, which the
+     * spec and the template can legitimately disagree about.
+     */
+    const authored = await findHtmlTemplateFor(template.label);
+
     fitWarnings.push(
       ...checkRowFit({
         dayNumber: row.dayNumber ?? rowIndex + 1,
@@ -227,7 +235,10 @@ export async function applyCalendarImport(
         spec: template.spec,
         copy: row.poster,
         imagePrompt: row.imagePrompt,
-        wantsSubject: countSubjectSlots(template.spec) > 0,
+        wantsSubject: authored
+          ? authored.manifest.photos.some((photo) => photo.kind === 'subject')
+          : countSubjectSlots(template.spec) > 0,
+        template: authored?.manifest ?? null,
       }),
     );
   }

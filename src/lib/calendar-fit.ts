@@ -1,5 +1,6 @@
 import { headlineCharBudget } from '@/lib/ai/poster-copy';
 import { describeCopyShape, type PosterLayoutSpec } from '@/lib/types/layout-spec';
+import type { TemplateManifest } from '@/lib/poster/html/template';
 import type { PosterCopy } from '@/lib/types/poster';
 
 /**
@@ -67,6 +68,17 @@ export function checkRowFit(input: {
   imagePrompt: string;
   /** Whether the layout's photo cell wants a cut-out figure. */
   wantsSubject: boolean;
+  /**
+   * The authored template drawing this day, when there is one.
+   *
+   * Present, it replaces the spec as the authority on shape — because the spec
+   * has stopped describing what will be drawn. Two of the checks below then have
+   * no subject left: an HTML template takes whatever number of headline lines
+   * the copy gives it and reflows, and measures its own type rather than
+   * budgeting characters against a column. Leaving them on told operators to
+   * rewrite copy that draws perfectly well, which is worse than saying nothing.
+   */
+  template?: TemplateManifest | null;
 }): FitWarning[] {
   const warnings: FitWarning[] = [];
   const say = (message: string) =>
@@ -95,29 +107,49 @@ export function checkRowFit(input: {
   const shape = describeCopyShape(input.spec);
   const lines = input.copy.headlineLines;
 
-  if (shape.headlineLineCount > 0 && lines.length !== shape.headlineLineCount) {
-    say(
-      `the headline is ${lines.length} line(s) but "${input.templateLabel}" sets its ` +
-        `headline over ${shape.headlineLineCount}, and the emphasis on each line is measured ` +
-        'from it — so the contrast the template is built around will not appear.',
-    );
+  /*
+   * The two headline checks only mean anything on the spec renderer.
+   *
+   * There, `headlineEmphasis` is a fixed-length array and the type size comes
+   * from a line count, so a headline of the wrong length genuinely loses the
+   * contrast the layout was built around, and an over-long line genuinely wraps
+   * and undoes the copy's line breaks. An authored template does neither: it
+   * takes the lines it is given, and `data-fit` measures the real type at the
+   * real size and shrinks it before letting it wrap.
+   */
+  if (!input.template) {
+    if (shape.headlineLineCount > 0 && lines.length !== shape.headlineLineCount) {
+      say(
+        `the headline is ${lines.length} line(s) but "${input.templateLabel}" sets its ` +
+          `headline over ${shape.headlineLineCount}, and the emphasis on each line is measured ` +
+          'from it — so the contrast the template is built around will not appear.',
+      );
+    }
+
+    const budget = headlineCharBudget(shape.headlineWidthShare);
+    const tooLong = lines.filter((line) => line.length > budget);
+    if (tooLong.length > 0) {
+      say(
+        `${tooLong.length} headline line(s) run past the ${budget} characters that fit this ` +
+          `template's column — "${tooLong[0]}" is ${tooLong[0]!.length}. They will wrap, which ` +
+          'undoes the line breaks the copy chose.',
+      );
+    }
   }
 
-  const budget = headlineCharBudget(shape.headlineWidthShare);
-  const tooLong = lines.filter((line) => line.length > budget);
-  if (tooLong.length > 0) {
-    say(
-      `${tooLong.length} headline line(s) run past the ${budget} characters that fit this ` +
-        `template's column — "${tooLong[0]}" is ${tooLong[0]!.length}. They will wrap, which ` +
-        'undoes the line breaks the copy chose.',
-    );
-  }
+  /*
+   * This one survives the migration, because it is still true: a template with
+   * three cards given four features draws three. Only the source of the number
+   * changes — the manifest rather than the spec.
+   */
+  const featureCount = input.template ? input.template.featureCount : shape.featureCount;
+  const drawsFeatures = input.template ? featureCount > 0 : shape.hasFeatures;
 
-  if (shape.hasFeatures && input.copy.features.length > shape.featureCount) {
+  if (drawsFeatures && input.copy.features.length > featureCount) {
     say(
       `${input.copy.features.length} features were supplied but "${input.templateLabel}" ` +
-        `draws ${shape.featureCount}. The last ` +
-        `${input.copy.features.length - shape.featureCount} will not appear on the poster.`,
+        `draws ${featureCount}. The last ` +
+        `${input.copy.features.length - featureCount} will not appear on the poster.`,
     );
   }
 
