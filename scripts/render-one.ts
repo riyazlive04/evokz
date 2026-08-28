@@ -20,6 +20,7 @@ import {
   type HtmlTemplateSlug,
 } from '@/lib/poster/html/template';
 import { resolveTemplatePhotoRequests } from '@/lib/poster/photo-request';
+import { trimLogoMargin } from '@/lib/poster/render';
 import {
   createPlaceholderPhoto,
   createPlaceholderSubject,
@@ -78,10 +79,23 @@ async function main(): Promise<void> {
     };
   });
 
+  /*
+   * The logo goes through the trim, because production does.
+   *
+   * `check:templates` calls `renderHtmlPoster` directly and so draws the
+   * stand-in lockup untrimmed - a mark occupying a fraction of its box. That is
+   * not what a client sees, and the difference is exactly the one worth looking
+   * at when placing a lockup: a trimmed mark fills its slot edge to edge.
+   */
+  const identity = {
+    ...IDENTITY,
+    logoDataUri: await trimLogoMargin(IDENTITY.logoDataUri),
+  };
+
   const png = await renderHtmlPoster({
     template,
     copy: COPY,
-    identity: IDENTITY,
+    identity,
     photos,
     width: canvas.width,
     height: canvas.height,
