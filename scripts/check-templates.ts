@@ -32,6 +32,7 @@ import { getImageSizePreset } from '@/lib/image-sizes';
 import { resolvePosterCanvas } from '@/lib/poster/canvas';
 import { closePosterBrowser } from '@/lib/poster/html/browser';
 import { renderHtmlPoster } from '@/lib/poster/html/render';
+import type { LayoutProblem } from '@/lib/poster/html/fill';
 import {
   HTML_TEMPLATE_SLUGS,
   loadHtmlTemplate,
@@ -509,7 +510,80 @@ function lintTemplate(template: HtmlTemplate): void {
 }
 
 // ---------------------------------------------------------------------------
-// 2–4. Render, determinism, hostile copy
+// Copy shapes — the range a template has to survive
+// ---------------------------------------------------------------------------
+
+/**
+ * Copy at both ends of what the schema permits, plus the reference's own.
+ *
+ * One render proves almost nothing about a layout: every fault worth catching
+ * here — a headline that collides with the rule beneath it, a card row that
+ * reaches past the canvas, a label that vanishes — appears for *some* copy and
+ * not for other copy. Med-SM-15 passed every check for a day while clipping its
+ * headline, because the fixture happened to be short.
+ *
+ * Features are supplied at exactly the count the template draws, because that is
+ * what a correct sheet row will carry. Too many is a separate concern and is
+ * what `checkRowFit` warns about.
+ */
+function copyShapes(template: HtmlTemplate): Array<{ name: string; copy: PosterCopy }> {
+  const slug = template.slug;
+  const count = Math.max(2, template.manifest.featureCount);
+
+  const featuresOf = (label: string, body: string): PosterCopy['features'] =>
+    Array.from({ length: count }, (_, index) => ({
+      icon: 'star' as const,
+      label: `${label}${index + 1}`.slice(0, 28),
+      body,
+    }));
+
+  return [
+    { name: 'reference', copy: fixtureFor(slug).copy },
+    {
+      name: 'shortest',
+      copy: {
+        ...COPY,
+        headlineLines: ['ONE', 'TWO'],
+        accentLineIndex: 0,
+        eyebrow: '',
+        body: 'x',
+        features: featuresOf('S', 'y'),
+        ctaLabel: 'GO',
+        callLabel: 'Call',
+        websiteLabel: 'Visit',
+      },
+    },
+    {
+      name: 'longest',
+      copy: {
+        ...COPY,
+        // Four lines is the schema's ceiling and 24 characters is a line's.
+        headlineLines: [
+          'TWENTY FOUR CHARACTERS X',
+          'ANOTHER TWENTY FOUR CHAR',
+          'A THIRD TWENTY FOUR CHAR',
+          'A FOURTH TWENTY FOUR CHA',
+        ],
+        accentLineIndex: 3,
+        eyebrow: 'FORTY CHARACTERS OF EYEBROW COPY HERE OK',
+        body:
+          'Two hundred and forty characters of body copy, which is the ceiling the ' +
+          'schema allows, written out in full so the block is measured against the ' +
+          'longest paragraph any day can legally carry on a poster in this library.',
+        features: featuresOf(
+          'A TWENTY EIGHT CHAR LABEL',
+          'Ninety characters of feature body copy, which is the most a single feature may carry.',
+        ),
+        ctaLabel: 'TWENTY EIGHT CHARACTER CTA X'.slice(0, 28),
+        callLabel: 'A TWENTY EIGHT CHAR CALL LBL',
+        websiteLabel: 'A TWENTY EIGHT CHAR SITE LBL',
+      },
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// 2–5. Render, determinism, layout audit, hostile copy
 // ---------------------------------------------------------------------------
 
 function sha(bytes: Buffer): string {
@@ -521,6 +595,7 @@ async function renderTemplate(
   copy: PosterCopy,
   inspect?: Parameters<typeof renderHtmlPoster>[0]['inspect'],
   identity: PosterIdentity = IDENTITY,
+  onLayoutProblems?: (problems: LayoutProblem[]) => void,
 ): Promise<Buffer> {
   const preset = getImageSizePreset('whatsapp-status') ?? { width: 1080, height: 1920 };
   const canvas = resolvePosterCanvas(
@@ -560,6 +635,7 @@ async function renderTemplate(
     width: canvas.width,
     height: canvas.height,
     inspect,
+    ...(onLayoutProblems ? { onLayoutProblems } : {}),
   });
 }
 
@@ -649,6 +725,27 @@ async function main(): Promise<void> {
         sha(first) === sha(second),
         `${sha(first)} vs ${sha(second)}`,
       );
+
+      /*
+       * The layout audit, across the range of copy the schema permits.
+       *
+       * This is the pass that answers "the poster must never ship with something
+       * clipped, hidden or sitting on top of something else". Every other check
+       * here can pass on a broken template — it renders, it re-renders
+       * identically, its markup lints — because those questions are about the
+       * file rather than about what the file produced.
+       */
+      for (const shape of copyShapes(template)) {
+        const found: LayoutProblem[] = [];
+        await renderTemplate(template, shape.copy, undefined, fixture.identity, (problems) =>
+          found.push(...problems),
+        );
+        check(
+          `lays out cleanly with ${shape.name} copy`,
+          found.length === 0,
+          found.map((problem) => `${problem.kind}: ${problem.detail}`).join('; '),
+        );
+      }
 
       /*
        * The hostile pass asserts inside the page, because once it is a PNG the

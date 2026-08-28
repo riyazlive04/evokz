@@ -75,7 +75,10 @@ export function fillPoster(model: HtmlPosterModel): {
     source: Record<string, string>,
   ): void => {
     // The attribute is removed either way, so the document-wide pass below
-    // cannot revisit a slot that a repeat clone has already resolved.
+    // cannot revisit a slot that a repeat clone has already resolved. What it
+    // is replaced by matters: `auditLayout` needs to know which elements are
+    // carrying client content, because those are the ones whose clipping or
+    // collision would reach a client.
     element.removeAttribute('data-slot');
 
     const value = Object.prototype.hasOwnProperty.call(source, name)
@@ -96,6 +99,7 @@ export function fillPoster(model: HtmlPosterModel): {
     }
 
     element.textContent = value;
+    element.setAttribute('data-filled', name);
     filled.push(name);
   };
 
@@ -123,6 +127,7 @@ export function fillPoster(model: HtmlPosterModel): {
     } else {
       (element as HTMLElement).style.backgroundImage = `url("${value}")`;
     }
+    element.setAttribute('data-filled', name);
     filled.push(name);
   };
 
@@ -208,9 +213,9 @@ export function fillPoster(model: HtmlPosterModel): {
  * copy rather than to accept smaller type.
  */
 export function fitText(): Array<{ from: number; to: number; wrapped: boolean }> {
-  const MIN_RATIO = 0.62;
+  const MIN_RATIO = 0.5;
   const STEP = 0.97;
-  const MAX_STEPS = 20;
+  const MAX_STEPS = 34;
   const adjusted: Array<{ from: number; to: number; wrapped: boolean }> = [];
 
   document.querySelectorAll('[data-fit]').forEach((node) => {
@@ -219,22 +224,30 @@ export function fitText(): Array<{ from: number; to: number; wrapped: boolean }>
     if (!Number.isFinite(start) || start <= 0) return;
 
     /*
-     * Width only, and the vertical test is a trap rather than a missing feature.
+     * Width by default; both axes only when the template opts in.
      *
-     * It was in the first version, and it silently ruined the phone lockup. A
-     * block set with `line-height: 1` has a content box of exactly 1em while the
-     * face's own line box is nearer 1.19em, so `scrollHeight` exceeds
-     * `clientHeight` on a perfectly well-fitting single line — and because both
-     * scale with the font size, shrinking never resolves it. The number was
-     * driven from 84px down to 56px to satisfy a constraint that did not exist,
-     * and nothing in the log said so.
+     * The vertical test was in the first version unconditionally and silently
+     * ruined the phone lockup: a block set with `line-height: 1` has a content
+     * box of exactly 1em while the face's own line box is nearer 1.19em, so
+     * `scrollHeight` exceeds `clientHeight` on a perfectly well-fitting single
+     * line — and because both scale with the font size, shrinking never resolves
+     * it. The number was driven from 88px down to 57px to satisfy a constraint
+     * that did not exist.
      *
-     * A height-constrained fit is a real thing to want, but it only means
-     * anything on an element with a *definite* height, and no template has one
-     * yet. It should arrive as an explicit opt-in when one does, not as a
-     * default that misfires on every auto-height block.
+     * `data-fit="block"` is the opt-in for the case that is real: an element
+     * with a *definite* height — one the flex algorithm or an absolute position
+     * has settled, not one its own content decided — whose copy must be made to
+     * fit it. Two templates need it, and both had four features of maximum
+     * length running off the bottom of the poster before they got it.
+     *
+     * A template using it owes two things: a definite height, and type sized in
+     * `em` so the whole block scales together. Fixed pixel children do not
+     * shrink, so an icon beside shrinking type just stops fitting differently.
      */
-    const overflows = (): boolean => element.scrollWidth > element.clientWidth + 1;
+    const fitsBothAxes = element.getAttribute('data-fit') === 'block';
+    const overflows = (): boolean =>
+      element.scrollWidth > element.clientWidth + 1 ||
+      (fitsBothAxes && element.scrollHeight > element.clientHeight + 1);
 
     let size = start;
     let wrapped = false;
@@ -262,7 +275,7 @@ export function fitText(): Array<{ from: number; to: number; wrapped: boolean }>
      * incomparably better outcome than a clipped one. `anywhere` covers the last
      * case wrapping cannot: a single unbreakable word wider than the column.
      */
-    if (overflows()) {
+    if (overflows() && !fitsBothAxes) {
       element.style.whiteSpace = 'normal';
       element.style.overflowWrap = 'anywhere';
       wrapped = true;
@@ -273,4 +286,149 @@ export function fitText(): Array<{ from: number; to: number; wrapped: boolean }>
   });
 
   return adjusted;
+}
+
+/** One thing wrong with a laid-out poster. */
+export interface LayoutProblem {
+  kind: 'hidden' | 'clipped' | 'overflow' | 'collision';
+  detail: string;
+}
+
+/**
+ * Inspects a laid-out poster for the faults a person would call "broken".
+ *
+ * The requirement this answers is that a poster must never ship with something
+ * cut off, sitting on top of something else, or missing because it was drawn at
+ * no size. Those are exactly the faults that survive every other check: the
+ * template renders, re-renders byte-identically, passes its lint, and is still
+ * wrong — and they only appear for *some* copy, so looking at one render proves
+ * nothing.
+ *
+ * It reads `data-filled`, which `fillPoster` stamps on everything carrying
+ * client content. Template chrome is deliberately out of scope: a scrim over a
+ * photograph and a figure behind a card are overlaps the design intends, and
+ * flagging them would bury the real faults in noise.
+ *
+ * **Collisions are tested between text blocks only.** A photograph under a
+ * headline is the commonest arrangement in this library, so comparing every
+ * filled element against every other would report the design working as
+ * designed. Text on text is unambiguous — there is no composition in which two
+ * blocks of words are meant to sit on each other.
+ *
+ * Must run after `document.fonts.ready` and after `fitText`, or it measures type
+ * that is about to change size.
+ */
+export function auditLayout(): LayoutProblem[] {
+  const problems: LayoutProblem[] = [];
+  const stage = document.getElementById('poster-stage');
+  if (!stage) return [{ kind: 'hidden', detail: 'the poster stage is missing' }];
+
+  const bounds = stage.getBoundingClientRect();
+  /** Sub-pixel rounding at the stage edge is not a clipped element. */
+  const EDGE = 2;
+  /** Two blocks must share this much on both axes before it is a collision. */
+  const TOUCH = 4;
+
+  const filled = Array.from(document.querySelectorAll('[data-filled]')) as HTMLElement[];
+  const named = (element: HTMLElement): string =>
+    element.getAttribute('data-filled') ?? 'unnamed';
+
+  const boxes = filled.map((element) => ({
+    element,
+    rect: element.getBoundingClientRect(),
+    style: getComputedStyle(element),
+  }));
+
+  for (const { element, rect, style } of boxes) {
+    // --- drawn at all? ---
+    if (rect.width < 1 || rect.height < 1) {
+      problems.push({
+        kind: 'hidden',
+        detail: `"${named(element)}" was given content but laid out at ${Math.round(
+          rect.width,
+        )}x${Math.round(rect.height)}`,
+      });
+      continue;
+    }
+    if (style.visibility === 'hidden' || Number.parseFloat(style.opacity) < 0.05) {
+      problems.push({ kind: 'hidden', detail: `"${named(element)}" is not visible` });
+      continue;
+    }
+
+    /*
+     * --- inside the poster? ---
+     *
+     * Words and pictures are judged differently, because bleeding off the edge
+     * is a mistake for one and a technique for the other. A headline reaching
+     * past the margin has been cut in half. A photograph reaching past it has
+     * been bled, which several of these designs do deliberately — Med-SM-1
+     * hangs its figure 20px over the right edge so the cut-out does not look
+     * pasted onto a margin.
+     *
+     * So text may not leave the stage at all, and an image may, until more than
+     * a third of it is outside — past which it is not a bleed, it is a frame in
+     * the wrong place.
+     */
+    const carriesText = (element.textContent ?? '').trim().length > 0;
+    const outside =
+      Math.max(0, bounds.left - rect.left) +
+      Math.max(0, rect.right - bounds.right) +
+      Math.max(0, bounds.top - rect.top) +
+      Math.max(0, rect.bottom - bounds.bottom);
+    const clipped = carriesText
+      ? outside > EDGE
+      : outside > EDGE && outside > (rect.width + rect.height) / 3;
+
+    if (clipped) {
+      problems.push({
+        kind: 'clipped',
+        detail:
+          `"${named(element)}" reaches outside the poster — ` +
+          `${Math.round(rect.left - bounds.left)},${Math.round(rect.top - bounds.top)} to ` +
+          `${Math.round(rect.right - bounds.left)},${Math.round(rect.bottom - bounds.top)} ` +
+          `of ${Math.round(bounds.width)}x${Math.round(bounds.height)}`,
+      });
+    }
+
+    // --- inside its own box? ---
+    // After `fitText` a block that still overflows has run out of room to give,
+    // which means the copy is longer than the design can hold at any size.
+    if (element.scrollWidth > element.clientWidth + 1 && element.clientWidth > 0) {
+      problems.push({
+        kind: 'overflow',
+        detail: `"${named(element)}" needs ${element.scrollWidth}px in a ${element.clientWidth}px box`,
+      });
+    }
+  }
+
+  // --- words on words ---
+  const text = boxes.filter(
+    ({ element, rect }) =>
+      (element.textContent ?? '').trim().length > 0 && rect.width >= 1 && rect.height >= 1,
+  );
+
+  for (let i = 0; i < text.length; i += 1) {
+    for (let j = i + 1; j < text.length; j += 1) {
+      const a = text[i]!;
+      const b = text[j]!;
+      // Nesting is containment, not collision — a slot inside a slot is a
+      // structure this format does not produce, but guarding costs nothing.
+      if (a.element.contains(b.element) || b.element.contains(a.element)) continue;
+
+      const shared = {
+        x: Math.min(a.rect.right, b.rect.right) - Math.max(a.rect.left, b.rect.left),
+        y: Math.min(a.rect.bottom, b.rect.bottom) - Math.max(a.rect.top, b.rect.top),
+      };
+      if (shared.x > TOUCH && shared.y > TOUCH) {
+        problems.push({
+          kind: 'collision',
+          detail:
+            `"${named(a.element)}" and "${named(b.element)}" overlap by ` +
+            `${Math.round(shared.x)}x${Math.round(shared.y)}px`,
+        });
+      }
+    }
+  }
+
+  return problems;
 }

@@ -1,8 +1,10 @@
 import {
+  auditLayout,
   fillPoster,
   fitText,
   type HtmlPosterModel,
   type HtmlRepeatItem,
+  type LayoutProblem,
 } from '@/lib/poster/html/fill';
 import type { Page } from 'playwright';
 
@@ -34,6 +36,16 @@ export interface HtmlRenderInput {
   identity: PosterIdentity;
   /** Frames in manifest order. A zero-size entry is a deliberate hole. */
   photos: PosterPhoto[];
+  /**
+   * Called with whatever `auditLayout` found, just before the screenshot.
+   *
+   * Only `check:templates` passes this. The render itself does not fail on a
+   * layout problem, and deliberately: a poster with a headline two pixels over
+   * its column is still a poster the client should receive, and refusing to draw
+   * it would turn a cosmetic fault into a missed delivery. The place to be
+   * strict is the check, before the template ever reaches a client.
+   */
+  onLayoutProblems?: (problems: LayoutProblem[]) => void;
   width: number;
   height: number;
   /**
@@ -155,6 +167,10 @@ export async function renderHtmlPoster(input: HtmlRenderInput): Promise<Buffer> 
           `${change.from.toFixed(0)}px to ${change.to.toFixed(0)}px` +
           `${change.wrapped ? ' and re-wrapped' : ''} to fit its copy.`,
       );
+    }
+
+    if (input.onLayoutProblems) {
+      input.onLayoutProblems(await page.evaluate(auditLayout));
     }
 
     if (input.inspect) await input.inspect(page);

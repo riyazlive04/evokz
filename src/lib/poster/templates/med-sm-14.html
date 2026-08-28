@@ -122,28 +122,37 @@
 
   /* The service list sits left while the headline above it is centred — that
      asymmetry is in the reference and reads as deliberate. */
+  /*
+   * Sized in `em` off the list's own font-size, so `data-fit="block"` scales the
+   * icons and the labels together. Fixed pixel children do not shrink, and an
+   * icon that stayed 66px beside type that had halved would read as a mistake —
+   * it would also keep the row too tall to fit, which is what the fit was for.
+   */
   .p14-list {
-    flex: 0 1 auto;
+    flex: 1 1 auto;
     min-height: 0;
     align-self: flex-start;
     margin-top: 34px;
     display: flex;
     flex-direction: column;
-    gap: 34px;
+    justify-content: flex-start;
+    gap: 0.74em;
+    font-size: 46px;
+    overflow: hidden;
   }
   .p14-item {
     display: flex;
     align-items: center;
-    gap: 26px;
+    gap: 0.57em;
   }
   .p14-item svg {
-    width: 66px;
-    height: 82px;
+    width: 1.44em;
+    height: 1.79em;
     flex: none;
     color: #0c2470;
   }
   .p14-label {
-    font-size: 46px;
+    font-size: 1em;
     font-weight: 600;
     letter-spacing: -0.01em;
     color: #0c2470;
@@ -184,7 +193,7 @@
 
   <svg class="pk-pulse p14-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
 
-  <div class="p14-list">
+  <div class="p14-list" data-fit="block">
     <div class="p14-item" data-when="feature1">
       <svg aria-hidden="true"><use href="#ic-stethoscope"/></svg>
       <div class="p14-label" data-slot="feature1Label"></div>

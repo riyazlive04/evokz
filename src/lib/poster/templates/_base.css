@@ -55,6 +55,18 @@
 /* --- headline ------------------------------------------------------------ */
 .pk-headline {
   flex: none;
+  /*
+   * The cap that makes `data-fit` able to see an overflow at all.
+   *
+   * `data-fit` shrinks while `scrollWidth > clientWidth`. On a left-aligned
+   * headline the block is a shrink-to-fit flex item, so its width *is* its
+   * content width — the two are equal however long the copy runs, the fitter
+   * never fires, and the headline simply grows off the side of the poster. It
+   * looked fine on every reference-length fixture and clipped on four lines of
+   * twenty-four characters, which is the exact shape of fault that reaches a
+   * client without anyone seeing it first.
+   */
+  max-width: 100%;
   font-family: 'Archivo', system-ui, sans-serif;
   font-weight: var(--hl-weight, 700);
   font-size: var(--hl-size, 90px);

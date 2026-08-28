@@ -113,7 +113,11 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 22px;
+    /* Everything inside is in `em` off this, so `data-fit="block"` scales the
+       badges, the labels, the bodies and the pill as one. */
+    font-size: 27px;
+    gap: 0.81em;
+    overflow: hidden;
   }
   .p17-row {
     display: flex;
@@ -121,8 +125,8 @@
     gap: 20px;
   }
   .p17-badge {
-    width: 68px;
-    height: 68px;
+    width: 2.52em;
+    height: 2.52em;
     border-radius: 50%;
     background: #0b5563;
     display: flex;
@@ -131,11 +135,11 @@
     flex: none;
     color: #ffffff;
   }
-  .p17-badge svg { width: 34px; height: 42px; }
+  .p17-badge svg { width: 1.26em; height: 1.56em; }
   .p17-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .p17-label {
     font-family: 'Archivo', system-ui, sans-serif;
-    font-size: 27px;
+    font-size: 1em;
     font-stretch: 90%;
     font-weight: 700;
     letter-spacing: 0.02em;
@@ -143,7 +147,7 @@
     color: #0b3f4b;
   }
   .p17-body {
-    font-size: 22px;
+    font-size: 0.82em;
     line-height: 1.34;
     color: #4a6b72;
   }
@@ -157,12 +161,12 @@
     background: #0b5563;
     color: #ffffff;
     border-radius: 999px;
-    padding: 14px 30px 14px 16px;
+    padding: 0.52em 1.11em 0.52em 0.59em;
     max-width: 460px;
   }
   .p17-cta em {
-    width: 40px;
-    height: 40px;
+    width: 1.48em;
+    height: 1.48em;
     border-radius: 50%;
     background: #5cd7dd;
     color: #04323c;
@@ -171,9 +175,9 @@
     justify-content: center;
     flex: none;
   }
-  .p17-cta em svg { width: 24px; height: 24px; }
+  .p17-cta em svg { width: 0.89em; height: 0.89em; }
   .p17-cta span {
-    font-size: 24px;
+    font-size: 0.89em;
     font-weight: 600;
     letter-spacing: 0.01em;
     overflow-wrap: anywhere;
@@ -260,7 +264,7 @@
     <svg class="pk-pulse p17-pulse" aria-hidden="true"><use href="#mk-pulse"/></svg>
   </div>
 
-  <div class="p17-card">
+  <div class="p17-card" data-fit="block">
     <div class="p17-row" data-when="feature1">
       <div class="p17-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
       <div class="p17-text">
