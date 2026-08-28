@@ -219,6 +219,15 @@ export function CalendarImportPanel({
           caption: row.caption,
           hashtags: row.hashtags,
           imagePrompt: row.imagePrompt,
+          /*
+           * The parser reads this column and the database stores it; only this
+           * payload was dropping it. Because the wire schema declares it
+           * nullable with a null default, the omission parsed cleanly and wrote
+           * null — so a template asking for a `scene` backdrop silently fell
+           * back to a painted one for every imported day, whatever the operator
+           * had typed in the sheet.
+           */
+          backgroundPrompt: row.backgroundPrompt,
           poster: row.poster,
         })),
     });

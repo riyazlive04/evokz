@@ -9,7 +9,7 @@ import {
   type ConflictMode,
 } from '@/lib/calendar-parse';
 import { checkRowFit, type FitWarning } from '@/lib/calendar-fit';
-import { findHtmlTemplateFor } from '@/lib/poster/html/template';
+import { copyNeedsOf, findHtmlTemplateFor } from '@/lib/poster/html/template';
 import { prisma } from '@/lib/prisma';
 import { getAppTimeZone, nthDeliveryDate } from '@/lib/time';
 import { countSubjectSlots, parseLayoutSpec } from '@/lib/types/layout-spec';
@@ -215,6 +215,10 @@ export async function applyCalendarImport(
    * a delivered creative.
    */
   const fitWarnings: FitWarning[] = [];
+  const authoredByLabel = new Map<
+    string,
+    Awaited<ReturnType<typeof findHtmlTemplateFor>>
+  >();
   for (const [rowIndex, row] of rows.entries()) {
     const resolution = resolutions[rowIndex];
     const templateId = resolution && 'id' in resolution ? resolution.id : null;
@@ -225,8 +229,17 @@ export async function applyCalendarImport(
      * The authored template, when this label has one, is the authority on what
      * will be drawn — including whether the photograph is a cut-out, which the
      * spec and the template can legitimately disagree about.
+     *
+     * Resolved once per label rather than once per row. A sheet names the same
+     * handful of templates across hundreds of days, and the first version awaited
+     * a lookup inside the loop — the same shape of repetition `specByTemplate`
+     * above exists to avoid.
      */
-    const authored = await findHtmlTemplateFor(template.label);
+    let authored = authoredByLabel.get(template.label);
+    if (authored === undefined) {
+      authored = await findHtmlTemplateFor(template.label);
+      authoredByLabel.set(template.label, authored);
+    }
 
     fitWarnings.push(
       ...checkRowFit({
@@ -238,7 +251,7 @@ export async function applyCalendarImport(
         wantsSubject: authored
           ? authored.manifest.photos.some((photo) => photo.kind === 'subject')
           : countSubjectSlots(template.spec) > 0,
-        template: authored?.manifest ?? null,
+        needs: authored ? copyNeedsOf(authored) : null,
       }),
     );
   }

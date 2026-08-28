@@ -1,6 +1,7 @@
 import { headlineCharBudget } from '@/lib/ai/poster-copy';
 import { describeCopyShape, type PosterLayoutSpec } from '@/lib/types/layout-spec';
-import type { TemplateManifest } from '@/lib/poster/html/template';
+import { DEFAULT_CTA_LABEL } from '@/lib/types/poster';
+import type { TemplateCopyNeeds } from '@/lib/poster/html/template';
 import type { PosterCopy } from '@/lib/types/poster';
 
 /**
@@ -78,7 +79,7 @@ export function checkRowFit(input: {
    * budgeting characters against a column. Leaving them on told operators to
    * rewrite copy that draws perfectly well, which is worse than saying nothing.
    */
-  template?: TemplateManifest | null;
+  needs?: TemplateCopyNeeds | null;
 }): FitWarning[] {
   const warnings: FitWarning[] = [];
   const say = (message: string) =>
@@ -117,7 +118,7 @@ export function checkRowFit(input: {
    * takes the lines it is given, and `data-fit` measures the real type at the
    * real size and shrinks it before letting it wrap.
    */
-  if (!input.template) {
+  if (!input.needs) {
     if (shape.headlineLineCount > 0 && lines.length !== shape.headlineLineCount) {
       say(
         `the headline is ${lines.length} line(s) but "${input.templateLabel}" sets its ` +
@@ -142,14 +143,44 @@ export function checkRowFit(input: {
    * three cards given four features draws three. Only the source of the number
    * changes — the manifest rather than the spec.
    */
-  const featureCount = input.template ? input.template.featureCount : shape.featureCount;
-  const drawsFeatures = input.template ? featureCount > 0 : shape.hasFeatures;
+  const featureCount = input.needs ? input.needs.features : shape.featureCount;
+  const drawsFeatures = input.needs ? featureCount > 0 : shape.hasFeatures;
+  const supplied = input.copy.features.length;
 
-  if (drawsFeatures && input.copy.features.length > featureCount) {
+  if (drawsFeatures && supplied > featureCount) {
     say(
-      `${input.copy.features.length} features were supplied but "${input.templateLabel}" ` +
-        `draws ${featureCount}. The last ` +
-        `${input.copy.features.length - featureCount} will not appear on the poster.`,
+      `${supplied} features were supplied but "${input.templateLabel}" draws ` +
+        `${featureCount}. The last ${supplied - featureCount} will not appear on the poster.`,
+    );
+  }
+
+  /*
+   * The other half of the same question, and the half that was missing.
+   *
+   * Too many features is visible on the poster as words that never arrived; too
+   * few is visible as a card that never arrived, which is harder to notice and
+   * just as wrong. A design built as a four-up given three draws three, evenly
+   * spaced, and looks deliberate. Only the sheet knows it was not.
+   */
+  if (input.needs && featureCount > 0 && supplied < featureCount) {
+    say(
+      `${supplied} features were supplied but "${input.templateLabel}" is built for ` +
+        `${featureCount}. It will draw ${supplied} and the row will not look like the ` +
+        'template it names.',
+    );
+  }
+
+  /*
+   * A call to action the template draws and the sheet did not write.
+   *
+   * `ctaLabel` falls through to a schema default when the column is blank, so
+   * the poster does not fail — it goes out saying LEARN MORE, in the one place
+   * on these designs where the words are the whole point.
+   */
+  if (input.needs?.ctaLabel && input.copy.ctaLabel === DEFAULT_CTA_LABEL) {
+    say(
+      `"${input.templateLabel}" draws a call to action and this row left the CTA label ` +
+        `blank, so the poster will read "${DEFAULT_CTA_LABEL}".`,
     );
   }
 

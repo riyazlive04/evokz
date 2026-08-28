@@ -11,7 +11,11 @@
  *
  * Run: npm run check:import
  */
-import { parseCalendarImport, buildCalendarImportTemplate } from '@/lib/calendar-parse';
+import {
+  buildCalendarImportTemplate,
+  buildCalendarImportTemplateFull,
+  parseCalendarImport,
+} from '@/lib/calendar-parse';
 import { usesFallbackImagery, verticalImageryFor } from '@/lib/ai/vertical-vocabulary';
 import { coercePosterCopy, describePosterCopyGap } from '@/lib/types/poster';
 
@@ -219,4 +223,67 @@ for (const count of [1, 2, 3, 5, 12]) {
 }
 
 process.exitCode = bad ? 1 : 0;
+// ---------------------------------------------------------------------------
+// The downloaded sheet must survive being re-imported
+// ---------------------------------------------------------------------------
+
+/*
+ * A round trip, because the two halves of the sheet had drifted apart.
+ *
+ * `buildTemplate` emitted six content headers and five content values, so in
+ * the poster sheet every poster value sat one column left of its heading —
+ * `headline` under `background prompt`, `headline period` under `website
+ * label`. The content-only sheet hid it (a trailing empty column is harmless)
+ * and nothing re-imported the poster one, so it went unnoticed. Generating a
+ * sheet and reading it straight back is the check that could not have missed it.
+ */
+{
+  const sheet = buildCalendarImportTemplateFull(TEMPLATES, 'Medicals', 30);
+  const parsed = parseCalendarImport(sheet, opts);
+
+  t('the poster sheet parses as CSV', parsed.error === null, parsed.error ?? '');
+  t('the poster sheet has rows', parsed.rows.length >= 2, `${parsed.rows.length} row(s)`);
+
+  const issues = parsed.rows.flatMap((row) => row.issues);
+  t(
+    'every row of the downloaded poster sheet imports cleanly',
+    issues.length === 0,
+    issues.slice(0, 3).join(' | '),
+  );
+
+  const first = parsed.rows[0];
+  t(
+    'the poster columns land on their own headings',
+    first?.poster?.headlineLines.length === 3 &&
+      first.poster.headlineLines[0] === 'BUILT FOR',
+    JSON.stringify(first?.poster?.headlineLines ?? null),
+  );
+  t(
+    'the CTA an operator typed survives the round trip',
+    first?.poster?.ctaLabel === 'BOOK AN APPOINTMENT',
+    // Absent, this fell through to the schema default and every hand-authored
+    // poster in the library said LEARN MORE.
+    String(first?.poster?.ctaLabel),
+  );
+  t(
+    'all four feature slots ship in the sheet',
+    first?.poster?.features.length === 4,
+    `${first?.poster?.features.length ?? 0} feature(s)`,
+  );
+
+  // Split on a character code rather than an escape: this file has been
+  // through a shell that eats backslashes, and a mangled newline literal
+  // fails as an unterminated string rather than as a wrong answer.
+  const NEWLINE = String.fromCharCode(10);
+  const contentOnly = buildCalendarImportTemplate(TEMPLATES, 'Medicals', 30);
+  const contentHeader = (contentOnly.split(NEWLINE)[0] ?? '').trim();
+  const posterHeader = (sheet.split(NEWLINE)[0] ?? '').trim();
+  t(
+    'the poster sheet extends the content sheet rather than replacing it',
+    posterHeader.startsWith(contentHeader),
+    posterHeader.slice(0, 90),
+  );
+}
+
+
 console.log(bad ? `\n${bad} failed` : '\nall import checks passed');

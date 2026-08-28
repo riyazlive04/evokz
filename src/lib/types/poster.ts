@@ -202,7 +202,10 @@ function safeJsonParse(value: string): unknown {
  * fewer than two features — still returns null, because a poster with fabricated
  * copy would be delivered to a paying client before anyone noticed.
  */
-export function coercePosterCopy(raw: unknown): PosterCopy | null {
+export function coercePosterCopy(
+  raw: unknown,
+  options: { allowNoFeatures?: boolean } = {},
+): PosterCopy | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const source = raw as Record<string, unknown>;
 
@@ -228,7 +231,16 @@ export function coercePosterCopy(raw: unknown): PosterCopy | null {
     .filter((feature) => feature.label.length > 0 && feature.body.length > 0)
     .slice(0, 4);
 
-  if (features.length < 2) return null;
+  /*
+   * Two is the floor for generated copy and no floor at all for hand-authored.
+   *
+   * A model that returns no features has misunderstood its brief, and accepting
+   * that would draw an empty block on a layout built around four. An operator
+   * who leaves the columns blank on Con-SM-6 is telling the truth: that design
+   * draws none, and demanding two would put words in the sheet that appear
+   * nowhere. The caller has to ask for the relaxed reading explicitly.
+   */
+  if (features.length < 2 && !options.allowNoFeatures) return null;
 
   /*
    * An empty body is repaired rather than fatal, for the same reason a
@@ -242,7 +254,8 @@ export function coercePosterCopy(raw: unknown): PosterCopy | null {
    * a template that does show it.
    */
   const body =
-    truncateWords(asString(source.body), 240) || truncateWords(features[0]!.body, 240);
+    truncateWords(asString(source.body), 240) ||
+    truncateWords(features[0]?.body ?? '', 240);
   if (!body) return null;
 
   const candidate = {
@@ -262,9 +275,28 @@ export function coercePosterCopy(raw: unknown): PosterCopy | null {
     headlinePeriod: source.headlinePeriod === true,
   };
 
-  const result = posterCopySchema.safeParse(candidate);
+  const result = (
+    options.allowNoFeatures ? posterCopyWithoutFeaturesSchema : posterCopySchema
+  ).safeParse(candidate);
   return result.success ? result.data : null;
 }
+
+/**
+ * The same shape with the two-feature floor lifted.
+ *
+ * That floor is right for generated copy: a model that returns no features has
+ * misunderstood the brief, and accepting it would draw an empty block on a
+ * layout built around four. It is wrong for a hand-authored row, because seven
+ * of the Constructions templates draw no features at all — demanding two there
+ * asks an operator to write words that appear nowhere, which is the "not one
+ * extra" rule broken in the other direction.
+ *
+ * Kept as a separate schema rather than a parameter on the first, so the strict
+ * path cannot be relaxed by accident: the caller has to say so.
+ */
+const posterCopyWithoutFeaturesSchema = posterCopySchema.extend({
+  features: z.array(posterFeatureSchema).max(4),
+});
 
 /**
  * Why `coercePosterCopy` rejected this payload, in one operator-readable clause.

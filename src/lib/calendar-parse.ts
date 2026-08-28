@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   coercePosterCopy,
+  CTA_LABEL_MAX,
   posterCopySchema,
   POSTER_ICONS,
   type PosterCopy,
@@ -59,6 +60,7 @@ export const IMPORT_FIELD_LIMITS = {
   featureLabel: { max: 28 },
   featureBody: { max: 90 },
   contactLabel: { max: 28 },
+  ctaLabel: { max: CTA_LABEL_MAX },
 } as const;
 
 /** The longest plan runs 365 days; the slack absorbs a few stray sheet rows. */
@@ -152,6 +154,7 @@ type PosterColumn =
   | 'accentLine'
   | 'eyebrow'
   | 'posterBody'
+  | 'ctaLabel'
   | 'callLabel'
   | 'websiteLabel'
   | 'headlinePeriod';
@@ -185,11 +188,19 @@ export const POSTER_COLUMN_LABELS: string[] = [
   'accent line',
   'eyebrow',
   'poster body',
-  ...FEATURE_SLOTS.slice(0, 3).flatMap((slot) => [
+  /*
+   * All four slots, not three.
+   *
+   * `readPosterCells` has always read four; the downloaded sheet showed three,
+   * so an operator filling in a template that draws four cards had no column for
+   * the fourth and no way to learn one existed. Most of the library draws four.
+   */
+  ...FEATURE_SLOTS.flatMap((slot) => [
     `feature ${slot} icon`,
     `feature ${slot} label`,
     `feature ${slot} body`,
   ]),
+  'cta label',
   'call label',
   'website label',
   'headline period',
@@ -261,6 +272,12 @@ const HEADER_ALIASES: Record<string, SheetColumn> = {
   body: 'posterBody',
   postertext: 'posterBody',
   posterparagraph: 'posterBody',
+
+  ctalabel: 'ctaLabel',
+  cta: 'ctaLabel',
+  ctatext: 'ctaLabel',
+  buttonlabel: 'ctaLabel',
+  buttontext: 'ctaLabel',
 
   calllabel: 'callLabel',
   callcta: 'callLabel',
@@ -899,6 +916,7 @@ function readPosterCells(read: CellReader, issues: string[]): PosterCopy | null 
   const headlineRaw = read('headline');
   const posterBody = read('posterBody');
   const eyebrow = read('eyebrow');
+  const ctaLabel = read('ctaLabel');
   const callLabel = read('callLabel');
   const websiteLabel = read('websiteLabel');
   const periodRaw = read('headlinePeriod');
@@ -912,9 +930,16 @@ function readPosterCells(read: CellReader, issues: string[]): PosterCopy | null 
   }));
 
   const touched =
-    [headlineRaw, posterBody, eyebrow, callLabel, websiteLabel, periodRaw, accentRaw].some(
-      (cell) => cell.length > 0,
-    ) ||
+    [
+      headlineRaw,
+      posterBody,
+      eyebrow,
+      ctaLabel,
+      callLabel,
+      websiteLabel,
+      periodRaw,
+      accentRaw,
+    ].some((cell) => cell.length > 0) ||
     featureCells.some((cell) => cell.icon || cell.label || cell.body);
 
   if (!touched) return null;
@@ -976,7 +1001,16 @@ function readPosterCells(read: CellReader, issues: string[]): PosterCopy | null 
     features.push({ icon: cell.icon, label: cell.label, body: cell.body });
   }
 
-  if (features.length < FEATURES.min) {
+  /*
+   * A row may carry no features at all, but not one of them half-written.
+   *
+   * Seven of the Constructions templates draw none, so demanding two there asks
+   * an operator to write words that land nowhere. A row that touched a feature
+   * cell and got it wrong is still an error — the difference is between "this
+   * design has no features" and "I started one and stopped".
+   */
+  const touchedAnyFeature = featureCells.some((cell) => cell.icon || cell.label || cell.body);
+  if (touchedAnyFeature && features.length < FEATURES.min) {
     issues.push(`Poster needs at least ${FEATURES.min} features, each with icon, label, and body`);
   }
 
@@ -989,6 +1023,9 @@ function readPosterCells(read: CellReader, issues: string[]): PosterCopy | null 
 
   if (eyebrow.length > IMPORT_FIELD_LIMITS.eyebrow.max) {
     issues.push(`Poster eyebrow exceeds ${IMPORT_FIELD_LIMITS.eyebrow.max} characters`);
+  }
+  if (ctaLabel.length > IMPORT_FIELD_LIMITS.ctaLabel.max) {
+    issues.push(`CTA label exceeds ${IMPORT_FIELD_LIMITS.ctaLabel.max} characters`);
   }
   if (callLabel.length > IMPORT_FIELD_LIMITS.contactLabel.max) {
     issues.push(`Call label exceeds ${IMPORT_FIELD_LIMITS.contactLabel.max} characters`);
@@ -1024,16 +1061,29 @@ function readPosterCells(read: CellReader, issues: string[]): PosterCopy | null 
 
   // `coercePosterCopy` is the authority on shape. Everything above exists to
   // produce a specific message first — by here, a clean row needs no repair.
-  const copy = coercePosterCopy({
-    headlineLines,
-    accentLineIndex,
-    eyebrow,
-    body: posterBody,
-    features,
-    callLabel,
-    websiteLabel,
-    headlinePeriod: headlinePeriod === true,
-  });
+  const copy = coercePosterCopy(
+    {
+      headlineLines,
+      accentLineIndex,
+      eyebrow,
+      body: posterBody,
+      features,
+      /*
+       * Omitting this is what made every hand-authored poster say "LEARN MORE".
+       *
+       * `coercePosterCopy` falls through to the schema default when the key is
+       * absent, so an operator who typed a call to action into the sheet had it
+       * silently replaced by the default on the way to the database — and the
+       * templates that draw a CTA are exactly the ones where that line is the ask.
+       * Empty is still allowed: it falls through to the default as before.
+       */
+      ...(ctaLabel.length > 0 ? { ctaLabel } : {}),
+      callLabel,
+      websiteLabel,
+      headlinePeriod: headlinePeriod === true,
+    },
+    { allowNoFeatures: !touchedAnyFeature },
+  );
 
   if (!copy && issues.length === 0) {
     issues.push('The poster columns on this row do not form a usable poster');
@@ -1184,7 +1234,9 @@ const TEMPLATE_SKELETON = [
       { icon: 'shieldCheck', label: 'First benefit', body: 'One short sentence saying what the client gets.' },
       { icon: 'stopwatch', label: 'Second benefit', body: 'Labels read as parallel noun phrases, not sentences.' },
       { icon: 'award', label: 'Third benefit', body: 'Three items is the count most layouts are built for.' },
+      { icon: 'people', label: 'Fourth benefit', body: 'Four is what most of the library actually draws.' },
     ],
+    ctaLabel: 'BOOK AN APPOINTMENT',
     callLabel: 'CALL US TODAY',
     websiteLabel: 'VISIT OUR WEBSITE',
     headlinePeriod: 'yes',
@@ -1200,7 +1252,9 @@ const TEMPLATE_SKELETON = [
       { icon: 'award', label: 'Proof point', body: 'Something specific enough to be checked.' },
       { icon: 'people', label: 'Who does it', body: 'The person or team behind the promise.' },
       { icon: 'star', label: 'What it means', body: 'The outcome the reader actually cares about.' },
+      { icon: 'handshake', label: 'Why you', body: 'Left blank on a template that draws only three.' },
     ],
+    ctaLabel: 'TALK TO US TODAY',
     callLabel: 'TALK TO OUR TEAM',
     websiteLabel: 'VISIT OUR WEBSITE',
     headlinePeriod: 'no',
@@ -1295,7 +1349,24 @@ function buildTemplate(
   const lines = Array.from({ length: rowCount }, (_, index) => {
     // The two skeletons cycle under however many templates there are.
     const row = { ...samples[index % samples.length]!, day: String(index + 1) };
-    const content = [row.day, nameFor(index), row.caption, row.hashtags, row.imagePrompt];
+    /*
+     * Six values for six headers.
+     *
+     * `background prompt` was in `CONTENT_COLUMN_LABELS` and missing from here,
+     * which is harmless in the content-only sheet — a trailing empty column —
+     * and quietly ruinous in the poster one: every poster value shifted a column
+     * left, so `headline` landed under `background prompt`, `accent line` under
+     * `headline`, and `headline period` under `website label`. A sheet
+     * downloaded from the console and re-imported unchanged misparsed.
+     */
+    const content = [
+      row.day,
+      nameFor(index),
+      row.caption,
+      row.hashtags,
+      row.imagePrompt,
+      '',
+    ];
     if (!includePoster) return content.map(csvCell).join(',');
 
     const poster = [
@@ -1304,6 +1375,7 @@ function buildTemplate(
       row.eyebrow,
       row.posterBody,
       ...row.features.flatMap((feature) => [feature.icon, feature.label, feature.body]),
+      row.ctaLabel,
       row.callLabel,
       row.websiteLabel,
       row.headlinePeriod,
