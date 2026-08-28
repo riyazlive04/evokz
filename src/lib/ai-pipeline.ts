@@ -12,9 +12,11 @@ import {
 import {
   resolvePlatePhotoRequests,
   resolveSpecPhotoRequests,
+  resolveTemplatePhotoRequests,
   type PhotoRequest,
 } from '@/lib/poster/photo-request';
 import { resolvePosterCanvas } from '@/lib/poster/canvas';
+import { findHtmlTemplateFor } from '@/lib/poster/html/template';
 import { renderPoster } from '@/lib/poster/render';
 import { prisma } from '@/lib/prisma';
 import { describeDelay, nextSendDelay } from '@/lib/send-jitter';
@@ -265,15 +267,33 @@ export async function runCreativePipeline(
        * grid spec stays in play for the copy stage and as the fallback if the
        * plate's own spec has stopped parsing.
        */
-      const canvas = resolvePosterCanvas(layout.plate?.spec ?? layout.spec, sizePreset);
+      /*
+       * An authored HTML template wins over both other paths, and has to win
+       * *here* rather than only inside `renderPoster` — the canvas and the photo
+       * requests are settled before anything is drawn, and a template's frames
+       * are not the spec's cells. Buying against the spec and then drawing the
+       * template would order the wrong number of frames at the wrong shapes, and
+       * the mismatch would surface as a repeated photograph rather than as an
+       * error.
+       */
+      const htmlTemplate = await findHtmlTemplateFor(layout.label);
+
+      const canvas = resolvePosterCanvas(
+        htmlTemplate
+          ? { aspect: htmlTemplate.manifest.aspect, name: htmlTemplate.manifest.label }
+          : (layout.plate?.spec ?? layout.spec),
+        sizePreset,
+      );
       console.info(
         `[ace:pipeline] day ${entry.dayNumber} canvas — ${canvas.reason}` +
-          (layout.plate ? ' (clean plate)' : ''),
+          (htmlTemplate ? ' (authored template)' : layout.plate ? ' (clean plate)' : ''),
       );
 
-      const photoRequests = layout.plate
-        ? resolvePlatePhotoRequests(layout.plate.spec, canvas)
-        : resolveSpecPhotoRequests(layout.spec, canvas);
+      const photoRequests = htmlTemplate
+        ? resolveTemplatePhotoRequests(htmlTemplate.manifest, canvas)
+        : layout.plate
+          ? resolvePlatePhotoRequests(layout.plate.spec, canvas)
+          : resolveSpecPhotoRequests(layout.spec, canvas);
 
       // ---- Step 1: Flux.1 via fal.ai --------------------------------------
       stage = 'generate';
@@ -398,12 +418,15 @@ export async function runCreativePipeline(
        * plate is a few hundred kilobytes and caching it would mean an operator
        * replacing one and not seeing the change.
        */
-      const plateBytes = layout.plate
+      const plateBytes = layout.plate && !htmlTemplate
         ? await downloadDriveFile(layout.plate.driveFileId)
         : null;
 
       const poster = await renderPoster({
         layoutSpec: layout.spec,
+        // The one field that routes a poster to Chromium. Null for every
+        // template with no file, which takes the satori path unchanged.
+        ...(htmlTemplate ? { templateLabel: htmlTemplate.manifest.label } : {}),
         copy: posterCopy,
         guideline: parseBrandGuideline(client.brandGuideline),
         identity: {
@@ -416,7 +439,7 @@ export async function runCreativePipeline(
           whatsappNumber: client.whatsappNumber,
         },
         photos,
-        ...(layout.plate && plateBytes
+        ...(layout.plate && plateBytes && !htmlTemplate
           ? {
               plate: {
                 spec: layout.plate.spec,
