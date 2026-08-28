@@ -77,12 +77,20 @@
     content: "";
     position: absolute;
     inset: 0;
+    /*
+     * Held opaque as far as the service list, not just the headline.
+     *
+     * The first stops faded out by 52%, which is above the list — so on a live
+     * poster the four items sat on a busy corridor rather than on clean ground.
+     * The photograph still has the bottom third to itself.
+     */
     background: linear-gradient(
       180deg,
-      rgba(241, 241, 243, 0.94) 0%,
-      rgba(241, 241, 243, 0.88) 34%,
-      rgba(241, 241, 243, 0.55) 52%,
-      rgba(241, 241, 243, 0) 72%
+      rgba(241, 241, 243, 0.95) 0%,
+      rgba(241, 241, 243, 0.92) 44%,
+      rgba(241, 241, 243, 0.78) 60%,
+      rgba(241, 241, 243, 0.2) 74%,
+      rgba(241, 241, 243, 0) 84%
     );
   }
 
@@ -129,13 +137,13 @@
     gap: 26px;
   }
   .p14-item svg {
-    width: 58px;
-    height: 72px;
+    width: 66px;
+    height: 82px;
     flex: none;
     color: #0c2470;
   }
   .p14-label {
-    font-size: 40px;
+    font-size: 46px;
     font-weight: 600;
     letter-spacing: -0.01em;
     color: #0c2470;

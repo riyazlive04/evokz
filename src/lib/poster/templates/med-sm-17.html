@@ -200,8 +200,13 @@
     padding: 20px 26px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 18px;
+    /*
+     * Centred, not spread. `space-between` is right for two items and wrong for
+     * one: a client with no website left a single label adrift at the left of a
+     * wide empty bar. Centring reads correctly at either count.
+     */
+    justify-content: center;
+    gap: 46px;
     z-index: 3;
   }
   .p17-contact {
@@ -293,7 +298,7 @@
         <span data-slot="website"></span>
       </div>
     </div>
-    <div class="p17-divider"></div>
+    <div class="p17-divider" data-when="website"></div>
     <div class="p17-contact">
       <svg aria-hidden="true"><use href="#ic-phone"/></svg>
       <div class="p17-contact-text">

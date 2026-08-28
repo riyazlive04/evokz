@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Resvg } from '@resvg/resvg-js';
+import sharp from 'sharp';
 import satori from 'satori';
 
 import { intEnv, optionalEnv } from '@/lib/env';
@@ -431,11 +432,34 @@ async function renderViaTemplate(
     website: normalizeWebsite(input.identity.websiteUrl),
   };
 
+  /*
+   * Cut-outs are trimmed before they are drawn.
+   *
+   * A background-removed frame comes back the size it was generated at, with
+   * the figure somewhere inside it and transparency all around. `object-fit:
+   * contain` then fits the *frame*, empty margin included, so a figure occupying
+   * half its image lands at half the size the design asked for — measured on a
+   * live poster as 223px of clinician inside a 460px box against the reference's
+   * 443. Nothing in the render looks broken; the figure is just quietly small,
+   * on every subject template at once.
+   *
+   * Trimming is the right place to fix it because the fault is in the frame, not
+   * in any one template's CSS: crop the transparency away and `contain` fits the
+   * figure itself.
+   */
+  const photos = await Promise.all(
+    toPosterPhotos(input.photos).map(async (photo, index) =>
+      template.manifest.photos[index]?.kind === 'subject'
+        ? trimTransparentMargin(photo)
+        : photo,
+    ),
+  );
+
   const body = await renderHtmlPoster({
     template,
     copy: input.copy,
     identity,
-    photos: toPosterPhotos(input.photos),
+    photos,
     width: input.width,
     height: input.height,
   });
@@ -449,6 +473,44 @@ async function renderViaTemplate(
     // preview route's `X-Poster-Canvas-Mode` header stays a useful thing to read.
     canvasMode: 'template',
   };
+}
+
+/**
+ * Crops the transparent border off a cut-out, leaving the figure.
+ *
+ * Only touches frames that actually carry alpha. `sharp.trim()` on an opaque
+ * image trims by the *corner colour* instead, which on a photograph means
+ * cropping away whatever happens to match the top-left pixel — a pale sky, a
+ * white wall — so the guard is load-bearing rather than defensive.
+ *
+ * Returns the frame untouched on any failure. A slightly small figure is a poor
+ * poster; a failed render is no poster, and this is not worth the second.
+ */
+async function trimTransparentMargin(photo: PosterPhoto): Promise<PosterPhoto> {
+  if (!photo.dataUri) return photo;
+
+  try {
+    const source = Buffer.from(photo.dataUri.split(',')[1] ?? '', 'base64');
+    const metadata = await sharp(source).metadata();
+    if (!metadata.hasAlpha) return photo;
+
+    const { data, info } = await sharp(source)
+      // A threshold above zero so the feathered edge birefnet leaves behind is
+      // treated as empty rather than as the first pixel of the subject.
+      .trim({ threshold: 8 })
+      .png()
+      .toBuffer({ resolveWithObject: true });
+
+    if (info.width < 1 || info.height < 1) return photo;
+    return {
+      dataUri: toDataUri(data, 'image/png'),
+      width: info.width,
+      height: info.height,
+    };
+  } catch (error: unknown) {
+    console.warn(`[ace:poster] a cut-out could not be trimmed: ${describe(error)}`);
+    return photo;
+  }
 }
 
 /**

@@ -92,10 +92,19 @@
     color: #45607f;
   }
 
-  /* The block that gives when copy runs long. */
+  /*
+   * Fills the column rather than hugging its rows.
+   *
+   * Hugging left a dead band between the card and the foot — the reference puts
+   * a figure there, and this design's photograph sits behind a scrim instead, so
+   * the space read as empty rather than as breathing room. Growing into it also
+   * keeps this the block that gives when copy runs long, because the rows share
+   * the slack before the card runs out of it.
+   */
   .p1-card {
-    flex: 0 1 auto;
+    flex: 1 1 auto;
     min-height: 0;
+    max-height: 620px;
     margin-top: 24px;
     width: 430px;
     background: #ffffff;
@@ -104,6 +113,7 @@
     padding: 18px 20px;
     display: flex;
     flex-direction: column;
+    justify-content: space-evenly;
   }
   .p1-row {
     display: flex;
