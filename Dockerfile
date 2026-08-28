@@ -124,8 +124,22 @@ EXPOSE 3000
 
 # Caddy is the only thing that talks to this port, so binding 0.0.0.0 inside the
 # container network is not an exposure — compose publishes no host port for it.
+# Two questions, because they have different answers.
+#
+# /login asks whether the web server is up. /api/health asks whether the thing
+# the server exists to do still works: it returns 503 once the poster renderer
+# has failed several attempts in a row, which is a state the login page is
+# entirely happy in. A dead Chromium used to report healthy indefinitely, and
+# the first person to know was a client who did not get their poster.
+#
+# Worth being clear about what this buys, because it is easy to over-read:
+# Compose restarts a container when it *exits*, not when it goes unhealthy. This
+# repairs nothing. It makes docker ps say unhealthy instead of healthy, which is
+# the difference between a problem someone can find and one that waits for a
+# complaint.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:3000/login >/dev/null || exit 1
+    CMD curl -fsS http://127.0.0.1:3000/login >/dev/null \
+     && curl -fsS http://127.0.0.1:3000/api/health >/dev/null || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node_modules/.bin/next", "start"]

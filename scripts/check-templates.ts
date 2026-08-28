@@ -32,7 +32,11 @@ import sharp from 'sharp';
 
 import { getImageSizePreset } from '@/lib/image-sizes';
 import { resolvePosterCanvas } from '@/lib/poster/canvas';
-import { closePosterBrowser } from '@/lib/poster/html/browser';
+import {
+  closePosterBrowser,
+  posterBrowser,
+  rendererHealth,
+} from '@/lib/poster/html/browser';
 import { renderHtmlPoster } from '@/lib/poster/html/render';
 import type { LayoutProblem } from '@/lib/poster/html/fill';
 import {
@@ -42,6 +46,7 @@ import {
   loadKitSprite,
   markedUpFeatureSlots,
   type HtmlTemplate,
+  type HtmlTemplateSlug,
 } from '@/lib/poster/html/template';
 import { BUNDLED_FAMILIES } from '@/lib/poster/html/typefaces';
 import { resolveTemplatePhotoRequests } from '@/lib/poster/photo-request';
@@ -1044,6 +1049,53 @@ async function main(): Promise<void> {
       failures += 1;
       console.error(`  FAIL render — ${describe(error)}`);
     }
+  }
+
+  /*
+   * The renderer survives its browser dying.
+   *
+   * Last in the file because it deliberately kills the shared Chromium, and
+   * everything above wants it alive.
+   *
+   * This is the fault it guards against: the singleton cached the launch promise
+   * and only cleared it when the *launch* failed, so a browser that died after a
+   * successful launch was handed out forever. Every subsequent render called
+   * `newContext()` on a corpse and failed with "Target page, context or browser
+   * has been closed" — every poster, every client, until somebody restarted the
+   * container. Nothing would have prompted them to: the health check watched the
+   * login page, which a dead browser leaves working perfectly.
+   *
+   * Closing the browser is a fair stand-in for the real causes. An OOM kill, a
+   * crashed renderer process and this all end at the same place — a `Browser`
+   * whose `isConnected()` is false.
+   */
+  console.log('');
+  console.log('renderer recovery');
+  try {
+    const first = await posterBrowser();
+    await first.close();
+    check('a killed browser reports itself disconnected', !first.isConnected());
+
+    const second = await posterBrowser();
+    check('the next caller gets a live browser', second.isConnected());
+    check('and not the one that died', second !== first);
+
+    // The assertions above are about the singleton; this is about the platform.
+    // A render is what actually failed, so a render is what has to work.
+    const slug = HTML_TEMPLATE_SLUGS[0] as HtmlTemplateSlug;
+    const template = await loadHtmlTemplate(slug);
+    const png = await renderTemplate(template, fixtureFor(slug).copy, undefined, fixtureFor(slug).identity);
+    check(`a poster still renders after the browser died (${png.byteLength} bytes)`, png.byteLength > 0);
+
+    const health = rendererHealth();
+    check(
+      'and the renderer reports itself healthy again',
+      health.ok && health.browser === 'live' && health.consecutiveFailures === 0,
+      JSON.stringify(health),
+    );
+  } catch (error: unknown) {
+    failures += 1;
+    console.error(`  FAIL renderer recovery — ${describe(error)}`);
   }
 
   // Without this the script hangs holding a live Chromium.

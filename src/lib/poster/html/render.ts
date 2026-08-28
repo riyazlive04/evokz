@@ -8,7 +8,7 @@ import {
 } from '@/lib/poster/html/fill';
 import type { Page } from 'playwright';
 
-import { posterBrowser, renderTimeoutMs } from '@/lib/poster/html/browser';
+import { posterBrowser, recordRenderOutcome, renderTimeoutMs } from '@/lib/poster/html/browser';
 import { fontFaceCss } from '@/lib/poster/html/typefaces';
 import {
   loadBaseCss,
@@ -60,7 +60,26 @@ export interface HtmlRenderInput {
   inspect?: (page: Page) => Promise<void>;
 }
 
+/**
+ * Renders one poster, and records whether it worked.
+ *
+ * The record is what the health endpoint reports, so it has to wrap everything
+ * the render touches — obtaining the browser and opening the context included.
+ * A failure there is exactly the kind worth noticing, and it happens before the
+ * page exists.
+ */
 export async function renderHtmlPoster(input: HtmlRenderInput): Promise<Buffer> {
+  try {
+    const body = await renderPosterPage(input);
+    recordRenderOutcome(true);
+    return body;
+  } catch (error: unknown) {
+    recordRenderOutcome(false);
+    throw error;
+  }
+}
+
+async function renderPosterPage(input: HtmlRenderInput): Promise<Buffer> {
   const { template, width, height } = input;
   const markup = await buildDocument(template, width, height);
   const model = buildModel(input);

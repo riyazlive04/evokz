@@ -97,13 +97,18 @@ export const config = {
    * Everything except:
    *   api/webhooks/razorpay — verifies its own HMAC signature over the raw body
    *   api/cron              — verifies its own Bearer token and fails closed
+   *   api/health            — carries nothing worth authenticating for
    *   login                 — the unauthenticated entry point itself
    *   _next/static, _next/image, favicon.ico — build output, no data in them
    *
-   * Both API exclusions authenticate their callers already, and neither can
-   * present a session cookie: Razorpay and the system cron are machines.
+   * The first two API exclusions authenticate their callers already, and neither
+   * can present a session cookie: Razorpay and the system cron are machines. So
+   * is the container's health check, and it has no credential to offer at all —
+   * which is why `api/health` is built to be safe without one rather than given
+   * a token to hold. It returns counts, timestamps and a one-word state, and no
+   * error text; see the route for what that rules out and why.
    */
   matcher: [
-    '/((?!api/webhooks/razorpay|api/cron|login|_next/static|_next/image|favicon.ico).*)',
+    '/((?!api/webhooks/razorpay|api/cron|api/health|login|_next/static|_next/image|favicon.ico).*)',
   ],
 };
