@@ -30,6 +30,22 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /*
+   * The space is held even when there is no logo.
+   *
+   * `data-image` removes an element it has no picture for, so without this the
+   * wrapper collapsed and every block below it moved up — a client who has not
+   * uploaded a mark got a different composition from one who has. Reserving is
+   * the agreed behaviour and the safer one: shifting the whole column is how
+   * blocks end up on top of each other.
+   *
+   * The area is also the client's alone. A template may not paint a border, a
+   * background or a placeholder frame here — several references print a "LOGO
+   * HERE" box and reproducing it would box in a mark that does not suit it.
+   * `check:templates` enforces that.
+   */
+  min-height: var(--logo-h, 190px);
+  min-width: var(--logo-w, 320px);
 }
 .pk-logo img {
   /*

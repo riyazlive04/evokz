@@ -34,9 +34,11 @@ import { closePosterBrowser } from '@/lib/poster/html/browser';
 import { renderHtmlPoster } from '@/lib/poster/html/render';
 import type { LayoutProblem } from '@/lib/poster/html/fill';
 import {
+  copyNeedsOf,
   HTML_TEMPLATE_SLUGS,
   loadHtmlTemplate,
   loadKitSprite,
+  markedUpFeatureCount,
   type HtmlTemplate,
 } from '@/lib/poster/html/template';
 import { BUNDLED_FAMILIES } from '@/lib/poster/html/typefaces';
@@ -496,7 +498,47 @@ function lintTemplate(template: HtmlTemplate): void {
       : undefined,
   );
 
-  // --- manifest agrees with the markup --------------------------------------
+  // --- the manifest agrees with the markup ----------------------------------
+  //
+  // featureCount is what the sheet is generated from and what checkRowFit
+  // measures a row against, so a manifest claiming four cards over markup that
+  // draws three would ask an operator for a feature that lands nowhere.
+  const markedUp = markedUpFeatureCount(template.contract);
+  check(
+    `declares ${template.manifest.featureCount} feature(s) and marks up ${markedUp}`,
+    markedUp === template.manifest.featureCount,
+    'the manifest and the markup disagree about how many features this design draws',
+  );
+
+  // --- the logo area belongs to the client ----------------------------------
+  //
+  // Several references print a "LOGO HERE" placeholder frame. Reproducing it
+  // boxes in a mark that may not suit the box — the space is reserved for the
+  // client's artwork and nothing else is drawn in it.
+  // CSS comments as well as HTML ones: the rule reads declarations, and a
+  // comment explaining why the logo has no background is not a background.
+  const declarations = withoutComments.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const logoRules = [...declarations.matchAll(/([^{}]*logo[^{}]*)\{([^}]*)\}/gi)]
+    .filter((match) => /border|background/i.test(match[2]!))
+    .map((match) => match[1]!.trim());
+  check(
+    'paints nothing in the logo area',
+    logoRules.length === 0,
+    logoRules.length > 0
+      ? `${logoRules.join(', ')} — the space is the client's mark, not a frame around it`
+      : undefined,
+  );
+
+  const needs = copyNeedsOf(template);
+  const draws = Object.entries(needs)
+    .filter(([, value]) => value === true)
+    .map(([name]) => name);
+  console.log(
+    `  ..   draws ${needs.features} feature(s)` +
+      (draws.length > 0 ? ` and ${draws.join(', ')}` : ''),
+  );
+
+  // --- manifest photos agree with the markup --------------------------------
   const declared = template.manifest.photos.map((photo) => photo.name);
   const present = new Set(
     [...withoutComments.matchAll(/data-image="([^"]+)"/gi)].map((m) => m[1]!),

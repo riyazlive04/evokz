@@ -88,11 +88,86 @@ export const templateManifestSchema = z.object({
 
 export type TemplateManifest = z.infer<typeof templateManifestSchema>;
 
+/**
+ * What a template actually draws, read off its own markup.
+ *
+ * Derived rather than declared, and that is the point: the `data-slot`,
+ * `data-image` and `data-when` names in the file *are* the list of things the
+ * design puts on the poster, so anything that needs to know — the sheet an
+ * operator fills in, the check that a row carries neither one field too many nor
+ * one too few — can ask the template instead of being told separately and
+ * drifting from it.
+ *
+ * It is also what makes a template nobody has seen yet safe: upload one
+ * tomorrow and its contract is correct the moment the file exists.
+ */
+export interface TemplateContract {
+  /** `data-slot` names, including those inside a repeat. */
+  text: readonly string[];
+  /** `data-image` names. */
+  images: readonly string[];
+  /** `data-when` condition names. */
+  conditions: readonly string[];
+}
+
 export interface HtmlTemplate {
   slug: string;
   manifest: TemplateManifest;
+  contract: TemplateContract;
   /** The file, verbatim. The manifest block is still in it and is inert. */
   html: string;
+}
+
+/** The fields of `PosterCopy` and `PosterIdentity` a template puts on the page. */
+export interface TemplateCopyNeeds {
+  eyebrow: boolean;
+  body: boolean;
+  ctaLabel: boolean;
+  callLabel: boolean;
+  websiteLabel: boolean;
+  website: boolean;
+  tagline: boolean;
+  phone: boolean;
+  logo: boolean;
+  /**
+   * How many features the design draws — from the manifest, which is the
+   * authority, with the markup checked against it by `check:templates`.
+   */
+  features: number;
+}
+
+export function copyNeedsOf(template: HtmlTemplate): TemplateCopyNeeds {
+  const text = new Set(template.contract.text);
+  return {
+    eyebrow: text.has('eyebrow'),
+    body: text.has('body'),
+    ctaLabel: text.has('ctaLabel'),
+    callLabel: text.has('callLabel'),
+    websiteLabel: text.has('websiteLabel'),
+    website: text.has('website'),
+    tagline: text.has('tagline'),
+    phone: text.has('phone'),
+    logo: template.contract.images.includes('logo'),
+    features: template.manifest.featureCount,
+  };
+}
+
+/** How many `featureNLabel` slots the markup actually carries. */
+export function markedUpFeatureCount(contract: TemplateContract): number {
+  return contract.text.filter((name) => /^feature[0-9]+Label$/.test(name)).length;
+}
+
+function readContract(html: string): TemplateContract {
+  const names = (attribute: string): string[] => [
+    ...new Set(
+      [...html.matchAll(new RegExp(`${attribute}="([^"]+)"`, 'gi'))].map((match) => match[1]!),
+    ),
+  ];
+  return {
+    text: names('data-slot'),
+    images: names('data-image'),
+    conditions: names('data-when'),
+  };
 }
 
 /**
@@ -225,7 +300,12 @@ async function readTemplate(slug: string): Promise<HtmlTemplate> {
     );
   }
 
-  return { slug, manifest: readManifest(slug, html), html };
+  return {
+    slug,
+    manifest: readManifest(slug, html),
+    contract: readContract(stripComments(html)),
+    html,
+  };
 }
 
 /**
@@ -286,6 +366,18 @@ export async function findHtmlTemplateFor(
     if (template.manifest.label.trim().toLowerCase() === wanted) return template;
   }
   return null;
+}
+
+/**
+ * Comments are stripped before the contract is read.
+ *
+ * Several templates quote a `data-slot="..."` in their header comment to explain
+ * the format, and a name that only exists in prose is not a name the design
+ * draws — counting it would make the sheet ask an operator for a field that
+ * lands nowhere.
+ */
+function stripComments(html: string): string {
+  return html.replace(/<!--[\s\S]*?-->/g, ' ');
 }
 
 function describe(error: unknown): string {
