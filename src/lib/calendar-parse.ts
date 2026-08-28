@@ -71,7 +71,7 @@ export const IMPORT_MAX_BYTES = 1_000_000;
 
 /** Headline lines and feature counts the poster schema will accept. */
 const HEADLINE_LINES = { min: 2, max: 4 } as const;
-const FEATURES = { min: 2, max: 4 } as const;
+const FEATURES = { max: 4 } as const;
 
 export const CONFLICT_MODES = ['skip', 'overwrite'] as const;
 export type ConflictMode = (typeof CONFLICT_MODES)[number];
@@ -893,11 +893,13 @@ function readDayNumber(raw: string, issues: string[]): number | null {
 
 /** JSON rows carrying the generator's nested `poster` object. */
 function readNestedPoster(source: unknown, issues: string[]): PosterCopy | null {
-  const copy = coercePosterCopy(source);
+  // Hand-authored for the same reason the column rows are: this arrives in an
+  // import sheet, so the feature count is the operator's choice, not a model's.
+  const copy = coercePosterCopy(source, { handAuthored: true });
   if (!copy) {
     issues.push(
-      'The nested "poster" object is unusable — it needs at least 2 headline lines, ' +
-        '2 features with a label and body, and a body paragraph',
+      'The nested "poster" object is unusable — it needs at least 2 headline lines '
+        + 'and a body paragraph',
     );
   }
   return copy;
@@ -1002,17 +1004,21 @@ function readPosterCells(read: CellReader, issues: string[]): PosterCopy | null 
   }
 
   /*
-   * A row may carry no features at all, but not one of them half-written.
+   * A row may carry any number of features, including none - but not one of
+   * them half-written.
    *
-   * Seven of the Constructions templates draw none, so demanding two there asks
-   * an operator to write words that land nowhere. A row that touched a feature
-   * cell and got it wrong is still an error — the difference is between "this
-   * design has no features" and "I started one and stopped".
+   * The count is the operator's to choose. Seven of the Constructions designs
+   * draw no features at all, and every design that draws any carries four
+   * cards; filling two draws two and the row closes up. There used to be a
+   * floor of two here, which made a perfectly deliberate single feature an
+   * invalid row, and - through `coercePosterCopy` below - threw away the rest
+   * of that row's hand-written copy with it.
+   *
+   * What is still an error is a card started and abandoned, and that is already
+   * caught per-card above: "Feature 3 needs all three of icon, label, and body"
+   * says which card and what is missing, where a count could only say that the
+   * total was wrong.
    */
-  const touchedAnyFeature = featureCells.some((cell) => cell.icon || cell.label || cell.body);
-  if (touchedAnyFeature && features.length < FEATURES.min) {
-    issues.push(`Poster needs at least ${FEATURES.min} features, each with icon, label, and body`);
-  }
 
   // ---- Body, eyebrow, contact labels ----
   if (posterBody.length === 0) {
@@ -1082,7 +1088,12 @@ function readPosterCells(read: CellReader, issues: string[]): PosterCopy | null 
       websiteLabel,
       headlinePeriod: headlinePeriod === true,
     },
-    { allowNoFeatures: !touchedAnyFeature },
+    /*
+     * Always relaxed, because this is a sheet: every row here was typed by a
+     * person, and the floor `coercePosterCopy` applies exists to catch a model
+     * that ignored its brief.
+     */
+    { handAuthored: true },
   );
 
   if (!copy && issues.length === 0) {

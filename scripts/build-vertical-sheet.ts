@@ -18,8 +18,10 @@
  * **It writes placeholders, not copy.** A generator cannot write a client's
  * marketing, and pretending otherwise produces a sheet that looks finished and
  * is not — the failure `sampleRowsFor` was rewritten to avoid. What it
- * guarantees is the *shape*: the right columns, the right number of features,
- * and a CTA wherever the design has one.
+ * guarantees is the *shape*: the right columns, a card for every feature the
+ * design can draw, and a CTA wherever the design has one. How many of those
+ * cards a given day uses is the operator's choice - fill two and the poster
+ * draws two.
  *
  * Run: npx tsx --tsconfig scripts/tsconfig.json scripts/build-vertical-sheet.ts \
  *        --out sheet.csv med-sm-15 med-sm-16 …
@@ -94,12 +96,23 @@ async function main(): Promise<void> {
       ? 'FILL: one person, standing, full body, plain background — this design cuts the figure out'
       : 'FILL: the photograph, described as a scene. No text, letters or logos in frame.';
 
-    // Exactly as many features as the design draws, and no rows for a design
-    // that draws none.
+    /*
+     * A card per slot the design carries, and none for a design that carries
+     * none.
+     *
+     * The count is the operator's to choose, not the design's: leaving a card
+     * blank draws one fewer and the row closes up. The placeholder says so,
+     * because a column reading `FILL:` looks required and the previous sheet
+     * asked for exactly the reference's number as though it were.
+     */
     const features: string[] = [];
     for (let slot = 1; slot <= 4; slot += 1) {
       if (slot <= needs.features) {
-        features.push('FILL: icon', `FILL: label ${slot}`, `FILL: body ${slot}`);
+        features.push(
+          'FILL: icon',
+          `FILL: label ${slot}${slot > 1 ? ' (or leave blank)' : ''}`,
+          `FILL: body ${slot}`,
+        );
       } else {
         features.push(NOT_DRAWN, NOT_DRAWN, NOT_DRAWN);
       }
@@ -126,7 +139,7 @@ async function main(): Promise<void> {
     );
 
     const drawn = [
-      `${needs.features} feature(s)`,
+      needs.features > 0 ? `up to ${needs.features} feature card(s)` : 'no feature row',
       needs.eyebrow ? 'eyebrow' : null,
       needs.body ? 'body' : null,
       needs.ctaLabel ? 'cta' : null,

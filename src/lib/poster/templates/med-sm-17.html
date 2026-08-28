@@ -3,7 +3,7 @@
   "label": "Med-SM-17",
   "aspect": 0.5625,
   "referenceWidth": 900,
-  "featureCount": 3,
+  "featureSlots": 4,
   "photos": [
     {
       "name": "hero",
@@ -31,7 +31,14 @@
 
   Two things it does that no other reference does: its headline is sentence case
   rather than caps, so it overrides the shared `text-transform`; and its services
-  carry a sentence each, so the rows are three rather than four. Ground sampled
+  carry a sentence each, so the reference shows three rather than four.
+
+  A fourth card is marked up all the same. `featureSlots` is a ceiling and the
+  sheet decides the count, so a day carrying four features has to be able to draw
+  four: capping the markup at the reference's own number meant a row an operator
+  had filled in silently lost its last card. Three still renders as the reference
+  does, because the fourth is removed by `data-when` when nothing fills it, and
+  `data-fit="block"` scales the card either way. Ground sampled
   at #012027 with the panels at #0c5968.
 -->
 
@@ -284,6 +291,13 @@
       <div class="p17-text">
         <div class="p17-label" data-slot="feature3Label"></div>
         <div class="p17-body" data-slot="feature3Body"></div>
+      </div>
+    </div>
+    <div class="p17-row" data-when="feature4">
+      <div class="p17-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="p17-text">
+        <div class="p17-label" data-slot="feature4Label"></div>
+        <div class="p17-body" data-slot="feature4Body"></div>
       </div>
     </div>
     <div class="p17-cta">

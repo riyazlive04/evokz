@@ -139,34 +139,35 @@ export function checkRowFit(input: {
   }
 
   /*
-   * This one survives the migration, because it is still true: a template with
-   * three cards given four features draws three. Only the source of the number
-   * changes — the manifest rather than the spec.
+   * The sheet decides how many features a poster shows; the design only bounds
+   * it.
+   *
+   * There used to be a warning here for supplying *fewer* than the design's
+   * count — that a four-up given three "will not look like the template it
+   * names". That was the wrong rule. An operator who writes three features
+   * means three, and the row closes up and draws three; treating the reference's
+   * own number as a quota made a deliberate choice look like a mistake on every
+   * import. It is gone.
+   *
+   * What is still worth saying is the other direction: words that will not
+   * appear anywhere. Since every design in the library that draws features
+   * carries four cards, and four is the schema's ceiling, that now only happens
+   * on a design with no feature row at all — where the sheet already writes a
+   * dash in those columns and somebody has typed over it.
    */
-  const featureCount = input.needs ? input.needs.features : shape.featureCount;
-  const drawsFeatures = input.needs ? featureCount > 0 : shape.hasFeatures;
+  const slots = input.needs ? input.needs.features : shape.featureCount;
+  const drawsFeatures = input.needs ? slots > 0 : shape.hasFeatures;
   const supplied = input.copy.features.length;
 
-  if (drawsFeatures && supplied > featureCount) {
+  if (supplied > 0 && !drawsFeatures) {
     say(
-      `${supplied} features were supplied but "${input.templateLabel}" draws ` +
-        `${featureCount}. The last ${supplied - featureCount} will not appear on the poster.`,
+      `${supplied} feature(s) were supplied but "${input.templateLabel}" has no feature ` +
+        'row in its design, so none of them will appear on the poster.',
     );
-  }
-
-  /*
-   * The other half of the same question, and the half that was missing.
-   *
-   * Too many features is visible on the poster as words that never arrived; too
-   * few is visible as a card that never arrived, which is harder to notice and
-   * just as wrong. A design built as a four-up given three draws three, evenly
-   * spaced, and looks deliberate. Only the sheet knows it was not.
-   */
-  if (input.needs && featureCount > 0 && supplied < featureCount) {
+  } else if (drawsFeatures && supplied > slots) {
     say(
-      `${supplied} features were supplied but "${input.templateLabel}" is built for ` +
-        `${featureCount}. It will draw ${supplied} and the row will not look like the ` +
-        'template it names.',
+      `${supplied} features were supplied but "${input.templateLabel}" carries ` +
+        `${slots} card(s). The last ${supplied - slots} will not appear on the poster.`,
     );
   }
 

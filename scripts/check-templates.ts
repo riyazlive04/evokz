@@ -40,7 +40,7 @@ import {
   HTML_TEMPLATE_SLUGS,
   loadHtmlTemplate,
   loadKitSprite,
-  markedUpFeatureCount,
+  markedUpFeatureSlots,
   type HtmlTemplate,
 } from '@/lib/poster/html/template';
 import { BUNDLED_FAMILIES } from '@/lib/poster/html/typefaces';
@@ -502,14 +502,14 @@ function lintTemplate(template: HtmlTemplate): void {
 
   // --- the manifest agrees with the markup ----------------------------------
   //
-  // featureCount is what the sheet is generated from and what checkRowFit
+  // `featureSlots` is what the sheet is generated from and what `checkRowFit`
   // measures a row against, so a manifest claiming four cards over markup that
   // draws three would ask an operator for a feature that lands nowhere.
-  const markedUp = markedUpFeatureCount(template.contract);
+  const markedUp = markedUpFeatureSlots(template.contract);
   check(
-    `declares ${template.manifest.featureCount} feature(s) and marks up ${markedUp}`,
-    markedUp === template.manifest.featureCount,
-    'the manifest and the markup disagree about how many features this design draws',
+    `declares ${template.manifest.featureSlots} feature card(s) and marks up ${markedUp}`,
+    markedUp === template.manifest.featureSlots,
+    'the manifest and the markup disagree about how many cards this design carries',
   );
 
   // --- the logo area belongs to the client ----------------------------------
@@ -572,7 +572,8 @@ function lintTemplate(template: HtmlTemplate): void {
  */
 function copyShapes(template: HtmlTemplate): Array<{ name: string; copy: PosterCopy }> {
   const slug = template.slug;
-  const count = Math.max(2, template.manifest.featureCount);
+  const slots = template.manifest.featureSlots;
+  const count = Math.max(2, slots);
 
   const featuresOf = (label: string, body: string): PosterCopy['features'] =>
     Array.from({ length: count }, (_, index) => ({
@@ -623,6 +624,35 @@ function copyShapes(template: HtmlTemplate): Array<{ name: string; copy: PosterC
         websiteLabel: 'A TWENTY EIGHT CHAR SITE LBL',
       },
     },
+    /*
+     * Every feature count the design can be handed, not just its own.
+     *
+     * `featureSlots` is a ceiling and the sheet decides the actual number, so a
+     * four-card design has to lay out correctly given one, two or three as well
+     * — the row closes up rather than leaving gaps, and whatever sits under it
+     * must not move into it. Testing each template only at its own count meant
+     * the one arrangement an operator is most likely to produce was the one
+     * never rendered.
+     *
+     * The maximum is already covered by `longest` above, so this fills in
+     * everything below it. Long feature copy at each count, because a row of one
+     * card is a wider column than a row of four and fails differently.
+     */
+    ...Array.from({ length: Math.max(0, slots - 1) }, (_, index) => {
+      const n = index + 1;
+      return {
+        name: `${n} feature${n === 1 ? '' : 's'}`,
+        copy: {
+          ...fixtureFor(slug).copy,
+          features: Array.from({ length: n }, (_, i) => ({
+            icon: 'star' as const,
+            label: `A TWENTY EIGHT CHAR LABEL${i + 1}`.slice(0, 28),
+            body:
+              'Ninety characters of feature body copy, which is the most a single feature may carry.',
+          })),
+        },
+      };
+    }),
   ];
 }
 
@@ -666,6 +696,17 @@ const readLogoPlacement = `(() => {
     inverted: filter.includes('invert(1'),
   };
 })()`;
+
+/**
+ * How many feature cards survived on the page.
+ *
+ * Counted after `fillPoster` has run, so `data-when` has already removed the
+ * cards nothing filled. `data-filled` is stamped on every element the fill
+ * actually wrote to, which is why this counts what the poster shows rather than
+ * what the markup declares.
+ */
+const countFeatureCards = `document.querySelectorAll('[data-filled$=\"Label\"]').length
+  - document.querySelectorAll('[data-filled=\"ctaLabel\"],[data-filled=\"callLabel\"],[data-filled=\"websiteLabel\"]').length`;
 
 /** WCAG relative luminance for one 8-bit sRGB triple. */
 function luminance(r: number, g: number, b: number): number {
@@ -931,13 +972,37 @@ async function main(): Promise<void> {
        */
       for (const shape of copyShapes(template)) {
         const found: LayoutProblem[] = [];
-        await renderTemplate(template, shape.copy, undefined, fixture.identity, (problems) =>
-          found.push(...problems),
+        const cards: number[] = [];
+        await renderTemplate(
+          template,
+          shape.copy,
+          async (page) => {
+            cards.push((await page.evaluate(countFeatureCards)) as number);
+          },
+          fixture.identity,
+          (problems) => found.push(...problems),
         );
         check(
           `lays out cleanly with ${shape.name} copy`,
           found.length === 0,
           found.map((problem) => `${problem.kind}: ${problem.detail}`).join('; '),
+        );
+
+        /*
+         * The sheet's count is the poster's count.
+         *
+         * A design's `featureSlots` is a ceiling, not a quota: a day carrying
+         * three features on a four-card design must draw three cards, not three
+         * filled and one empty, and not four with one repeated. Both failures
+         * are silent — the poster renders, and only somebody holding it beside
+         * the sheet would know.
+         */
+        const wanted = Math.min(shape.copy.features.length, template.manifest.featureSlots);
+        const drawn = cards[0] ?? -1;
+        check(
+          `draws ${wanted} feature card(s) for ${shape.copy.features.length} in the sheet`,
+          drawn === wanted,
+          `the page carries ${drawn}`,
         );
       }
 

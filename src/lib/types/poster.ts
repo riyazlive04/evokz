@@ -216,7 +216,7 @@ function safeJsonParse(value: string): unknown {
  */
 export function coercePosterCopy(
   raw: unknown,
-  options: { allowNoFeatures?: boolean } = {},
+  options: { handAuthored?: boolean } = {},
 ): PosterCopy | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const source = raw as Record<string, unknown>;
@@ -246,13 +246,20 @@ export function coercePosterCopy(
   /*
    * Two is the floor for generated copy and no floor at all for hand-authored.
    *
-   * A model that returns no features has misunderstood its brief, and accepting
-   * that would draw an empty block on a layout built around four. An operator
-   * who leaves the columns blank on Con-SM-6 is telling the truth: that design
-   * draws none, and demanding two would put words in the sheet that appear
-   * nowhere. The caller has to ask for the relaxed reading explicitly.
+   * A model that returns fewer than two features has misunderstood its brief,
+   * and accepting that would draw a near-empty block on a layout built around
+   * four. An operator who writes one, or none, is doing neither: the sheet
+   * decides how many cards a poster shows and the design only bounds it, so a
+   * row carrying one feature draws one card and the row closes up.
+   *
+   * The option used to be called `allowNoFeatures`, and the importer granted it
+   * only when *no* feature column had been touched. A row with exactly one
+   * therefore failed this line and had its entire hand-written copy discarded -
+   * headline, body, CTA and all - falling back silently to generated words. The
+   * name is the fix as much as the logic: the question is not how many features
+   * there are, it is whether a person wrote them.
    */
-  if (features.length < 2 && !options.allowNoFeatures) return null;
+  if (features.length < 2 && !options.handAuthored) return null;
 
   /*
    * An empty body is repaired rather than fatal, for the same reason a

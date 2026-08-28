@@ -79,11 +79,21 @@ export const templateManifestSchema = z.object({
   referenceWidth: z.number().int().positive(),
   photos: z.array(photoSchema).default([]),
   /**
-   * How many feature entries the design has room for. The copy stage writes
-   * 2–4; a template showing four cards and given two would otherwise leave two
-   * gaps in a row that reads as a set.
+   * How many feature cards the design carries — a **ceiling, not a quota**.
+   *
+   * The sheet decides how many a given day actually shows. A four-card design
+   * given two draws two; `data-when` removes the cards that have no words, and
+   * the row closes up rather than leaving gaps. That is the whole point of
+   * numbering the cards instead of repeating one.
+   *
+   * What this number does bound is the other direction: copy beyond the last
+   * card has nowhere to go and is dropped. Every design in the library that
+   * draws features at all carries four, which is the schema's own ceiling, so
+   * in practice nothing is ever dropped. A design with no feature row has 0 and
+   * ignores features entirely, exactly as a design with no body slot ignores
+   * `body`.
    */
-  featureCount: z.number().int().min(0).max(6).default(0),
+  featureSlots: z.number().int().min(0).max(6).default(0),
 });
 
 export type TemplateManifest = z.infer<typeof templateManifestSchema>;
@@ -148,12 +158,12 @@ export function copyNeedsOf(template: HtmlTemplate): TemplateCopyNeeds {
     tagline: text.has('tagline'),
     phone: text.has('phone'),
     logo: template.contract.images.includes('logo'),
-    features: template.manifest.featureCount,
+    features: template.manifest.featureSlots,
   };
 }
 
 /** How many `featureNLabel` slots the markup actually carries. */
-export function markedUpFeatureCount(contract: TemplateContract): number {
+export function markedUpFeatureSlots(contract: TemplateContract): number {
   return contract.text.filter((name) => /^feature[0-9]+Label$/.test(name)).length;
 }
 

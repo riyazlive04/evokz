@@ -353,4 +353,103 @@ process.exitCode = bad ? 1 : 0;
 }
 
 
+// ---------------------------------------------------------------------------
+// The sheet decides how many features a poster shows
+// ---------------------------------------------------------------------------
+
+/**
+ * RFC-4180 quoting, written without a regex on purpose.
+ *
+ * A character class naming CR and LF has to escape them, and the escapes in
+ * this file have twice now not survived the tool that wrote it - once as an
+ * unterminated regex, once as a lint that passed on nothing. `includes` needs
+ * none of them, and a test cell never contains a newline anyway.
+ */
+function quoted(value: string): string {
+  const needsQuotes = value.includes(',') || value.includes('"');
+  return needsQuotes ? '"' + value.split('"').join('""') + '"' : value;
+}
+
+/*
+ * A design's card count is a ceiling, not a quota, and the sheet fills as many
+ * as it means to. Con-SM-1 carries four; a row writing one draws one.
+ *
+ * The floor of two used to be enforced twice over, and the second one was
+ * silent: the row was marked invalid, *and* `coercePosterCopy` returned null for
+ * it, which threw away that row's headline, body and call to action as well and
+ * fell back to generated copy. An operator would see words they never wrote on a
+ * poster they had filled in by hand.
+ */
+for (const count of [1, 2, 3, 4]) {
+  const header =
+    'day,template name,caption,hashtags,image prompt,headline,accent line,poster body,'
+    + 'feature 1 icon,feature 1 label,feature 1 body,'
+    + 'feature 2 icon,feature 2 label,feature 2 body,'
+    + 'feature 3 icon,feature 3 label,feature 3 body,'
+    + 'feature 4 icon,feature 4 label,feature 4 body,cta label';
+
+  const cells: string[] = [];
+  for (let slot = 1; slot <= 4; slot += 1) {
+    cells.push(...(slot <= count ? ['shieldCheck', `Card ${slot}`, `What card ${slot} promises.`] : ['', '', '']));
+  }
+
+  const row = [
+    '1',
+    'Grand Opening Split',
+    CAP,
+    '#a #b',
+    'A wide shot of the site in daylight, no text or logos in frame.',
+    'WE BUILD|MORE THAN STRUCTURES',
+    '2',
+    'Structure, finishes and services from one team.',
+    ...cells,
+    'From vision to reality',
+  ].map(quoted).join(',');
+
+  const parsed = parseCalendarImport([header, row].join(String.fromCharCode(10)), opts);
+  const first = parsed.rows[0];
+
+  t(
+    `a row with ${count} feature(s) is a valid row`,
+    first !== undefined && first.issues.length === 0,
+    (first?.issues ?? []).join(' | '),
+  );
+  t(
+    `and carries exactly ${count} into the poster copy`,
+    first?.poster?.features.length === count,
+    String(first?.poster?.features.length),
+  );
+  // The half that was silent. A discarded poster object leaves the row importing
+  // cleanly and the day rendering words nobody wrote.
+  t(
+    `and keeps the rest of the copy it was given (${count})`,
+    first?.poster?.ctaLabel === 'From vision to reality'
+      && first?.poster?.headlineLines.length === 2,
+    `cta=${String(first?.poster?.ctaLabel)} lines=${String(first?.poster?.headlineLines.length)}`,
+  );
+}
+
+// A card started and abandoned is still an error, and says which card.
+{
+  const header =
+    'day,template name,caption,hashtags,image prompt,headline,accent line,poster body,'
+    + 'feature 1 icon,feature 1 label,feature 1 body';
+  const row = [
+    '1', 'Grand Opening Split', CAP, '#a #b',
+    'A wide shot of the site in daylight, no text or logos in frame.',
+    'WE BUILD|MORE THAN STRUCTURES', '2',
+    'Structure, finishes and services from one team.',
+    'shieldCheck', 'Card 1', '',
+  ].map(quoted).join(',');
+
+  const parsed = parseCalendarImport([header, row].join(String.fromCharCode(10)), opts);
+  const issues = parsed.rows[0]?.issues ?? [];
+  t(
+    'a half-written card is still refused, by card number',
+    issues.some((issue) => issue.includes('Feature 1 needs all three')),
+    issues.join(' | '),
+  );
+}
+
+
 console.log(bad ? `\n${bad} failed` : '\nall import checks passed');

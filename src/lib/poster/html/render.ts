@@ -311,11 +311,13 @@ function buildModel(input: HtmlRenderInput): HtmlPosterModel {
    * and give all four the same icon, which is how the old renderer ended up
    * choosing icons from its own set instead of the designer's.
    *
-   * A template with more cards than the day has features drops the surplus
-   * cards through `data-when`, rather than leaving an iconned card with no
-   * words under it.
+   * The loop runs over the design's cards rather than over the day's features,
+   * so every card is decided: one with words is filled, one without is marked
+   * absent and removed by `data-when`. A day carrying two features on a
+   * four-card design therefore draws two cards, not two cards and two empty
+   * ones — the sheet decides the count, the design only bounds it.
    */
-  for (let index = 0; index < template.manifest.featureCount; index += 1) {
+  for (let index = 0; index < template.manifest.featureSlots; index += 1) {
     const feature = copy.features[index];
     const key = `feature${index + 1}`;
     text[`${key}Label`] = feature?.label ?? '';
