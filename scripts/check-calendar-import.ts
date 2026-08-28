@@ -14,6 +14,7 @@
 import {
   buildCalendarImportTemplate,
   buildCalendarImportTemplateFull,
+  calendarImportRowSchema,
   parseCalendarImport,
 } from '@/lib/calendar-parse';
 import { usesFallbackImagery, verticalImageryFor } from '@/lib/ai/vertical-vocabulary';
@@ -282,6 +283,72 @@ process.exitCode = bad ? 1 : 0;
     'the poster sheet extends the content sheet rather than replacing it',
     posterHeader.startsWith(contentHeader),
     posterHeader.slice(0, 90),
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// A hand-authored row for a template that draws no features
+// ---------------------------------------------------------------------------
+
+/*
+ * Seven of the Constructions designs draw no features, and a floor of two
+ * rejected them three separate times: the parser refused the row, the wire
+ * schema refused the payload, and a stored poster read back as null and was
+ * silently replaced by generated copy. Only the first was visible — the second
+ * surfaced as "Array must contain at least 2 element(s)" under an Import button,
+ * and the third as an operator's words quietly not appearing.
+ *
+ * So the row is followed the whole way here: parsed from a sheet, then validated
+ * against the schema the server action actually applies.
+ */
+{
+  const header =
+    'day,template name,caption,hashtags,image prompt,headline,accent line,poster body,cta label,call label';
+  const row = [
+    '1',
+    'Grand Opening Split',
+    CAP,
+    '#a #b',
+    'A wide shot of the site in daylight with no text or logos in frame.',
+    'HEAVY WORK|HANDLED',
+    '1',
+    'Plant and operators on hire by the day or the job.',
+    'Tell us what you need moved',
+    'Call',
+  ].join(',');
+
+  const parsed = parseCalendarImport([header, row].join(String.fromCharCode(10)), opts);
+  const first = parsed.rows[0];
+
+  t(
+    'a poster row with no features parses',
+    first !== undefined && first.issues.length === 0,
+    (first?.issues ?? []).join(' | '),
+  );
+  t(
+    'and keeps its own call to action',
+    first?.poster?.ctaLabel === 'Tell us what you need moved',
+    String(first?.poster?.ctaLabel),
+  );
+  t('and carries no features', first?.poster?.features.length === 0, String(first?.poster?.features.length));
+
+  // The gate the browser hits on submit. Parsing it is not enough: this is the
+  // schema the server action applies, and it rejected the row while the parser
+  // accepted it.
+  const wire = calendarImportRowSchema.safeParse({
+    dayNumber: first?.dayNumber ?? 1,
+    templateName: first?.templateName ?? '',
+    caption: first?.caption ?? '',
+    hashtags: first?.hashtags ?? '',
+    imagePrompt: first?.imagePrompt ?? '',
+    backgroundPrompt: first?.backgroundPrompt ?? null,
+    poster: first?.poster ?? null,
+  });
+  t(
+    'and survives the schema the server action applies',
+    wire.success,
+    wire.success ? '' : wire.error.issues.map((issue) => issue.message).join('; '),
   );
 }
 

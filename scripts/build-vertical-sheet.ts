@@ -55,10 +55,26 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const outAt = argv.indexOf('--out');
   const out = outAt >= 0 ? argv[outAt + 1] : null;
-  const slugs = argv.filter((arg, i) => arg !== '--out' && i !== outAt + 1);
+  const daysAt = argv.indexOf('--days');
+  const days = daysAt >= 0 ? Number.parseInt(argv[daysAt + 1] ?? '', 10) : Number.NaN;
+  const consumed = new Set([outAt, outAt + 1, daysAt, daysAt + 1]);
+  const slugs = argv.filter((_, i) => !consumed.has(i));
 
-  const wanted = (slugs.length > 0 ? slugs : [...HTML_TEMPLATE_SLUGS]) as HtmlTemplateSlug[];
-  const unknown = wanted.filter((slug) => !HTML_TEMPLATE_SLUGS.includes(slug));
+  const all = (slugs.length > 0 ? slugs : [...HTML_TEMPLATE_SLUGS]) as HtmlTemplateSlug[];
+  /*
+   * Capped to the plan's length when one is given.
+   *
+   * A vertical can hold more templates than a client's plan has days, and the
+   * importer rejects a row past the duration — nine rows against a seven-day
+   * plan is two rows refused at the last step, after the operator has filled
+   * them in. `--days` is the plan duration, so the sheet is the right length
+   * before anyone types into it.
+   */
+  const wanted = Number.isFinite(days) && days > 0 ? all.slice(0, days) : all;
+  if (wanted.length < all.length) {
+    console.log(`  (${all.length - wanted.length} template(s) left out to fit a ${days}-day plan)`);
+  }
+  const unknown = all.filter((slug) => !HTML_TEMPLATE_SLUGS.includes(slug));
   if (unknown.length > 0) {
     console.error(`Not a registered template: ${unknown.join(', ')}`);
     process.exit(1);

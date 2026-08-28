@@ -132,10 +132,22 @@ export const posterCopySchema = z.object({
   eyebrow: z.string().trim().max(40).default(''),
   /** 3–5 short lines once wrapped at ~34 characters. */
   body: z.string().trim().min(1).max(240),
-  // Spec calls for 3–4 (§2). Two is accepted because both feature arrangements
-  // lay out any count correctly, and a two-feature poster is a far better
-  // outcome than discarding the day's copy over a count the renderer can handle.
-  features: z.array(posterFeatureSchema).min(2).max(4),
+  /*
+   * Zero to four, with the floor enforced where it means something.
+   *
+   * This is the *shape* of a poster's copy — what may be stored, sent over the
+   * wire, and read back — and seven templates in the library draw no features
+   * at all, so a floor here forbade a legitimate poster three times over: the
+   * import wire rejected it, the database read discarded it, and the operator's
+   * hand-authored row silently became generated copy.
+   *
+   * The floor still exists for the case it was written for. A model that returns
+   * fewer than two features has misunderstood its brief and would draw an empty
+   * block on a layout built around four, so `coercePosterCopy` refuses it —
+   * unless the caller says the row is hand-authored, which only the sheet does.
+   * Strictness belongs with the judgement, not with the shape.
+   */
+  features: z.array(posterFeatureSchema).max(4),
   /** Contact-bar imperatives, e.g. "CALL US TODAY" / "VISIT OUR WEBSITE". */
   callLabel: z.string().trim().min(1).max(28).default('CALL US TODAY'),
   websiteLabel: z.string().trim().min(1).max(28).default('VISIT OUR WEBSITE'),
@@ -275,28 +287,10 @@ export function coercePosterCopy(
     headlinePeriod: source.headlinePeriod === true,
   };
 
-  const result = (
-    options.allowNoFeatures ? posterCopyWithoutFeaturesSchema : posterCopySchema
-  ).safeParse(candidate);
+  const result = posterCopySchema.safeParse(candidate);
   return result.success ? result.data : null;
 }
 
-/**
- * The same shape with the two-feature floor lifted.
- *
- * That floor is right for generated copy: a model that returns no features has
- * misunderstood the brief, and accepting it would draw an empty block on a
- * layout built around four. It is wrong for a hand-authored row, because seven
- * of the Constructions templates draw no features at all — demanding two there
- * asks an operator to write words that appear nowhere, which is the "not one
- * extra" rule broken in the other direction.
- *
- * Kept as a separate schema rather than a parameter on the first, so the strict
- * path cannot be relaxed by accident: the caller has to say so.
- */
-const posterCopyWithoutFeaturesSchema = posterCopySchema.extend({
-  features: z.array(posterFeatureSchema).max(4),
-});
 
 /**
  * Why `coercePosterCopy` rejected this payload, in one operator-readable clause.
