@@ -514,19 +514,16 @@ async function renderViaTemplate(
  * flattens it to a solid block either way; deciding it is margin is a judgement
  * this function is not entitled to make.
  *
- * SVG is returned untouched. Vector artwork has no pixels to measure, and
- * rasterising it here to find a bounding box would trade the one format that
- * scales cleanly for a guess about its extents.
+ * A vector mark is rasterised to be measured and is handed back as SVG unless
+ * the crop turns out to be worth the loss - see `SVG_KEEP_ABOVE`.
  *
  * Returns the mark unchanged on every failure. A small logo is a poor poster; a
  * failed render is no poster, and the client's day does not turn on this.
  */
 const trimmedLogoCache = new Map<string, Promise<string>>();
 
-async function trimLogoMargin(dataUri: string | null): Promise<string | null> {
+export async function trimLogoMargin(dataUri: string | null): Promise<string | null> {
   if (!dataUri) return null;
-  // `image/svg+xml;base64,...` — the type is in the URI, so no sniffing needed.
-  if (dataUri.startsWith('data:image/svg')) return dataUri;
 
   /*
    * Memoised for the same reason `logoCache` is: a client's mark is identical
@@ -543,13 +540,75 @@ async function trimLogoMargin(dataUri: string | null): Promise<string | null> {
   return work;
 }
 
+/**
+ * How wide a vector mark is rasterised to before its extents are measured.
+ *
+ * The largest slot in the library is 330px of a 900px reference, which on the
+ * 1080px canvas is about 400 device pixels. Measuring at 1400 leaves the crop
+ * exact and the substituted bitmap oversampled roughly three times over.
+ */
+const SVG_RASTER_WIDTH = 1400;
+
+/**
+ * How much of a vector mark has to survive the crop for it to stay vector.
+ *
+ * Rasterising is a real loss - it fixes the mark's resolution, and a logo that
+ * was already tightly cropped gains nothing for it. Below this, the padding is
+ * material enough that the mark is being drawn small on every poster, and a
+ * correctly-sized bitmap beats a correctly-scalable one nobody can read.
+ */
+const SVG_KEEP_ABOVE = 0.9;
+
 async function trimLogoBytes(dataUri: string): Promise<string> {
   try {
     const source = Buffer.from(dataUri.split(',')[1] ?? '', 'base64');
-    const metadata = await sharp(source).metadata();
-    if (!metadata.hasAlpha) return dataUri;
+    // `image/svg+xml;base64,...` — the type is in the URI, so no sniffing needed.
+    const isSvg = dataUri.startsWith('data:image/svg');
 
-    const { data, info } = await sharp(source)
+    /*
+     * Vector artwork has no pixels to measure, so it is rasterised first.
+     *
+     * A padded SVG is the *more* common shape of this fault, not a rare one: an
+     * artboard-sized export is what a design tool produces by default, and a
+     * viewBox is padded exactly as often as a PNG canvas is. Skipping SVG here
+     * would have left the fix working on half the uploads and looking, from the
+     * outside, like it had not worked at all.
+     *
+     * Density rather than resize: sharp rasterises a vector at its intrinsic
+     * size and then resamples, so asking for a large bitmap by resizing gives a
+     * blurred upscale. Scaling the density instead renders it large to begin
+     * with.
+     */
+    let pixels = source;
+    let rasterWidth = 0;
+    let rasterHeight = 0;
+    if (isSvg) {
+      const probe = await sharp(source).metadata();
+      const intrinsic = Math.max(probe.width ?? 0, probe.height ?? 0) || 1;
+      const density = Math.min(2400, Math.max(72, Math.ceil((SVG_RASTER_WIDTH / intrinsic) * 72)));
+      const { data, info } = await sharp(source, { density })
+        .png()
+        .toBuffer({ resolveWithObject: true });
+      pixels = data;
+      rasterWidth = info.width;
+      rasterHeight = info.height;
+    } else {
+      const metadata = await sharp(source).metadata();
+      /*
+       * Only marks that carry alpha, and the guard is load-bearing rather than
+       * defensive. `sharp.trim()` on an opaque image trims by the *corner
+       * colour*, so a logo supplied as a JPEG on a white card would have the
+       * card cropped off. That card is part of the artwork as supplied, and a
+       * template's `--logo-filter` flattens it to a solid block either way;
+       * deciding it is margin is a judgement this function is not entitled to
+       * make.
+       */
+      if (!metadata.hasAlpha) return dataUri;
+      rasterWidth = metadata.width ?? 0;
+      rasterHeight = metadata.height ?? 0;
+    }
+
+    const { data, info } = await sharp(pixels)
       // Above zero so a soft or anti-aliased edge counts as empty rather than
       // as the first pixel of the mark.
       .trim({ threshold: 8 })
@@ -557,6 +616,17 @@ async function trimLogoBytes(dataUri: string): Promise<string> {
       .toBuffer({ resolveWithObject: true });
 
     if (info.width < 1 || info.height < 1) return dataUri;
+
+    if (isSvg) {
+      // The smaller of the two ratios, because that is the axis `object-fit:
+      // contain` was being held back by.
+      const survived = Math.min(
+        info.width / (rasterWidth || info.width),
+        info.height / (rasterHeight || info.height),
+      );
+      if (survived > SVG_KEEP_ABOVE) return dataUri;
+    }
+
     return toDataUri(data, 'image/png');
   } catch (error: unknown) {
     console.warn(`[ace:poster] a logo could not be trimmed: ${describe(error)}`);

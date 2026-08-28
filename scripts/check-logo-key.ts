@@ -16,6 +16,7 @@
 import sharp from 'sharp';
 
 import { keyLogoBackground } from '@/lib/poster/logo-key';
+import { trimLogoMargin } from '@/lib/poster/render';
 
 const W = 400;
 const H = 200;
@@ -316,6 +317,116 @@ async function main() {
       !result.keyed && result.reason === 'undecodable',
       !result.keyed ? `reason=${result.reason}` : 'was keyed',
     );
+  }
+
+  // -- 12-16. Trimming the margin off a client's mark ------------------------
+  //
+  // The fault these guard against drew every client's logo at a fraction of the
+  // space reserved for it, on every template at once, and looked like nothing
+  // was wrong: an uploaded mark is usually artwork floating in a transparent
+  // canvas, and `object-fit: contain` fits the canvas. Measured on a live
+  // Constructions poster as a roughly 30px mark inside a 230x66 slot.
+  //
+  // What is asserted is the *drawn* size in a slot rather than the pixel
+  // dimensions, because that is the thing that was wrong.
+
+  /*
+   * How wide the *mark* ends up when `object-fit: contain` fits the file into
+   * the library's largest slot.
+   *
+   * The mark rather than the file, which is the whole point: a 180px mark in a
+   * 1000px canvas and the same mark cropped tight both fit a 330x232 slot as a
+   * 232px square. What differs is how much of that square is artwork.
+   */
+  const markDrawnIn = async (uri: string | null, markPx: number): Promise<number> => {
+    if (!uri) return 0;
+    const meta = await sharp(Buffer.from(uri.split(',')[1] ?? '', 'base64')).metadata();
+    const w = meta.width ?? 1;
+    const h = meta.height ?? 1;
+    return Math.round(markPx * Math.min(330 / w, 232 / h));
+  };
+  const uriOf = (bytes: Buffer, type: string): string =>
+    `data:${type};base64,${bytes.toString('base64')}`;
+
+  console.log('\n12. a raster mark floating in a transparent canvas');
+  {
+    const padded = await sharp({
+      create: { width: 1000, height: 1000, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([{
+        input: await sharp({
+          create: { width: 180, height: 180, channels: 4, background: { r: 20, g: 40, b: 90, alpha: 1 } },
+        }).png().toBuffer(),
+        left: 410,
+        top: 410,
+      }])
+      .png()
+      .toBuffer();
+
+    const before = await sharp(padded).metadata();
+    const after = await trimLogoMargin(uriOf(padded, 'image/png'));
+    const size = await sharp(Buffer.from((after ?? '').split(',')[1] ?? '', 'base64')).metadata();
+
+    check(
+      'the empty canvas is cropped away',
+      size.width === 180 && size.height === 180,
+      `${before.width}x${before.height} -> ${size.width}x${size.height}`,
+    );
+    const wasDrawn = await markDrawnIn(uriOf(padded, 'image/png'), 180);
+    const nowDrawn = await markDrawnIn(after, 180);
+    check(
+      'so the mark fills its slot instead of a fifth of it',
+      nowDrawn > wasDrawn * 4,
+      `${wasDrawn}px -> ${nowDrawn}px`,
+    );
+  }
+
+  console.log('\n13. an opaque mark on a white card');
+  {
+    // Trimming this would crop the card, which is part of the artwork as
+    // supplied. `sharp.trim()` on an opaque image trims by the corner colour,
+    // so the alpha guard is what stops it - not defensiveness.
+    const card = await raster(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><rect width="${W}" height="${H}" fill="#FFFFFF"/><rect x="150" y="70" width="100" height="60" fill="#12233f"/></svg>`,
+      'jpeg',
+    );
+    const uri = uriOf(card, 'image/jpeg');
+    check('is returned untouched', (await trimLogoMargin(uri)) === uri);
+  }
+
+  console.log('\n14. a vector mark in a padded viewBox');
+  {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">' +
+        '<rect x="400" y="400" width="200" height="200" fill="#12233f"/></svg>',
+    );
+    const uri = uriOf(svg, 'image/svg+xml');
+    const after = await trimLogoMargin(uri);
+    check(
+      'is rasterised and cropped',
+      after !== uri && (after ?? '').startsWith('data:image/png'),
+      (after ?? '').slice(0, 24),
+    );
+  }
+
+  console.log('\n15. a vector mark already cropped tight');
+  {
+    // Rasterising fixes the mark's resolution, which is a real loss. A mark
+    // with nothing to gain keeps its vector.
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">' +
+        '<rect width="200" height="200" fill="#12233f"/></svg>',
+    );
+    const uri = uriOf(svg, 'image/svg+xml');
+    check('stays vector', (await trimLogoMargin(uri)) === uri);
+  }
+
+  console.log('\n16. bytes that will not decode');
+  {
+    // A poor logo is a poor poster; a thrown error is no poster at all.
+    const uri = uriOf(Buffer.from('not an image at all'), 'image/png');
+    check('is returned unchanged rather than throwing', (await trimLogoMargin(uri)) === uri);
+    check('and null stays null', (await trimLogoMargin(null)) === null);
   }
 
   console.log(`\n${failures === 0 ? 'ALL FIXTURES PASSED' : `${failures} FAILURE(S)`}\n`);
