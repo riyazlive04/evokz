@@ -425,7 +425,24 @@ async function renderViaTemplate(
 
   const identity: PosterIdentity = {
     companyName: input.identity.companyName,
-    logoDataUri: logo?.dataUri ?? null,
+    /*
+     * The client's mark is trimmed for the same reason a cut-out is, and the
+     * bug it fixes looked identical: a logo drawn at a fraction of the space
+     * reserved for it, on every template at once, with nothing in the render
+     * appearing broken.
+     *
+     * An uploaded logo is almost always a mark floating in a transparent
+     * canvas — exported from a design file at the artboard's size, not the
+     * artwork's. `.pk-logo img` fits it with `object-fit: contain`, so
+     * `contain` fits the *canvas*: a mark occupying a fifth of its file lands
+     * at a fifth of `--logo-w`. Measured on a live Constructions poster as a
+     * roughly 30px mark inside a 230x66 slot.
+     *
+     * Trimming is the right place because the fault is in the file rather than
+     * in any template's CSS — crop the empty margin away and `contain` fits the
+     * mark itself, in whatever box the design gives it.
+     */
+    logoDataUri: await trimLogoMargin(logo?.dataUri ?? null),
     logoIncludesName: input.identity.logoIncludesName === true,
     brandTagline: normalizeTagline(input.identity.brandTagline),
     phone: formatPhone(input.identity.displayPhone, input.identity.whatsappNumber),
@@ -486,6 +503,67 @@ async function renderViaTemplate(
  * Returns the frame untouched on any failure. A slightly small figure is a poor
  * poster; a failed render is no poster, and this is not worth the second.
  */
+/**
+ * Crops the empty margin from around a client's logo.
+ *
+ * **Only touches marks that carry alpha**, and the guard is load-bearing rather
+ * than defensive — the same one `trimTransparentMargin` needs, for a sharper
+ * reason. `sharp.trim()` on an opaque image trims by the *corner colour*, so a
+ * logo supplied as a JPEG on a white card would have the card cropped off. That
+ * card is part of the artwork as supplied, and a template's `--logo-filter`
+ * flattens it to a solid block either way; deciding it is margin is a judgement
+ * this function is not entitled to make.
+ *
+ * SVG is returned untouched. Vector artwork has no pixels to measure, and
+ * rasterising it here to find a bounding box would trade the one format that
+ * scales cleanly for a guess about its extents.
+ *
+ * Returns the mark unchanged on every failure. A small logo is a poor poster; a
+ * failed render is no poster, and the client's day does not turn on this.
+ */
+const trimmedLogoCache = new Map<string, Promise<string>>();
+
+async function trimLogoMargin(dataUri: string | null): Promise<string | null> {
+  if (!dataUri) return null;
+  // `image/svg+xml;base64,...` — the type is in the URI, so no sniffing needed.
+  if (dataUri.startsWith('data:image/svg')) return dataUri;
+
+  /*
+   * Memoised for the same reason `logoCache` is: a client's mark is identical
+   * across all 365 of its posters, and re-decoding and re-cropping it per render
+   * is work with a known answer. Keyed on the bytes rather than on the URL so
+   * that two clients pointing at the same file share the result and a client who
+   * re-uploads gets a fresh one.
+   */
+  const cached = trimmedLogoCache.get(dataUri);
+  if (cached) return cached;
+
+  const work = trimLogoBytes(dataUri);
+  trimmedLogoCache.set(dataUri, work);
+  return work;
+}
+
+async function trimLogoBytes(dataUri: string): Promise<string> {
+  try {
+    const source = Buffer.from(dataUri.split(',')[1] ?? '', 'base64');
+    const metadata = await sharp(source).metadata();
+    if (!metadata.hasAlpha) return dataUri;
+
+    const { data, info } = await sharp(source)
+      // Above zero so a soft or anti-aliased edge counts as empty rather than
+      // as the first pixel of the mark.
+      .trim({ threshold: 8 })
+      .png()
+      .toBuffer({ resolveWithObject: true });
+
+    if (info.width < 1 || info.height < 1) return dataUri;
+    return toDataUri(data, 'image/png');
+  } catch (error: unknown) {
+    console.warn(`[ace:poster] a logo could not be trimmed: ${describe(error)}`);
+    return dataUri;
+  }
+}
+
 async function trimTransparentMargin(photo: PosterPhoto): Promise<PosterPhoto> {
   if (!photo.dataUri) return photo;
 

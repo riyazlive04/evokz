@@ -28,6 +28,8 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import sharp from 'sharp';
+
 import { getImageSizePreset } from '@/lib/image-sizes';
 import { resolvePosterCanvas } from '@/lib/poster/canvas';
 import { closePosterBrowser } from '@/lib/poster/html/browser';
@@ -632,6 +634,124 @@ function sha(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex').slice(0, 16);
 }
 
+/** Where the client’s mark landed, and what ink the template flattened it to. */
+interface LogoPlacement {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** True when `--logo-filter` inverts, i.e. the mark is drawn light. */
+  inverted: boolean;
+}
+
+/**
+ * Reads the logo’s box and its resolved ink off the live page.
+ *
+ * The filter is read as *computed* rather than parsed out of the file, so a
+ * value inherited from `_base.css`, set on an ancestor, or overridden by a later
+ * rule is measured as the browser actually resolved it.
+ *
+ * Written as a string with no backslash in it on purpose: `page.evaluate` is
+ * handed this source to evaluate, and a regex literal’s escapes do not survive
+ * the template literal carrying it. `includes` needs none.
+ */
+const readLogoPlacement = `(() => {
+  const img = document.querySelector('.pk-logo img');
+  if (!img) return null;
+  const box = img.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return null;
+  const filter = getComputedStyle(img).filter || '';
+  return {
+    x: box.x, y: box.y, width: box.width, height: box.height,
+    inverted: filter.includes('invert(1'),
+  };
+})()`;
+
+/** WCAG relative luminance for one 8-bit sRGB triple. */
+function luminance(r: number, g: number, b: number): number {
+  const channel = (value: number): number => {
+    const v = value / 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+/**
+ * How well the client’s mark reads against whatever is actually behind it.
+ *
+ * **Measured off the rendered pixels, not off the stylesheet.** A template
+ * declares its ink as one line — `--logo-filter: brightness(0)` for a dark mark,
+ * `brightness(0) invert(1)` for a light one — chosen by whoever authored it
+ * against the ground they had in mind. Con-SM-3 and Con-SM-4 both declared a
+ * black mark over a near-black ground and shipped an invisible logo to a paying
+ * client; nothing caught it, because every other check in this file reads the
+ * file rather than the picture.
+ *
+ * The spec renderer had this guarantee — `logoReadsOn` measured the mark against
+ * its ground and re-inked below 3:1 — and the template path dropped it on the
+ * reasoning that a template knows its own ground at authoring time. It does.
+ * Authors do not reliably know it, which is a different claim, and this restores
+ * the guarantee where it costs nothing: at build time, on every template,
+ * including the ones added after this was written.
+ *
+ * Returns null when there is nothing to judge — no logo slot, or a crop that
+ * came out all mark or all ground.
+ */
+async function logoContrast(png: Buffer, at: LogoPlacement): Promise<number | null> {
+  const image = sharp(png);
+  const meta = await image.metadata();
+  const left = Math.max(0, Math.round(at.x));
+  const top = Math.max(0, Math.round(at.y));
+  const width = Math.min(Math.round(at.width), (meta.width ?? 0) - left);
+  const height = Math.min(Math.round(at.height), (meta.height ?? 0) - top);
+  if (width < 2 || height < 2) return null;
+
+  const { data, info } = await image
+    .extract({ left, top, width, height })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  /*
+   * The filter flattens the mark to one extreme, so nearness to that extreme
+   * separates artwork from ground without needing to know the artwork.
+   */
+  const inkIsLight = at.inverted;
+  let groundTotal = 0;
+  let groundCount = 0;
+  let inkCount = 0;
+
+  for (let i = 0; i < data.length; i += info.channels) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    const isInk = inkIsLight ? r > 232 && g > 232 && b > 232 : r < 24 && g < 24 && b < 24;
+    if (isInk) {
+      inkCount += 1;
+    } else {
+      groundTotal += luminance(r, g, b);
+      groundCount += 1;
+    }
+  }
+
+  // A crop with no mark in it, or none of the ground around it, says nothing.
+  if (inkCount < 16 || groundCount < 16) return null;
+
+  const inkLuminance = inkIsLight ? 1 : 0;
+  const groundLuminance = groundTotal / groundCount;
+  const lighter = Math.max(inkLuminance, groundLuminance);
+  const darker = Math.min(inkLuminance, groundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * The floor a mark has to clear, and the one the spec renderer used.
+ *
+ * 3:1 is WCAG’s threshold for non-text graphics. A logo below it is not subtly
+ * off: Con-SM-4 measured about 1.2:1, which on the poster is a mark you have to
+ * be told is there.
+ */
+const MIN_LOGO_CONTRAST = 3;
+
 async function renderTemplate(
   template: HtmlTemplate,
   copy: PosterCopy,
@@ -749,10 +869,42 @@ async function main(): Promise<void> {
     console.log(`\n${slug} — render`);
     try {
       const fixture = fixtureFor(slug);
-      const first = await renderTemplate(template, fixture.copy, undefined, fixture.identity);
+      const placed: Array<LogoPlacement | null> = [];
+      const first = await renderTemplate(
+        template,
+        fixture.copy,
+        async (page) => {
+          placed.push((await page.evaluate(readLogoPlacement)) as LogoPlacement | null);
+        },
+        fixture.identity,
+      );
       const path = join(outDir, `${slug}.png`);
       await writeFile(path, first);
       check(`renders (${first.byteLength} bytes) → ${path}`, first.byteLength > 0);
+
+      /*
+       * The client’s mark has to be visible on the ground it lands on.
+       *
+       * Measured from the rendered pixels rather than from the file, because
+       * what goes wrong is a correct-looking stylesheet over the wrong
+       * background. See `logoContrast`.
+       */
+      const placement = placed[0] ?? null;
+      if (placement === null) {
+        console.log('  ..   draws no logo — the client’s mark never appears on this design');
+      } else {
+        const ratio = await logoContrast(first, placement);
+        if (ratio === null) {
+          console.log('  ..   logo contrast could not be measured on this ground');
+        } else {
+          check(
+            `the client’s logo reads on its ground (${ratio.toFixed(1)}:1)`,
+            ratio >= MIN_LOGO_CONTRAST,
+            `${ratio.toFixed(2)}:1 is below ${MIN_LOGO_CONTRAST}:1 — ` +
+              `flip --logo-filter (${placement.inverted ? 'invert(1) is wrong here' : 'it needs invert(1)'})`,
+          );
+        }
+      }
 
       /*
        * Byte-identical, not merely similar. A retry after a WhatsApp failure is

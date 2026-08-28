@@ -10,16 +10,17 @@
       "kind": "scene",
       "role": "slot",
       "width": 900,
-      "height": 760,
-      "reason": "the site at dusk, filling the band between the headline and the values row"
+      "height": 900,
+      "reason": "the site at dusk, filling the chevron band between the lockup and the values row"
     }
   ]
 }
 </script>
 
 <!--
-  Con-SM-1 — the premium end of the vertical: cream and gold, a values row with a
-  sentence under each mark, and a dark foot carrying three ways to make contact.
+  Con-SM-1 - the premium end of the vertical: cream and gold, a chevron band of
+  photography, a values row with a sentence under each mark, and a dark foot
+  carrying the promise, the strapline and the number.
 
   Reference: /api/templates/5a621020-3e1c-4134-94d9-d163fb266b5e/thumbnail?full=1
 
@@ -27,22 +28,61 @@
   `features[].body`. It is therefore the template in this vertical that would
   catch a copy-stage regression, in the same way Med-SM-17 is in the other.
 
-  Its marks are the Medicals kit used out of register — a shield reads as
-  quality, a handshake as integrity — which is a reminder that the kit is a set
-  of drawings rather than a set of meanings. A Constructions-specific set (hard
-  hat, crane, blueprint) is the obvious next addition and would cost an hour.
+  Four things the first version left on the table, none of which HTML and CSS
+  had any trouble with once they were attempted:
+
+    the chevron       The reference's whole identity is a downward chevron. It
+                      cuts the top of the photograph and cuts the bottom again,
+                      and a gold hairline traces the upper cut. Drawn here as a
+                      `clip-path` on the photo block with the gold as that
+                      block's own background, so one pair of numbers makes both
+                      cuts and the edge that shows through them.
+    the overlay       The headline sits *on* the photograph in the reference,
+                      over a cream scrim that has faded out by the horizon.
+                      Drawn flat on cream it read as a different, plainer
+                      design - which is what shipped.
+    the marks         Four Constructions marks rather than four Medicals ones. A
+                      stethoscope stood over SAFETY on a live poster because the
+                      kit had no hard hat and nothing here reads a mark for
+                      meaning. See the constructions section of `_kit.svg`.
+    the strapline     The reference's foot carries two lines. The second is the
+                      client's own strapline, which the format has always had -
+                      `brandTagline`, drawn through `.pk-strapline` with the
+                      flanking rules the reference gives it.
+
+  What the reference has and this deliberately does not: the words BUILDING and
+  STRONGER FUTURES set under the mark at the top, and an email chip beside the
+  website in the contact row. The first is the reference's stand-in for the
+  client's own lockup, so the whole area goes to `.pk-logo` - the space belongs
+  to the mark that is actually uploaded, and printing a second brand name beside
+  it would be printing the wrong one. The second has no source: `PosterIdentity`
+  carries a phone and a website and no address, so half that row would be a slot
+  nothing could ever fill.
 -->
 
 <style>
   .b1 {
-    --hl-size: 62px;
-    --hl-stretch: 88%;
-    --hl-leading: 1.14;
-    --hl-ink: #2b2113;
-    --hl-accent: #8a6a2f;
-    --logo-w: 300px;
-    --logo-h: 120px;
+    --hl-size: 80px;
+    --hl-stretch: 66%;
+    --hl-leading: 1.12;
+    --hl-ink: #222c3a;
+    --hl-accent: #96742f;
+    --logo-w: 330px;
+    --logo-h: 232px;
     --logo-filter: brightness(0);
+
+    /*
+     * The chevron, as three numbers.
+     *
+     * `--chev-drop` is how much deeper the shape runs at the centre than at the
+     * edges on the upper cut, `--chev-rise` the same for the lower one, and
+     * `--chev-edge` the weight of the gold hairline. Both cuts are driven from
+     * this one place, which is the point: a top and a bottom that disagreed by
+     * two degrees would read as a mistake rather than as a motif.
+     */
+    --chev-drop: 132px;
+    --chev-rise: 58px;
+    --chev-edge: 4px;
 
     position: absolute;
     inset: 0;
@@ -51,54 +91,157 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 40px 48px 560px;
+    padding: 26px 30px 0;
     overflow: hidden;
   }
 
-  .b1-headline { margin-top: 24px; text-align: center; }
-  .b1-sub {
-    margin-top: 12px;
-    font-family: 'Archivo', system-ui, sans-serif;
-    font-size: 30px;
-    font-stretch: 90%;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: #8a6a2f;
-    text-align: center;
-  }
-
+  /* --- the chevron band of photography ---------------------------------- */
   .b1-photo {
     position: absolute;
     left: 0;
     right: 0;
-    top: 470px;
-    height: 620px;
+    top: 196px;
+    height: 862px;
+    /*
+     * The gold is this block's own background and the picture is clipped inside
+     * it, so the lower hairline is the few pixels of parent left showing along
+     * the cut. Stroking the shape separately would mean keeping a second
+     * polygon in step with the first for ever.
+     */
+    background: #b08c46;
+    clip-path: polygon(
+      0 0,
+      50% var(--chev-drop),
+      100% 0,
+      100% calc(100% - var(--chev-rise)),
+      50% 100%,
+      0 calc(100% - var(--chev-rise))
+    );
     z-index: 0;
+  }
+  .b1-photo img {
+    position: relative;
+    clip-path: polygon(
+      0 var(--chev-edge),
+      50% calc(var(--chev-drop) + var(--chev-edge)),
+      100% var(--chev-edge),
+      100% calc(100% - var(--chev-rise) - var(--chev-edge)),
+      50% calc(100% - var(--chev-edge)),
+      0 calc(100% - var(--chev-rise) - var(--chev-edge))
+    );
+  }
+  /*
+   * The scrim the headline sits on: cream at the top of the band, gone by the
+   * horizon. It is what makes the join with the cream above invisible, so the
+   * type reads on sky rather than on scaffolding.
+   */
+  .b1-photo::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      180deg,
+      #f7f3ea 0%,
+      rgba(247, 243, 234, 0.88) 16%,
+      rgba(247, 243, 234, 0.55) 30%,
+      rgba(247, 243, 234, 0) 44%
+    );
+  }
+  /*
+   * The gold line on the upper cut, drawn over the scrim rather than under it.
+   * As part of the photo block it would be painted first and then covered by
+   * the cream, which is the one place the scrim has to be opaque.
+   */
+  .b1-edge {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 196px;
+    height: calc(var(--chev-drop) + var(--chev-edge) + 2px);
+    background: #b08c46;
+    clip-path: polygon(
+      0 0,
+      50% var(--chev-drop),
+      100% 0,
+      100% var(--chev-edge),
+      50% calc(var(--chev-drop) + var(--chev-edge)),
+      0 var(--chev-edge)
+    );
+    z-index: 1;
+  }
+
+  /* --- the lockup ------------------------------------------------------- */
+  .pk-logo { position: relative; z-index: 2; }
+
+  /* --- headline --------------------------------------------------------- */
+  .b1-headline {
+    position: relative;
+    z-index: 2;
+    margin-top: 121px;
+    text-align: center;
+  }
+  .b1-sub {
+    position: relative;
+    z-index: 2;
+    margin-top: 20px;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 31px;
+    font-stretch: 90%;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #222c3a;
+    text-align: center;
   }
 
   /* --- the values row --------------------------------------------------- */
+  /*
+   * A definite box, with everything inside it in `em`.
+   *
+   * That is what `data-fit="block"` requires and why it is here: the row sits
+   * between the photograph and the dark foot, both of which are placed
+   * absolutely, so four features of maximum length grew straight through the
+   * foot and sat on top of the promise and the strapline. The audit caught it
+   * on the longest-copy pass. Sizing the badges, the labels, the bodies and the
+   * rules off one font-size lets the whole row scale together instead, which is
+   * the same arrangement Med-SM-17 uses for the same reason.
+   */
   .b1-values {
     position: absolute;
-    left: 40px;
-    right: 40px;
-    bottom: 300px;
+    left: 44px;
+    right: 44px;
+    top: 1064px;
+    height: 224px;
+    font-size: 26px;
     display: flex;
+    align-items: flex-start;
     justify-content: center;
-    gap: 20px;
+    overflow: hidden;
     z-index: 2;
   }
   .b1-value {
+    position: relative;
     flex: 1 1 0;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 10px;
+    gap: 0.46em;
     min-width: 0;
+    padding: 0 0.38em;
+  }
+  /* The hairline between columns, as the reference rules them. */
+  .b1-value + .b1-value::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.23em;
+    width: 1px;
+    height: 5.8em;
+    background: #d7cdb8;
   }
   .b1-badge {
-    width: 76px;
-    height: 76px;
+    width: 3.31em;
+    height: 3.31em;
     border-radius: 50%;
     background: #8a6a2f;
     display: flex;
@@ -107,23 +250,23 @@
     flex: none;
     color: #f7f3ea;
   }
-  .b1-badge svg { width: 38px; height: 46px; }
+  .b1-badge svg { width: 1.62em; height: 2em; }
   .b1-label {
     font-family: 'Archivo', system-ui, sans-serif;
-    font-size: 25px;
-    font-stretch: 90%;
+    font-size: 0.92em;
+    font-stretch: 88%;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: #2b2113;
+    color: #222c3a;
     text-align: center;
   }
   .b1-body {
-    font-size: 20px;
-    line-height: 1.28;
+    font-size: 0.77em;
+    line-height: 1.3;
     color: #6d5f4a;
     text-align: center;
-    max-width: 180px;
+    max-width: 9.3em;
   }
 
   /* --- the dark foot ---------------------------------------------------- */
@@ -131,33 +274,74 @@
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 0;
-    height: 300px;
+    top: 1296px;
+    height: 126px;
     background: #1d2433;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 14px;
+    gap: 8px;
     padding: 0 44px;
     z-index: 3;
   }
   .b1-promise {
+    --strap-size: 26px;
+    --strap-ink: #b9a074;
+    --strap-rule-ink: #6f5a33;
+    --strap-rule: 44px;
+    --strap-gap: 20px;
+    --strap-pad: 30px;
+  }
+  .b1-promise span {
     font-family: 'Archivo', system-ui, sans-serif;
-    font-size: 36px;
-    font-stretch: 90%;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    font-stretch: 92%;
+    font-weight: 600;
+    letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: #d8b25f;
     text-align: center;
+    /* `.pk-strapline` sets `nowrap`, which is right for a tagline and wrong for
+       a call to action an operator can make as long as they like. */
+    white-space: normal;
     overflow-wrap: anywhere;
   }
-  .b1-phone { display: flex; align-items: center; gap: 18px; max-width: 100%; }
-  .b1-phone svg { width: 62px; height: 62px; flex: none; color: #d8b25f; }
+  .b1-strap {
+    --strap-size: 44px;
+    --strap-ink: #d8b25f;
+    --strap-rule-ink: #8a6a2f;
+    --strap-rule: 62px;
+    --strap-gap: 22px;
+    --strap-pad: 40px;
+  }
+  .b1-strap span {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-stretch: 88%;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  /* --- the contact block ------------------------------------------------ */
+  .b1-contact {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 1422px;
+    bottom: 0;
+    background: #141a26;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 0 44px;
+    z-index: 3;
+  }
+  .b1-phone { display: flex; align-items: center; gap: 20px; max-width: 100%; }
+  .b1-phone svg { width: 60px; height: 60px; flex: none; color: #d8b25f; }
   .b1-phone span {
     font-family: 'Archivo', system-ui, sans-serif;
-    font-size: 62px;
+    font-size: 60px;
     font-stretch: 84%;
     font-weight: 800;
     color: #ffffff;
@@ -168,14 +352,18 @@
     display: flex;
     align-items: center;
     gap: 14px;
-    font-size: 24px;
-    color: #b9c2d2;
+    min-width: 0;
+    max-width: 100%;
+    font-size: 25px;
+    color: #c3cbd8;
   }
-  .b1-web svg { width: 32px; height: 32px; flex: none; color: #d8b25f; }
+  .b1-web svg { width: 34px; height: 34px; flex: none; color: #d8b25f; }
+  .b1-web span { overflow-wrap: anywhere; }
 </style>
 
 <div class="b1">
   <div class="b1-photo"><img class="pk-scene" data-image="hero" alt=""></div>
+  <div class="b1-edge"></div>
 
   <div class="pk-logo"><img data-image="logo" alt=""></div>
 
@@ -187,31 +375,39 @@
 
   <div class="b1-sub" data-slot="eyebrow"></div>
 
-  <div class="b1-values">
+  <div class="b1-values" data-fit="block">
     <div class="b1-value" data-when="feature1">
-      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-scanner"/></svg></div>
+      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-shield"/></svg></div>
       <div class="b1-label" data-slot="feature1Label"></div>
       <div class="b1-body" data-slot="feature1Body"></div>
     </div>
     <div class="b1-value" data-when="feature2">
-      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-stethoscope"/></svg></div>
+      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-hardhat"/></svg></div>
       <div class="b1-label" data-slot="feature2Label"></div>
       <div class="b1-body" data-slot="feature2Body"></div>
     </div>
     <div class="b1-value" data-when="feature3">
-      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-therapist"/></svg></div>
+      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-handshake"/></svg></div>
       <div class="b1-label" data-slot="feature3Label"></div>
       <div class="b1-body" data-slot="feature3Body"></div>
     </div>
     <div class="b1-value" data-when="feature4">
-      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-microscope"/></svg></div>
+      <div class="b1-badge"><svg aria-hidden="true"><use href="#ic-growth"/></svg></div>
       <div class="b1-label" data-slot="feature4Label"></div>
       <div class="b1-body" data-slot="feature4Body"></div>
     </div>
   </div>
 
   <div class="b1-foot">
-    <div class="b1-promise" data-slot="ctaLabel"></div>
+    <div class="pk-strapline b1-promise">
+      <i></i><span data-slot="ctaLabel"></span><i></i>
+    </div>
+    <div class="pk-strapline b1-strap" data-when="tagline">
+      <i></i><span data-slot="tagline"></span><i></i>
+    </div>
+  </div>
+
+  <div class="b1-contact">
     <div class="b1-phone">
       <svg aria-hidden="true"><use href="#ic-phone"/></svg>
       <span data-slot="phone" data-fit></span>
