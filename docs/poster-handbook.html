@@ -1,0 +1,588 @@
+<title>Evokz Poster Handbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+  /* ---- palette -------------------------------------------------------- */
+  :root {
+    --ground: #faf9f6;
+    --surface: #ffffff;
+    --surface-sunk: #f3f1ea;
+    --line: #e2ddd1;
+    --line-soft: #eee9df;
+    --ink: #1b232e;
+    --ink-soft: #57616f;
+    --ink-faint: #8b93a0;
+    --brass: #96712f;
+    --brass-soft: #f4ecd9;
+    --go: #3d6b4c;
+    --warn: #96551f;
+    --stop: #9c352c;
+    --shadow: 0 1px 2px rgba(27, 35, 46, .06), 0 8px 24px -18px rgba(27, 35, 46, .35);
+  }
+  :root:not([data-theme="light"]) {
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #14181e;
+      --surface: #1a1f27;
+      --surface-sunk: #20262f;
+      --line: #2e3641;
+      --line-soft: #262d36;
+      --ink: #e9e6df;
+      --ink-soft: #a8b0bc;
+      --ink-faint: #78818e;
+      --brass: #d8b269;
+      --brass-soft: #2a2519;
+      --go: #7fb28f;
+      --warn: #d79a5e;
+      --stop: #e08a80;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px -20px rgba(0, 0, 0, .8);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #14181e;
+    --surface: #1a1f27;
+    --surface-sunk: #20262f;
+    --line: #2e3641;
+    --line-soft: #262d36;
+    --ink: #e9e6df;
+    --ink-soft: #a8b0bc;
+    --ink-faint: #78818e;
+    --brass: #d8b269;
+    --brass-soft: #2a2519;
+    --go: #7fb28f;
+    --warn: #d79a5e;
+    --stop: #e08a80;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 28px -20px rgba(0, 0, 0, .8);
+    color-scheme: dark;
+  }
+
+  /* ---- base ----------------------------------------------------------- */
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 56px 24px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 52px;
+  }
+  p { margin: 0; max-width: 68ch; }
+  strong { font-weight: 600; }
+
+  /* ---- masthead ------------------------------------------------------- */
+  .masthead { display: flex; flex-direction: column; gap: 14px; }
+  .eyebrow {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--brass);
+  }
+  h1 {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: clamp(34px, 6vw, 50px);
+    font-stretch: 92%;
+    font-weight: 800;
+    line-height: 1.04;
+    letter-spacing: -.015em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .standfirst { font-size: 19px; color: var(--ink-soft); max-width: 60ch; }
+
+  /* ---- contents ------------------------------------------------------- */
+  .contents {
+    background: var(--surface-sunk);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 20px 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 6px 28px;
+  }
+  .contents a {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--ink);
+    text-decoration: none;
+    display: flex;
+    gap: 10px;
+    padding: 3px 0;
+    border-bottom: 1px solid transparent;
+  }
+  .contents a:hover, .contents a:focus-visible { color: var(--brass); }
+  .contents a span { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+
+  /* ---- sections ------------------------------------------------------- */
+  section { display: flex; flex-direction: column; gap: 18px; scroll-margin-top: 20px; }
+  h2 {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 25px;
+    font-stretch: 94%;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    margin: 0;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--ink);
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  h2 em {
+    font-style: normal;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--brass);
+    font-variant-numeric: tabular-nums;
+  }
+  h3 {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: .02em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    margin: 10px 0 0;
+  }
+
+  /* ---- lists ---------------------------------------------------------- */
+  ul.plain { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 11px; }
+  ul.plain > li { padding-left: 22px; position: relative; max-width: 68ch; }
+  ul.plain > li::before {
+    content: "";
+    position: absolute;
+    left: 2px;
+    top: .68em;
+    width: 7px;
+    height: 7px;
+    background: var(--brass);
+  }
+
+  /* The flow: a numbered rail, because the order is the information. */
+  ol.flow { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+  ol.flow > li {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 16px;
+    padding: 0 0 20px;
+    position: relative;
+  }
+  ol.flow > li:last-child { padding-bottom: 0; }
+  ol.flow > li::before {
+    content: attr(data-step);
+    grid-column: 1;
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--brass);
+    background: var(--brass-soft);
+    border-radius: 50%;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
+  ol.flow > li:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    left: 17px;
+    top: 38px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--line);
+  }
+  ol.flow .what {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 16.5px;
+    display: block;
+  }
+  ol.flow .who { color: var(--ink-soft); font-size: 16px; }
+
+  /* ---- tables --------------------------------------------------------- */
+  .scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 15.5px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    background: var(--surface-sunk);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.col, code {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 13.5px;
+  }
+  td.col { color: var(--brass); font-weight: 500; white-space: nowrap; }
+  code {
+    background: var(--surface-sunk);
+    border: 1px solid var(--line-soft);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  .grid-table td { text-align: center; }
+  .grid-table td:first-child {
+    text-align: left;
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-size: 13.5px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .yes { color: var(--go); font-weight: 700; }
+  .stop { color: var(--stop); font-weight: 700; }
+  .no { color: var(--ink-faint); }
+  .num { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+  /* ---- notes ---------------------------------------------------------- */
+  .note {
+    border-left: 3px solid var(--brass);
+    background: var(--brass-soft);
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    border-radius: 0 4px 4px 0;
+  }
+  .note .label {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--brass);
+  }
+  .note p { max-width: 64ch; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 15px 17px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .card .name {
+    font-family: 'Archivo', system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 15.5px;
+  }
+  .card .desc { font-size: 15px; color: var(--ink-soft); }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 22px;
+    color: var(--ink-faint);
+    font-size: 14.5px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  a { color: var(--brass); }
+  :focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; }
+
+  @media print {
+    body { background: #fff; font-size: 11pt; }
+    .page { padding: 0; gap: 30px; max-width: none; }
+    .contents { display: none; }
+    section { break-inside: avoid; }
+    .scroll { overflow: visible; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">Evokz ACE &middot; Admin guide</div>
+    <h1>Evokz Poster Handbook</h1>
+    <p class="standfirst">Everything you need to run the posters: what to type, where to type it, and what to do when something looks wrong.</p>
+  </header>
+
+  <nav class="contents" aria-label="Contents">
+    <a href="#what"><span>1</span> What this does</a>
+    <a href="#changed"><span>2</span> What changed</a>
+    <a href="#flow"><span>3</span> The flow</a>
+    <a href="#sheet"><span>4</span> Filling the sheet</a>
+    <a href="#designs"><span>5</span> What each design shows</a>
+    <a href="#result"><span>6</span> Seeing the posters</a>
+    <a href="#wrong"><span>7</span> When something looks wrong</a>
+    <a href="#quirks"><span>8</span> Known quirks</a>
+    <a href="#developer"><span>9</span> What needs a developer</a>
+  </nav>
+
+  <!-- 1 ---------------------------------------------------------------- -->
+  <section id="what">
+    <h2><em>01</em> What this does</h2>
+    <p>Every client gets one poster a day, sent to them on WhatsApp.</p>
+    <p>You write the words in a spreadsheet. The system finds a photo and draws the poster. You look at it and approve it. It sends at the scheduled time.</p>
+    <div class="note">
+      <div class="label">Your three jobs</div>
+      <p>Fill the sheet. Check the posters. Approve them. Everything else runs on its own.</p>
+    </div>
+  </section>
+
+  <!-- 2 ---------------------------------------------------------------- -->
+  <section id="changed">
+    <h2><em>02</em> What changed</h2>
+    <p>Recent fixes worth knowing about, because they change what you can expect.</p>
+    <ul class="plain">
+      <li><strong>Posters now match their design exactly.</strong> What you see in the design sample is the shape the client gets — same layout, same icons, same colours.</li>
+      <li><strong>The client's logo now fills the space it is given.</strong> It used to draw tiny. It also used to turn black on dark designs and vanish; it doesn't now.</li>
+      <li><strong>You decide how many feature boxes appear.</strong> Write two, get two. The row closes up neatly instead of leaving gaps.</li>
+      <li><strong>A row with only one feature box no longer loses everything else.</strong> It used to silently throw away that row's headline, sentence and button text, and replace them with words nobody wrote.</li>
+      <li><strong>The poster maker recovers on its own.</strong> If it stops working it now restarts itself, instead of failing every poster for every client until someone stepped in.</li>
+    </ul>
+  </section>
+
+  <!-- 3 ---------------------------------------------------------------- -->
+  <section id="flow">
+    <h2><em>03</em> The flow</h2>
+    <ol class="flow">
+      <li data-step="1"><div><span class="what">Add the client</span><span class="who">Name, phone number, logo, website, tagline, and how many days the plan runs.</span></div></li>
+      <li data-step="2"><div><span class="what">Choose the vertical</span><span class="who">Medicals, Constructions or Interiors. This decides which designs are available.</span></div></li>
+      <li data-step="3"><div><span class="what">Fill the sheet</span><span class="who">One row per day. Section 4 explains every column.</span></div></li>
+      <li data-step="4"><div><span class="what">Import it</span><span class="who">The console shows you a preview before anything is saved. Check it, then import.</span></div></li>
+      <li data-step="5"><div><span class="what">The posters are made</span><span class="who">A photo is bought and the poster is drawn. This takes a minute or two per day.</span></div></li>
+      <li data-step="6"><div><span class="what">You approve each one</span><span class="who">Look at the poster. Happy — approve. Not happy — regenerate.</span></div></li>
+      <li data-step="7"><div><span class="what">It sends</span><span class="who">On WhatsApp, at the scheduled time. Approved posters only.</span></div></li>
+    </ol>
+  </section>
+
+  <!-- 4 ---------------------------------------------------------------- -->
+  <section id="sheet">
+    <h2><em>04</em> Filling the sheet</h2>
+    <p>One row per day. Every column below, what goes in it, and where it lands on the poster.</p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Column</th><th>What to write</th><th>Example</th><th>Limit</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="col">day</td><td>The day number, counting from 1.</td><td>3</td><td class="num">Plan length</td></tr>
+          <tr><td class="col">template name</td><td>The design name, spelled exactly.</td><td>Con-SM-1</td><td>&mdash;</td></tr>
+          <tr><td class="col">caption</td><td>The WhatsApp message that goes with the poster.</td><td>We have handed over forty-two projects…</td><td class="num">10&ndash;2000</td></tr>
+          <tr><td class="col">hashtags</td><td>Hashtags for the post.</td><td>#construction #civilworks</td><td class="num">400</td></tr>
+          <tr><td class="col">image prompt</td><td>Describe the photograph you want. No words, letters or logos in the picture.</td><td>A residential tower at golden hour, tower crane against the sky</td><td class="num">10&ndash;2000</td></tr>
+          <tr><td class="col">background prompt</td><td>Leave blank. Only a few designs use it.</td><td>&mdash;</td><td>&mdash;</td></tr>
+          <tr><td class="col">headline</td><td>The big words. Split the lines with a bar.</td><td>WE BUILD|MORE THAN STRUCTURES</td><td class="num">2&ndash;4 lines, 24 each</td></tr>
+          <tr><td class="col">accent line</td><td>Which line gets the colour. 1 is the first line.</td><td>2</td><td class="num">1&ndash;4</td></tr>
+          <tr><td class="col">eyebrow</td><td>The small line near the headline.</td><td>WE BUILD TRUST</td><td class="num">40</td></tr>
+          <tr><td class="col">poster body</td><td>The sentence under the headline.</td><td>Groundwork to handover, one team.</td><td class="num">240</td></tr>
+          <tr><td class="col">feature 1 icon</td><td>Ignored — see section 8.</td><td>shieldCheck</td><td>&mdash;</td></tr>
+          <tr><td class="col">feature 1 label</td><td>The box heading.</td><td>Quality</td><td class="num">28</td></tr>
+          <tr><td class="col">feature 1 body</td><td>The sentence inside the box.</td><td>Checked at every stage, not only at handover.</td><td class="num">90</td></tr>
+          <tr><td class="col">feature 2&ndash;4</td><td>Same three columns again. Fill as many boxes as you want.</td><td>&mdash;</td><td class="num">Up to 4</td></tr>
+          <tr><td class="col">cta label</td><td>The line inviting them to act.</td><td>From vision to reality</td><td class="num">28</td></tr>
+          <tr><td class="col">call label</td><td>The word before the phone number.</td><td>Call</td><td class="num">28</td></tr>
+          <tr><td class="col">website label</td><td>The word before the website.</td><td>Visit</td><td class="num">28</td></tr>
+          <tr><td class="col">headline period</td><td>Write <code>no</code>.</td><td>no</td><td>&mdash;</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The two people always get wrong</h3>
+    <div class="cards">
+      <div class="card">
+        <div class="name">The bar in the headline</div>
+        <div class="desc"><code>BUILT TO LAST|FINISHED ON TIME</code> makes two lines. Without the bar it is one long line and the design will squash it.</div>
+      </div>
+      <div class="card">
+        <div class="name">The accent line number</div>
+        <div class="desc">This picks which headline line is coloured. Write <code>2</code> and the second line is coloured. It is not a count.</div>
+      </div>
+    </div>
+
+    <div class="note">
+      <div class="label">The dash</div>
+      <p>Some cells come pre-filled with a dash: <code>&mdash;</code>. That design has no room for it. Leave it alone — anything you type there will not appear on the poster.</p>
+    </div>
+
+    <h3>Rules</h3>
+    <ul class="plain">
+      <li><strong>Don't rename a design.</strong> Every sheet still using the old name stops working.</li>
+      <li><strong>Don't put phone numbers or websites in the sheet.</strong> They come from the client's own settings, so they are right on every poster automatically.</li>
+      <li><strong>Don't go past the plan length.</strong> A 7-day plan takes 7 rows. Extra rows are refused at import.</li>
+      <li><strong>Don't ask for text or logos inside the photo.</strong> The design puts the words on top; text in the picture collides with them.</li>
+      <li><strong>Fill a feature box completely or not at all.</strong> A heading with no sentence under it is refused, and the message tells you which box.</li>
+    </ul>
+  </section>
+
+  <!-- 5 ---------------------------------------------------------------- -->
+  <section id="designs">
+    <h2><em>05</em> What each design shows</h2>
+    <p>Not every design has room for everything. This is what lands where.</p>
+
+    <h3>Constructions &amp; Interiors</h3>
+    <div class="scroll">
+      <table class="grid-table">
+        <thead>
+          <tr><th>Design</th><th>Feature boxes</th><th>Eyebrow</th><th>Sentence</th><th>Action line</th><th>Call word</th><th>Website word</th><th>Logo</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Con-SM-1</td><td class="num">up to 4</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Con-SM-2</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+          <tr><td>Con-SM-3</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Con-SM-4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Con-SM-5</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Con-SM-6</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Con-SM-7</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Int-SM-1</td><td class="num">up to 4</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Int-SM-3</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Medicals</h3>
+    <div class="scroll">
+      <table class="grid-table">
+        <thead>
+          <tr><th>Design</th><th>Feature boxes</th><th>Sentence</th><th>Action line</th><th>Call word</th><th>Website word</th><th>Logo</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Med-SM-1</td><td class="num">up to 4</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-3</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-4</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-5</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-6</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-7</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-8</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-11</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="stop">No</td></tr>
+          <tr><td>Med-SM-12</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="stop">No</td></tr>
+          <tr><td>Med-SM-13</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="stop">No</td></tr>
+          <tr><td>Med-SM-14</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-15</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-16</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="no">&mdash;</td><td class="yes">Yes</td></tr>
+          <tr><td>Med-SM-17</td><td class="num">up to 4</td><td class="no">&mdash;</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <div class="label">Every design shows these</div>
+      <p>The headline, the photograph, the phone number and the client's tagline appear on every design. You never need to worry about those.</p>
+    </div>
+  </section>
+
+  <!-- 6 ---------------------------------------------------------------- -->
+  <section id="result">
+    <h2><em>06</em> Seeing the posters</h2>
+    <p>Go to <strong>Clients</strong>, open the client, and scroll to <strong>Upcoming calendar entries</strong>. Each card shows the finished poster, the date it sends, the design used and the caption.</p>
+
+    <h3>The buttons on each card</h3>
+    <div class="cards">
+      <div class="card"><div class="name">Approve</div><div class="desc">You are happy with it. It will send at its scheduled time.</div></div>
+      <div class="card"><div class="name">Send now</div><div class="desc">Sends immediately, without waiting for the schedule.</div></div>
+      <div class="card"><div class="name">Regenerate</div><div class="desc">Makes the poster again from scratch, with a new photograph.</div></div>
+      <div class="card"><div class="name">Delete</div><div class="desc">Removes the day entirely. It will not send.</div></div>
+      <div class="card"><div class="name">Open in Drive</div><div class="desc">The full-size image, in Google Drive.</div></div>
+    </div>
+
+    <div class="note">
+      <div class="label">Nothing sends unapproved</div>
+      <p>A poster you have not approved will not go out, however long it sits there. Approving is the only thing that releases it.</p>
+    </div>
+  </section>
+
+  <!-- 7 ---------------------------------------------------------------- -->
+  <section id="wrong">
+    <h2><em>07</em> When something looks wrong</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>What you see</th><th>What it means</th><th>What to do</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Some rows say <strong>INVALID</strong> when importing</td>
+            <td>Usually the sheet has more days than the plan allows.</td>
+            <td>Use the button offering to import the days that fit, or lengthen the plan first.</td>
+          </tr>
+          <tr>
+            <td>A message naming a column</td>
+            <td>That one cell is too long, empty, or half-filled.</td>
+            <td>Fix that cell and import again. The message says which row and which column.</td>
+          </tr>
+          <tr>
+            <td>The poster looks wrong, or the photo is odd</td>
+            <td>The photograph came out badly, or the words don't suit it.</td>
+            <td>Click <strong>Regenerate</strong>. If it is the words, fix the sheet and import again.</td>
+          </tr>
+          <tr>
+            <td>No logo on the poster</td>
+            <td>Either the client has no logo uploaded, or the design has no logo space.</td>
+            <td>Check the client's settings first, then section 5.</td>
+          </tr>
+          <tr>
+            <td>An error mentioning <strong>browser</strong> on one card</td>
+            <td>A hiccup while drawing that one poster.</td>
+            <td>Click <strong>Regenerate</strong>. It should work the second time.</td>
+          </tr>
+          <tr>
+            <td><strong>Every</strong> poster failing</td>
+            <td>Something is wrong with the platform itself.</td>
+            <td>Tell the developer. This is not something to fix from the console.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 8 ---------------------------------------------------------------- -->
+  <section id="quirks">
+    <h2><em>08</em> Known quirks</h2>
+    <p>Things the system does that will confuse you. They are known, and none of them stops a poster going out.</p>
+    <ul class="plain">
+      <li><strong>The feature icon column does nothing.</strong> Each design has its own fixed icons. Whatever you type in those cells is ignored — write anything, or leave it.</li>
+      <li><strong>Con-SM-3, Con-SM-5 and Con-SM-6 always show a person.</strong> Even if you describe a hard hat, cement bags or a digger, you will get someone standing.</li>
+      <li><strong>Con-SM-2 prints the word "Visit" with nothing after it</strong> when the client has no website saved. Leave the website label blank for those clients.</li>
+      <li><strong>Con-SM-3 draws a gold line with nothing under it</strong> in the same situation.</li>
+      <li><strong>Five Medicals designs never show a logo</strong> — Med-SM-11, 12, 13, 15 and 16. Use a different design for clients whose logo matters.</li>
+    </ul>
+  </section>
+
+  <!-- 9 ---------------------------------------------------------------- -->
+  <section id="developer">
+    <h2><em>09</em> What needs a developer</h2>
+    <p>These cannot be done from the console or the sheet. Asking for them will save you a day of trying.</p>
+    <ul class="plain">
+      <li>A new design, or changing how an existing one looks.</li>
+      <li>New icons, or changing which icon a design uses.</li>
+      <li>Moving anything on a poster — the logo, the phone number, the boxes.</li>
+      <li>Changing colours or fonts.</li>
+      <li>Adding a new vertical.</li>
+      <li>Any case where every poster is failing at once.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <div>Evokz ACE &middot; Admin handbook</div>
+    <div>The console lives at app.evokz.in. Sign in with your own account.</div>
+  </footer>
+
+</div>
