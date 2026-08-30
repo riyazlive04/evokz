@@ -1,6 +1,11 @@
 'use server';
 
-import { DeliveryStatus, Prisma, UsageKeySource } from '@prisma/client';
+import {
+  ContentSourceType,
+  DeliveryStatus,
+  Prisma,
+  UsageKeySource,
+} from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 
@@ -25,6 +30,11 @@ import {
 } from '@/lib/types/brand';
 import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
 import type { CalendarImportInput } from '@/lib/calendar-parse';
+import {
+  ManualUploadRefusal,
+  storeManualPoster,
+  type StoredManualPoster,
+} from '@/lib/manual-upload';
 import { extractLayoutSpec } from '@/lib/ai/layout-extractor';
 import { labelTextBlocks, unionIntoRegions } from '@/lib/ai/plate-labeller';
 import { detectTextBlocks } from '@/lib/poster/text-detect';
@@ -1684,6 +1694,28 @@ export async function regenerateCreative(
   try {
     const id = z.string().uuid().parse(calendarId);
 
+    /*
+     * A manually-uploaded poster has nothing to regenerate.
+     *
+     * There is no template, no photo brief and no copy model behind it — the row
+     * exists precisely because somebody drew the poster elsewhere. Running the
+     * pipeline over one would discard their artwork, then fail at the layout it
+     * cannot resolve, leaving a FAILED row whose Drive file has already been
+     * replaced. The console hides the button for these rows; this is the half
+     * that holds when a stale tab still shows it.
+     */
+    const entry = await prisma.contentCalendar.findUnique({
+      where: { id },
+      select: { sourceType: true },
+    });
+    if (!entry) return failure('That calendar entry no longer exists.');
+    if (entry.sourceType === ContentSourceType.MANUAL_UPLOAD) {
+      return failure(
+        'This poster was uploaded by hand, so there is nothing to regenerate — no template, ' +
+          'no photo brief, no copy. Delete the day and upload a replacement instead.',
+      );
+    }
+
     const cleared = await prisma.contentCalendar.updateMany({
       where: { id },
       data: { approvedAt: null, sendAfter: null },
@@ -1772,6 +1804,98 @@ function describeImportRejection(result: CalendarImportResult): string {
   return reasons.length > 0
     ? `Nothing was imported: ${reasons.join('; ')}.`
     : 'Nothing was imported.';
+}
+
+// ---------------------------------------------------------------------------
+// Manual template upload
+// ---------------------------------------------------------------------------
+
+/**
+ * What happened to one manually-uploaded poster.
+ *
+ * `refused` is the fixed-behaviour outcome rather than a fault: the campaign ran
+ * out of open delivery days, or the day was claimed while the file was in
+ * flight. The panel lists these beside the successes so an operator can see
+ * exactly which files did not land — which is the whole of the overflow
+ * contract, and the reason this is not reported as an error.
+ */
+export type ManualPosterOutcome =
+  | ({ ok: true } & Omit<StoredManualPoster, 'scheduledDate'> & { scheduledLabel: string })
+  | { ok: false; day: number; fileName: string; refused: string };
+
+/**
+ * Stores one finished poster the operator uploaded from their own machine and
+ * schedules it into the client's next open delivery day.
+ *
+ * One file per call, for the same reason the vertical template uploader works
+ * that way: a Server Action body has a ceiling, a batch of posters would breach
+ * it, and per-file sequencing is what lets the panel say which file failed.
+ *
+ * **Nothing about the creative pipeline is involved.** The row is written
+ * straight to GENERATED with its Drive file attached and its approval already
+ * stamped, so it is invisible to `claimAndPreGenerate` and flows out through
+ * `releaseApproved` → `claimAndSend` like any other approved poster. See
+ * `src/lib/manual-upload.ts` for why each of those fields is what it is.
+ *
+ * Always returns `ok: true` at the action layer when the *call* succeeded, with
+ * the per-file verdict inside — a refusal is an outcome the operator reads, not
+ * a failure of the request.
+ */
+export async function uploadManualPoster(
+  clientId: string,
+  formData: FormData,
+): Promise<ActionResult<ManualPosterOutcome>> {
+  try {
+    const id = z.string().uuid().parse(clientId);
+
+    const file = formData.get('poster');
+    if (!(file instanceof File) || file.size === 0) {
+      return failure('Choose a poster image to upload.');
+    }
+
+    const day = z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(3650)
+      .parse(formData.get('day'));
+    const caption = z.string().parse(formData.get('caption') ?? '');
+    const hashtags = z.string().parse(formData.get('hashtags') ?? '');
+
+    try {
+      const stored = await storeManualPoster({
+        clientId: id,
+        day,
+        caption,
+        hashtags,
+        fileName: file.name,
+        mimeType: file.type,
+        body: Buffer.from(await file.arrayBuffer()),
+      });
+
+      revalidateAdmin();
+
+      return success({
+        ok: true,
+        day: stored.day,
+        fileName: stored.fileName,
+        dayNumber: stored.dayNumber,
+        gDriveFileId: stored.gDriveFileId,
+        gDriveViewUrl: stored.gDriveViewUrl,
+        calendarId: stored.calendarId,
+        // Formatted here rather than in the panel: the app timezone is a server
+        // fact, and a browser in another zone would render the day before.
+        scheduledLabel: formatDisplayDate(stored.scheduledDate, getAppTimeZone()),
+      });
+    } catch (error) {
+      if (error instanceof ManualUploadRefusal) {
+        return success({ ok: false, day, fileName: file.name, refused: error.message });
+      }
+      throw error;
+    }
+  } catch (error) {
+    return toFailure(error, 'Uploading poster');
+  }
 }
 
 // ---------------------------------------------------------------------------

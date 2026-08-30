@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 
 import { CalendarImportPanel } from '@/components/admin/CalendarImportPanel';
+import { ManualTemplateUploadDialog } from '@/components/admin/ManualTemplateUploadDialog';
 import { ClientControls } from '@/components/admin/ClientControls';
 import { ClientDangerZone } from '@/components/admin/ClientDangerZone';
 import { EditClientDialog } from '@/components/admin/EditClientDialog';
@@ -48,6 +49,7 @@ import {
   formatDisplayDate,
   formatDisplayDateTime,
   getAppTimeZone,
+  toTimeString,
   zonedDayRange,
 } from '@/lib/time';
 import { parseBrandGuideline } from '@/lib/types/brand';
@@ -71,7 +73,7 @@ export default async function ClientDetailPage({
 
   const timeZone = getAppTimeZone();
   const now = new Date();
-  const { start: todayStart } = zonedDayRange(now, timeZone);
+  const { start: todayStart, end: tomorrowStart } = zonedDayRange(now, timeZone);
 
   const client = await prisma.client.findUnique({
     where: { id: params.clientId },
@@ -488,6 +490,30 @@ export default async function ClientDetailPage({
             lockedDays={lockedDays}
             templates={approvedTemplates}
             categoryName={client.category.name}
+            manualUploadAction={
+              <ManualTemplateUploadDialog
+                clientId={client.id}
+                companyName={client.companyName}
+                totalDays={totalDays}
+                seededDays={seededDays}
+                startDate={client.startDate.toISOString()}
+                endDate={client.endDate.toISOString()}
+                deliveryDays={client.deliveryDays}
+                timeZone={timeZone}
+                /*
+                 * The same floor `storeManualPoster` applies server-side: today,
+                 * unless this client's delivery minute has already gone by, in
+                 * which case tomorrow. Computed here rather than in the browser
+                 * because the app timezone is a server fact — a console open in
+                 * another zone would otherwise preview a day the sweep will
+                 * never look at.
+                 */
+                notBefore={(toTimeString(now, timeZone) >= client.cronTime
+                  ? tomorrowStart
+                  : todayStart
+                ).toISOString()}
+              />
+            }
           />
         </CardContent>
       </Card>

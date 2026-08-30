@@ -5,6 +5,7 @@ import {
   ExternalLink,
   EyeOff,
   ImageOff,
+  ImageUp,
   Layers,
   Maximize2,
   Send,
@@ -42,6 +43,16 @@ export interface QueueEntry {
   templateLabel: string | null;
   /** True when a sheet named that template for this day, rather than the rotation choosing it. */
   templatePinned: boolean;
+  /**
+   * True when the operator uploaded this poster finished, rather than the
+   * pipeline drawing it.
+   *
+   * Changes what the card offers and what it claims. There is nothing to
+   * regenerate — no template, no brief, no copy — and no rotation to report
+   * either, so the card says what this row actually is instead of leaving every
+   * explanation on it describing a poster this system drew.
+   */
+  isManualUpload: boolean;
   /** Lightweight Drive thumbnail; falls back to the raw view URL. */
   thumbnailUrl: string | null;
   /**
@@ -215,6 +226,16 @@ function QueueCard({
           )}
           {/* Explains the otherwise-puzzling state of a poster that exists but
               has not been sent: it is waiting out its randomised send delay. */}
+          {/* Said plainly, because every other explanation on this card — the
+              template, the rotation, the awaiting-approval line — is about a
+              poster this system drew, and none of them apply here. */}
+          {entry.isManualUpload && (
+            <p className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+              <ImageUp className="h-3 w-3" />
+              Uploaded by hand
+              <span className="text-muted-foreground/60">· approved on upload</span>
+            </p>
+          )}
           {entry.sendAfterLabel && (
             <p className="flex items-center gap-1.5 font-mono text-[10px] text-brand-to">
               <Send className="h-3 w-3" />
@@ -255,6 +276,7 @@ function QueueCard({
           deletable={entry.status === DeliveryStatus.FAILED}
           awaitingApproval={entry.awaitingApproval}
           canWithdrawApproval={entry.canWithdrawApproval}
+          canRegenerate={!entry.isManualUpload}
         />
 
         {entry.viewUrl && (

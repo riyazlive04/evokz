@@ -43,6 +43,7 @@ export function QueueCardActions({
   deletable = false,
   awaitingApproval = false,
   canWithdrawApproval = false,
+  canRegenerate = true,
 }: {
   calendarId: string;
   hasAsset: boolean;
@@ -52,6 +53,16 @@ export function QueueCardActions({
   awaitingApproval?: boolean;
   /** Approved with no send booked yet, so the approval is still reversible. */
   canWithdrawApproval?: boolean;
+  /**
+   * False on a manually-uploaded poster, which has nothing behind it to draw
+   * again — no template, no photo brief, no copy model.
+   *
+   * Regenerating one would discard artwork the operator made elsewhere and then
+   * fail at a layout it cannot resolve, leaving a FAILED row whose Drive file is
+   * already gone. `regenerateCreative` refuses these outright; this is the half
+   * that keeps the console from offering it in the first place.
+   */
+  canRegenerate?: boolean;
 }) {
   const resend = useAction(forceResendCreative);
   const regenerate = useAction(regenerateCreative);
@@ -158,20 +169,22 @@ export function QueueCardActions({
           {awaitingApproval ? '' : hasAsset ? 'Send now' : 'Generate & send'}
         </Button>
 
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={handleRegenerate}
-          disabled={busy}
-          aria-label="Regenerate creative"
-          title="Discard the stored asset, re-render with a new photo and a freshly chosen layout, and hold the result for approval"
-        >
-          {regenerate.pending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <RefreshCw className="h-4 w-4" />
-          )}
-        </Button>
+        {canRegenerate && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleRegenerate}
+            disabled={busy}
+            aria-label="Regenerate creative"
+            title="Discard the stored asset, re-render with a new photo and a freshly chosen layout, and hold the result for approval"
+          >
+            {regenerate.pending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+          </Button>
+        )}
 
         {canWithdrawApproval && (
           <Button

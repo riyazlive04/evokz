@@ -1,4 +1,4 @@
-import type { DeliveryStatus } from '@prisma/client';
+import type { ContentSourceType, DeliveryStatus } from '@prisma/client';
 
 import type { QueueEntry } from '@/components/admin/QueueLedger';
 import { buildThumbnailUrl } from '@/lib/google-drive';
@@ -43,6 +43,15 @@ export const queueSelect = {
    */
   posterTemplateId: true,
   posterTemplate: { select: { label: true } },
+  /*
+   * Which path wrote the row, because it changes what the card may offer.
+   *
+   * A MANUAL_UPLOAD row has no template, no photo brief and no copy model behind
+   * it, so "regenerate" is not a slower version of the same thing — it is a
+   * button that would throw the operator's own artwork away and then fail. The
+   * card has to know before it can decline to draw it.
+   */
+  sourceType: true,
   client: { select: { companyName: true, whatsappNumber: true, cronTime: true } },
 } as const;
 
@@ -62,6 +71,7 @@ export interface QueueRecord {
   errorMessage: string | null;
   posterTemplateId: string | null;
   posterTemplate: { label: string } | null;
+  sourceType: ContentSourceType;
   client: { companyName: string; whatsappNumber: string; cronTime: string };
 }
 
@@ -94,6 +104,8 @@ export function toQueueEntry(
      */
     templateLabel: entry.posterTemplate?.label ?? null,
     templatePinned: entry.posterTemplateId !== null,
+    // Finished artwork the operator uploaded, rather than something drawn here.
+    isManualUpload: entry.sourceType === 'MANUAL_UPLOAD',
     // Only meaningful while the poster is waiting out its send delay. A row that
     // already went out has this cleared, and one that failed is described by its
     // errorMessage instead — so the label is never stale.

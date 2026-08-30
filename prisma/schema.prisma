@@ -15,6 +15,28 @@ enum DeliveryStatus {
   FAILED
 }
 
+/// Where a `ContentCalendar` row's creative came from.
+///
+/// `PIPELINE` is every row that has ever existed: seeded PENDING, resolved,
+/// rendered by `runCreativePipeline`, then reviewed and approved by a human.
+///
+/// `MANUAL_UPLOAD` is a finished poster the operator made elsewhere and uploaded
+/// from their own machine. It is written straight to `GENERATED` with its Drive
+/// file already attached and `approvedAt` already stamped — the act of choosing
+/// the file *is* the review — so it never passes through `resolve`, `generate` or
+/// `compose`, and has no `posterTemplateId`, `imagePrompt` or `posterCopy` to
+/// render from.
+///
+/// An enum rather than a nullable marker column, for the same reason as
+/// `UsageKeySource`: the set is closed, and the console filters on it to decide
+/// which actions a row may be offered — a `MANUAL_UPLOAD` row has nothing to
+/// regenerate, and offering the button would discard the operator's own artwork
+/// for a poster the pipeline cannot reproduce.
+enum ContentSourceType {
+  PIPELINE
+  MANUAL_UPLOAD
+}
+
 enum UsageProvider {
   OPENAI // Copy + brand tokenizer, billed per token
   FAL // Flux.1 image synthesis, billed per image
@@ -358,6 +380,12 @@ model ContentCalendar {
   client             Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
   dayNumber          Int
   scheduledDate      DateTime
+  /// Which path wrote this row — see `ContentSourceType`.
+  ///
+  /// Defaults to `PIPELINE`, which is what every row predating this column
+  /// carries and what the whole generate → approve → send loop still produces.
+  /// Only the manual template upload writes anything else.
+  sourceType         ContentSourceType @default(PIPELINE)
   /// Short content angle for the day, fed to the poster-copy prompt.
   ///
   /// Nullable since the bulk importer stopped carrying it: a sheet now names the

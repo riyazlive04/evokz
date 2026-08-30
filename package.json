@@ -17,6 +17,7 @@
     "plate:measure": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-text-detect.ts",
     "check:plate": "tsx --tsconfig scripts/tsconfig.json scripts/check-plate-render.ts",
     "check:import": "tsx --tsconfig scripts/tsconfig.json scripts/check-calendar-import.ts",
+    "check:manual": "tsx --tsconfig scripts/tsconfig.json scripts/check-manual-upload.ts",
     "check:templates": "tsx --tsconfig scripts/tsconfig.json scripts/check-templates.ts",
     "measure": "tsx --tsconfig scripts/tsconfig.json scripts/measure-reference.ts",
     "sheet": "tsx --tsconfig scripts/tsconfig.json scripts/build-vertical-sheet.ts",

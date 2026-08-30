@@ -37,7 +37,6 @@ import { useAction } from '@/hooks/use-action';
 import type { CalendarImportResult } from '@/lib/calendar-import';
 import {
   buildCalendarImportTemplate,
-  buildCalendarImportTemplateFull,
   CONTENT_COLUMN_LABELS,
   IMPORT_MAX_BYTES,
   IMPORT_ROW_LIMIT,
@@ -93,6 +92,7 @@ export function CalendarImportPanel({
   lockedDays,
   templates,
   categoryName,
+  manualUploadAction,
 }: {
   clientId: string;
   companyName: string;
@@ -112,6 +112,20 @@ export function CalendarImportPanel({
    * in their industry rather than in construction.
    */
   categoryName: string;
+  /**
+   * The manual poster uploader's trigger, rendered beside "Choose file".
+   *
+   * Passed in rather than imported, because that flow needs the client's
+   * campaign window and a server-computed date floor — facts this panel has no
+   * reason to know. Taking it as a slot keeps the two features from growing a
+   * shared props bag, and keeps this file's job unchanged: parse a sheet, show
+   * what it will do, import it.
+   *
+   * It renders above the early return below, so a vertical with no approved
+   * layouts — where a sheet import is impossible and a manual upload is the only
+   * thing that works — still offers it.
+   */
+  manualUploadAction?: React.ReactNode;
 }) {
   const importRows = useAction(importCalendarEntries);
   const fileInput = React.useRef<HTMLInputElement>(null);
@@ -187,21 +201,14 @@ export function CalendarImportPanel({
     }
   }
 
-  function handleTemplate(withPoster: boolean): void {
-    const blob = new Blob(
-      [
-        withPoster
-          ? buildCalendarImportTemplateFull(templates, categoryName, totalDays)
-          : buildCalendarImportTemplate(templates, categoryName, totalDays),
-      ],
-      { type: 'text/csv;charset=utf-8' },
-    );
+  function handleTemplate(): void {
+    const blob = new Blob([buildCalendarImportTemplate(templates, categoryName, totalDays)], {
+      type: 'text/csv;charset=utf-8',
+    });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = withPoster
-      ? 'evokz-calendar-template-with-poster.csv'
-      : 'evokz-calendar-template.csv';
+    anchor.download = 'evokz-calendar-template.csv';
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -250,19 +257,32 @@ export function CalendarImportPanel({
    */
   if (templates.length === 0) {
     return (
-      <div className="rounded-xl border border-warning/30 bg-warning/5 p-4 text-xs text-warning-ink">
-        <p className="font-medium">
-          This vertical has no approved template layouts yet.
-        </p>
-        <p className="mt-1.5 text-muted-foreground">
-          Every imported day names the template its poster is drawn in, so there is nothing
-          for a sheet to choose from until at least one is approved. Open the vertical, use
-          <span className="font-mono"> Read layout</span> on a reference poster, check it with
-          <span className="font-mono"> See this template rendered</span>, then approve it.
-        </p>
-        <Button asChild size="sm" variant="ghost" className="mt-2 h-7 px-2 text-[11px]">
-          <Link href="/admin/verticals">Open verticals</Link>
-        </Button>
+      <div className="space-y-3">
+        <div className="rounded-xl border border-warning/30 bg-warning/5 p-4 text-xs text-warning-ink">
+          <p className="font-medium">
+            This vertical has no approved template layouts yet.
+          </p>
+          <p className="mt-1.5 text-muted-foreground">
+            Every imported day names the template its poster is drawn in, so there is nothing
+            for a sheet to choose from until at least one is approved. Open the vertical, use
+            <span className="font-mono"> Read layout</span> on a reference poster, check it with
+            <span className="font-mono"> See this template rendered</span>, then approve it.
+          </p>
+          <Button asChild size="sm" variant="ghost" className="mt-2 h-7 px-2 text-[11px]">
+            <Link href="/admin/verticals">Open verticals</Link>
+          </Button>
+        </div>
+        {/*
+          * Still offered, and this is the case where it matters most.
+          *
+          * A manual upload needs no template at all — the poster is already
+          * drawn — so the one state that stops a sheet import cold is exactly
+          * the state in which uploading finished artwork is the only way to
+          * put anything in this client's calendar.
+          */}
+        {manualUploadAction && (
+          <div className="flex flex-wrap items-center gap-2">{manualUploadAction}</div>
+        )}
       </div>
     );
   }
@@ -290,22 +310,22 @@ export function CalendarImportPanel({
           type="button"
           variant="ghost"
           size="sm"
-          onClick={() => handleTemplate(false)}
+          onClick={handleTemplate}
           title="One row per approved template, up to the plan’s day count"
         >
           <Download className="h-4 w-4" />
           Content template
         </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => handleTemplate(true)}
-          title="Content fields plus every hand-authored poster column"
-        >
-          <Download className="h-4 w-4" />
-          + poster columns
-        </Button>
+        {/*
+          * Where the "+ poster columns" download used to be.
+          *
+          * That button shipped a second, wider version of this same sheet, and
+          * the columns it added are still documented in the disclosure below —
+          * so an operator who wants them can still add them by hand. What sits
+          * here now is a different thing entirely: posters that are already
+          * finished and need no sheet of this shape at all.
+          */}
+        {manualUploadAction}
         {sourceName && (
           <span className="truncate text-[11px] text-muted-foreground">
             Loaded <span className="font-mono">{sourceName}</span>
