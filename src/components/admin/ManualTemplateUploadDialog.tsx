@@ -5,7 +5,7 @@ import * as React from 'react';
 import {
   AlertTriangle,
   Check,
-  FileSpreadsheet,
+  FolderUp,
   ImageUp,
   Loader2,
   Upload,
@@ -69,6 +69,32 @@ import { planManualSchedule } from '@/lib/manual-upload-schedule';
 const MANUAL_COLUMNS = Object.values(MANUAL_COLUMN_LABELS);
 const PREVIEW_LIMIT = 60;
 
+/** Junk an operating system leaves in a folder. Never a poster, never a sheet. */
+const HIDDEN_FILES = new Set(['thumbs.db', 'desktop.ini', '.ds_store']);
+
+/**
+ * What each file is, decided by extension first and MIME second.
+ *
+ * Extension leads because it is the half that survives: Windows hands a `.csv`
+ * to the browser as `application/vnd.ms-excel` when Excel is installed, and a
+ * folder picked through `webkitdirectory` can report an empty `type` for
+ * anything the OS has no association for. The extension is what the operator
+ * actually typed, and — for the images — it is the same string the `day-N`
+ * matcher reads.
+ */
+function isImage(file: File): boolean {
+  return /\.(png|jpe?g|webp)$/i.test(file.name) || file.type.startsWith('image/');
+}
+
+function isSheet(file: File): boolean {
+  return (
+    /\.(csv|tsv|txt)$/i.test(file.name) ||
+    file.type === 'text/csv' ||
+    file.type === 'text/tab-separated-values' ||
+    file.type === 'text/plain'
+  );
+}
+
 export function ManualTemplateUploadDialog({
   clientId,
   companyName,
@@ -108,8 +134,23 @@ export function ManualTemplateUploadDialog({
   const [progress, setProgress] = React.useState<string | null>(null);
   const [results, setResults] = React.useState<ManualPosterOutcome[] | null>(null);
 
-  const imageInput = React.useRef<HTMLInputElement>(null);
-  const sheetInput = React.useRef<HTMLInputElement>(null);
+  const filesInput = React.useRef<HTMLInputElement>(null);
+  const folderInput = React.useRef<HTMLInputElement>(null);
+
+  /*
+   * `webkitdirectory` set imperatively rather than as a JSX prop.
+   *
+   * It is not in React's HTMLInputElement typings — it predates the standard and
+   * is still prefixed everywhere — so writing it inline costs an `any` cast. A
+   * ref and `setAttribute` keeps the file honestly typed, and the attribute only
+   * has to be applied once.
+   *
+   * Every browser this console runs in supports it. If one did not, the input
+   * would simply behave as a multi-file picker, which is the other button.
+   */
+  React.useEffect(() => {
+    folderInput.current?.setAttribute('webkitdirectory', '');
+  }, []);
 
   const upload = useAction(uploadManualPoster);
 
@@ -157,51 +198,127 @@ export function ManualTemplateUploadDialog({
     upload.reset();
   }
 
-  function handleImages(event: React.ChangeEvent<HTMLInputElement>): void {
-    const chosen = Array.from(event.target.files ?? []);
-    // Cleared so re-picking the same files after a rename still fires onChange.
-    event.target.value = '';
-    if (chosen.length === 0) return;
+  /**
+   * Takes whatever was picked and works out what each file is.
+   *
+   * **One intake for both buttons, because the two questions an operator was
+   * being asked are really one.** Choosing images and then choosing a sheet is
+   * two dialogs and two chances to forget the second; and picking twelve posters
+   * one at a time — which is what the picker does if you click rather than
+   * Ctrl+A — silently produces a batch of one and eleven rows reported as having
+   * no image. Nothing about that is wrong, and it is still the wrong thing to put
+   * in front of somebody.
+   *
+   * So a batch of files, or a whole folder, is sorted here by what each file
+   * plainly is: images are posters, a text sheet is the captions, anything else
+   * is named and ignored. A folder from `webkitdirectory` arrives as a flat file
+   * list with `webkitRelativePath` set, and `file.name` is still the bare
+   * filename — which is what the `day-N` matcher reads, so a nested folder pairs
+   * exactly as a hand-picked selection does.
+   *
+   * Merging rather than replacing: picking the posters, then the sheet from
+   * somewhere else, has to add up rather than overwrite. Deduplicated by name, so
+   * picking the same folder twice is idempotent.
+   */
+  async function intake(picked: File[]): Promise<void> {
+    if (picked.length === 0) return;
 
     resetOutcome();
     setReadError(null);
 
-    const oversize = chosen.filter((file) => file.size > MANUAL_IMAGE_MAX_BYTES);
-    if (oversize.length > 0) {
-      setReadError(
-        `${oversize.map((file) => file.name).join(', ')} — over the ${
-          MANUAL_IMAGE_MAX_BYTES / 1024 / 1024
-        } MB per-file limit. Export smaller and choose again.`,
-      );
-      return;
+    const problems: string[] = [];
+    const nextImages: File[] = [];
+    let sheet: File | null = null;
+    const ignored: string[] = [];
+
+    for (const file of picked) {
+      // Whatever the OS dropped in — .DS_Store, Thumbs.db, desktop.ini.
+      if (file.name.startsWith('.') || HIDDEN_FILES.has(file.name.toLowerCase())) continue;
+
+      if (isImage(file)) {
+        if (file.size > MANUAL_IMAGE_MAX_BYTES) {
+          problems.push(
+            `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB — over the ${
+              MANUAL_IMAGE_MAX_BYTES / 1024 / 1024
+            } MB limit`,
+          );
+          continue;
+        }
+        nextImages.push(file);
+        continue;
+      }
+
+      if (isSheet(file)) {
+        if (file.size > MANUAL_SHEET_MAX_BYTES) {
+          problems.push(
+            `${file.name} is ${Math.round(file.size / 1_000)} kB — over the ${Math.round(
+              MANUAL_SHEET_MAX_BYTES / 1_000,
+            )} kB limit`,
+          );
+          continue;
+        }
+        /*
+         * Two sheets is genuinely ambiguous and picking one would be a guess.
+         * Named rather than resolved — the operator knows which is current.
+         */
+        if (sheet) {
+          problems.push(
+            `both ${sheet.name} and ${file.name} look like caption sheets — keep one in the folder, or pick the sheet on its own`,
+          );
+          continue;
+        }
+        sheet = file;
+        continue;
+      }
+
+      ignored.push(file.name);
     }
 
-    setImages(chosen.slice(0, MANUAL_IMAGE_LIMIT));
+    if (sheet) {
+      try {
+        setSheetText(await sheet.text());
+        setSheetName(sheet.name);
+      } catch {
+        problems.push(`${sheet.name} could not be read`);
+      }
+    }
+
+    if (nextImages.length > 0) {
+      setImages((current) => {
+        const byName = new Map(current.map((file) => [file.name, file]));
+        for (const file of nextImages) byName.set(file.name, file);
+        return [...byName.values()].slice(0, MANUAL_IMAGE_LIMIT);
+      });
+    }
+
+    /*
+     * An .xlsx is the one ignored file worth explaining rather than listing.
+     *
+     * It is what somebody reaches for when told "a sheet", and it cannot be read
+     * here — the format is a zip archive, not text. Saying so beats leaving them
+     * to notice their captions never loaded.
+     */
+    const spreadsheet = ignored.find((name) => /\.(xlsx|xls|numbers|ods)$/i.test(name));
+    if (spreadsheet) {
+      problems.push(
+        `${spreadsheet} is a spreadsheet file, not a text sheet. Open it and use File → Save As → CSV, then pick that`,
+      );
+    } else if (ignored.length > 0) {
+      problems.push(`ignored ${ignored.length} file(s) that are neither images nor a sheet`);
+    }
+
+    if (nextImages.length === 0 && !sheet && problems.length === 0) {
+      problems.push('nothing in that selection was an image or a caption sheet');
+    }
+
+    setReadError(problems.length > 0 ? problems.join(' · ') : null);
   }
 
-  async function handleSheet(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
-    const file = event.target.files?.[0];
+  function handlePick(event: React.ChangeEvent<HTMLInputElement>): void {
+    const chosen = Array.from(event.target.files ?? []);
+    // Cleared so re-picking the same files after a rename still fires onChange.
     event.target.value = '';
-    if (!file) return;
-
-    resetOutcome();
-
-    if (file.size > MANUAL_SHEET_MAX_BYTES) {
-      setReadError(
-        `${file.name} is ${Math.round(file.size / 1_000)} kB — the limit is ${Math.round(
-          MANUAL_SHEET_MAX_BYTES / 1_000,
-        )} kB. This sheet only needs three columns.`,
-      );
-      return;
-    }
-
-    try {
-      setSheetText(await file.text());
-      setSheetName(file.name);
-      setReadError(null);
-    } catch {
-      setReadError(`${file.name} could not be read.`);
-    }
+    void intake(chosen);
   }
 
   /**
@@ -294,41 +411,44 @@ export function ManualTemplateUploadDialog({
         {/* ---- Inputs ---- */}
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
+            {/* The folder picker leads: one gesture, everything in it sorted out
+                here. `accept` is deliberately absent — a directory picker filters
+                by folder, and an accept list would only hide files from the
+                dialog's own preview while still handing them over. */}
             <input
-              ref={imageInput}
+              ref={folderInput}
               type="file"
-              accept="image/png,image/jpeg,image/webp"
               multiple
-              onChange={handleImages}
+              onChange={handlePick}
               className="hidden"
             />
             <Button
               type="button"
-              variant="outline"
               size="sm"
-              onClick={() => imageInput.current?.click()}
+              onClick={() => folderInput.current?.click()}
               disabled={upload.pending}
             >
-              <ImageUp className="h-4 w-4" />
-              Choose posters
+              <FolderUp className="h-4 w-4" />
+              Choose folder
             </Button>
 
             <input
-              ref={sheetInput}
+              ref={filesInput}
               type="file"
-              accept=".csv,.tsv,.txt,text/csv,text/plain"
-              onChange={handleSheet}
+              accept="image/png,image/jpeg,image/webp,.csv,.tsv,.txt,text/csv,text/plain"
+              multiple
+              onChange={handlePick}
               className="hidden"
             />
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => sheetInput.current?.click()}
+              onClick={() => filesInput.current?.click()}
               disabled={upload.pending}
             >
-              <FileSpreadsheet className="h-4 w-4" />
-              Choose caption sheet
+              <ImageUp className="h-4 w-4" />
+              Choose files
             </Button>
 
             <span className="text-[11px] text-muted-foreground">
@@ -345,12 +465,16 @@ export function ManualTemplateUploadDialog({
           </div>
 
           <p className="text-[10px] leading-relaxed text-muted-foreground/80">
-            Name each image <span className="font-mono">day-1</span>,{' '}
+            Put the posters and the sheet in one folder and choose the folder — the images and
+            the caption sheet are sorted out for you, and the order you picked them in does not
+            matter. Name each image <span className="font-mono">day-1</span>,{' '}
             <span className="font-mono">day-2</span>, <span className="font-mono">day-3</span> …
-            — that name is what pairs it with a sheet row. The sheet is CSV or TSV with three
-            columns: <span className="font-mono">{MANUAL_COLUMNS.join(', ')}</span>. A caption is
-            required on every row; hashtags are optional. Nothing is scheduled unless both
-            halves are present.
+            — that name is what pairs it with a sheet row, and{' '}
+            <span className="font-mono">day-1</span> takes the soonest open delivery day. The
+            sheet is CSV or TSV with three columns:{' '}
+            <span className="font-mono">{MANUAL_COLUMNS.join(', ')}</span>. A caption is required
+            on every row; hashtags are optional. Nothing is scheduled unless both halves are
+            present.
           </p>
         </div>
 
