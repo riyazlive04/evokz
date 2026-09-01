@@ -44,6 +44,7 @@ export function QueueCardActions({
   awaitingApproval = false,
   canWithdrawApproval = false,
   canRegenerate = true,
+  deleteBinsArtwork = false,
 }: {
   calendarId: string;
   hasAsset: boolean;
@@ -63,6 +64,17 @@ export function QueueCardActions({
    * that keeps the console from offering it in the first place.
    */
   canRegenerate?: boolean;
+  /**
+   * Whether deleting also bins the poster itself.
+   *
+   * True on a manually-uploaded row, whose Drive file is artwork uploaded for
+   * that row alone and is trashed with it. False on a failed pipeline row, where
+   * the asset is left where it is and the pipeline can draw another.
+   *
+   * The confirmation has to say which, because the two are different decisions:
+   * one frees a day, the other frees a day and puts somebody's file in the bin.
+   */
+  deleteBinsArtwork?: boolean;
 }) {
   const resend = useAction(forceResendCreative);
   const regenerate = useAction(regenerateCreative);
@@ -221,7 +233,9 @@ export function QueueCardActions({
       {deletable && confirmingDelete && (
         <div className="flex items-center gap-2 rounded-md border border-danger/25 bg-danger/5 p-2">
           <span className="flex-1 text-[10px] leading-relaxed text-danger-ink">
-            Delete this entry? The day is freed and can be re-seeded later.
+            {deleteBinsArtwork
+              ? 'Delete this entry? The day is freed and the uploaded poster goes to the Drive bin, recoverable there for 30 days.'
+              : 'Delete this entry? The day is freed and can be re-seeded later.'}
           </span>
           <Button
             size="sm"

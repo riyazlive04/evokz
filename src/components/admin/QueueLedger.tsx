@@ -268,15 +268,26 @@ function QueueCard({
           </p>
         )}
 
-        {/* Only a failed row is safe to drop: anything else is either still
-            queued for its day or already delivered. */}
+        {/*
+          * A failed row, or a manual upload that has not gone out yet.
+          *
+          * The second is the only correction a manually-uploaded poster has.
+          * There is no regenerate for one — no template, no brief, nothing to
+          * draw again — so without this a poster scheduled onto the wrong day
+          * could not be fixed from the console at all. Delivered rows stay
+          * undeletable whatever wrote them: the row is the record of the send.
+          */}
         <QueueCardActions
           calendarId={entry.id}
           hasAsset={hasAsset}
-          deletable={entry.status === DeliveryStatus.FAILED}
+          deletable={
+            entry.status === DeliveryStatus.FAILED ||
+            (entry.isManualUpload && entry.status === DeliveryStatus.GENERATED)
+          }
           awaitingApproval={entry.awaitingApproval}
           canWithdrawApproval={entry.canWithdrawApproval}
           canRegenerate={!entry.isManualUpload}
+          deleteBinsArtwork={entry.isManualUpload}
         />
 
         {entry.viewUrl && (

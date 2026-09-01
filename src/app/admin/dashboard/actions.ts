@@ -1154,23 +1154,91 @@ export async function unapproveCreative(calendarId: string): Promise<ActionResul
 }
 
 /**
- * Drops one calendar entry for good.
+ * Drops one calendar entry for good, freeing its `dayNumber`.
  *
- * Aimed at failed rows an operator has decided not to chase: the Drive asset
- * (if any) is left alone, and the freed `dayNumber` is picked up again by the
- * next calendar seed, which fills whichever days are missing.
+ * Two shapes of row may be dropped, for different reasons:
+ *
+ *   A **failed or pending** row — the original case. Nobody has received
+ *     anything, and an operator has decided not to chase it. Any Drive asset is
+ *     left alone, matching what `applyCalendarImport` does when it rewrites a
+ *     failed day.
+ *
+ *   A **manually-uploaded row that has not gone out**. This one is new, and it
+ *     is the only way to correct a manual upload at all: there is no regenerate
+ *     for it — no template, no brief, nothing to draw again — so a poster on the
+ *     wrong day could previously only be fixed in the database by hand. Its Drive
+ *     file *is* binned, because unlike a rendered poster it is artwork uploaded
+ *     for this row alone and nothing else refers to it. Trashed rather than
+ *     destroyed, so a mis-click is recoverable from Drive's bin for 30 days.
+ *
+ * **A DELIVERED row is refused in every case**, manual or not. It records what a
+ * client actually received, which is the same rule `clearClientCalendar` applies
+ * to a bulk clear — and the reason a row is dropped is never a reason to forget
+ * that it was sent.
+ *
+ * The guard is new. This action used to delete whatever id it was handed and was
+ * simply not offered on anything but a failed row, which made the console the
+ * only thing standing between a stale tab and a deleted delivery record.
  */
 export async function deleteCalendarEntry(
   calendarId: string,
 ): Promise<ActionResult<{ dayNumber: number }>> {
   try {
-    const deleted = await prisma.contentCalendar.delete({
-      where: { id: z.string().uuid().parse(calendarId) },
-      select: { dayNumber: true },
+    const id = z.string().uuid().parse(calendarId);
+
+    const entry = await prisma.contentCalendar.findUnique({
+      where: { id },
+      select: {
+        dayNumber: true,
+        deliveryStatus: true,
+        sourceType: true,
+        gDriveFileId: true,
+      },
     });
+    if (!entry) return failure('That calendar entry no longer exists.');
+
+    if (entry.deliveryStatus === DeliveryStatus.DELIVERED) {
+      return failure(
+        'That poster has already been delivered, so the day cannot be dropped — the row is ' +
+          'the record of what the client received.',
+      );
+    }
+
+    const manualAndUnsent =
+      entry.sourceType === ContentSourceType.MANUAL_UPLOAD &&
+      entry.deliveryStatus === DeliveryStatus.GENERATED;
+
+    if (
+      !manualAndUnsent &&
+      entry.deliveryStatus !== DeliveryStatus.PENDING &&
+      entry.deliveryStatus !== DeliveryStatus.FAILED
+    ) {
+      return failure(
+        'A generated poster cannot be dropped. Regenerate it, or withdraw its approval first.',
+      );
+    }
+
+    await prisma.contentCalendar.delete({ where: { id } });
+
+    /*
+     * Only the manual path bins its file, and only after the row is gone.
+     *
+     * A rendered poster's asset is left where it is, exactly as before — the
+     * pipeline can produce it again, and the file may already have been sent. A
+     * manually-uploaded one cannot be reproduced by anything here, and with its
+     * row deleted nothing points at it, so leaving it would silently grow the
+     * client's folder by one orphan per correction.
+     *
+     * After the delete, not before: `trashDriveFile` never throws, and binning a
+     * file for a row that then failed to delete would leave a live row pointing
+     * at a binned asset — which is the one outcome worse than an orphan.
+     */
+    if (manualAndUnsent && entry.gDriveFileId) {
+      await trashDriveFile(entry.gDriveFileId);
+    }
 
     revalidateAdmin();
-    return success({ dayNumber: deleted.dayNumber });
+    return success({ dayNumber: entry.dayNumber });
   } catch (error) {
     return toFailure(error, 'Deleting calendar entry');
   }
