@@ -257,31 +257,54 @@ export function CalendarImportPanel({
    */
   if (templates.length === 0) {
     return (
-      <div className="space-y-3">
+      <div className="space-y-4">
+        {/*
+          * Scoped to the sheet importer in its own first sentence.
+          *
+          * It used to open "This vertical has no approved template layouts yet",
+          * which is true and reads as a statement about the whole card — and the
+          * manual uploader sits in this same card, directly below. Operators read
+          * it as a gate on the upload button and went off to approve a layout that
+          * the upload has never needed. Naming the sheet in the heading is what
+          * stops the warning from claiming more than it means.
+          */}
         <div className="rounded-xl border border-warning/30 bg-warning/5 p-4 text-xs text-warning-ink">
           <p className="font-medium">
-            This vertical has no approved template layouts yet.
+            Sheet import is unavailable — this vertical has no approved template layout.
           </p>
           <p className="mt-1.5 text-muted-foreground">
-            Every imported day names the template its poster is drawn in, so there is nothing
-            for a sheet to choose from until at least one is approved. Open the vertical, use
-            <span className="font-mono"> Read layout</span> on a reference poster, check it with
-            <span className="font-mono"> See this template rendered</span>, then approve it.
+            Every day imported <em>from a sheet</em> names the template its poster is drawn in,
+            so there is nothing for a sheet to choose from until at least one is approved. Open
+            the vertical, use <span className="font-mono">Read layout</span> on a reference
+            poster, check it with <span className="font-mono">See this template rendered</span>,
+            then approve it.
           </p>
           <Button asChild size="sm" variant="ghost" className="mt-2 h-7 px-2 text-[11px]">
             <Link href="/admin/verticals">Open verticals</Link>
           </Button>
         </div>
+
         {/*
-          * Still offered, and this is the case where it matters most.
+          * Its own block, with its own heading, and the contradiction said out
+          * loud rather than left to be inferred from the two sitting near each
+          * other.
           *
-          * A manual upload needs no template at all — the poster is already
-          * drawn — so the one state that stops a sheet import cold is exactly
-          * the state in which uploading finished artwork is the only way to
-          * put anything in this client's calendar.
+          * This is the state where uploading finished artwork is the *only* way
+          * to put anything in this client's calendar, so it is the last place the
+          * button should look disabled by the notice above it.
           */}
         {manualUploadAction && (
-          <div className="flex flex-wrap items-center gap-2">{manualUploadAction}</div>
+          <div className="rounded-xl border border-border bg-muted/40 p-4">
+            <p className="text-xs font-medium text-foreground">
+              Uploading finished posters still works — no template needed.
+            </p>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+              A template is a layout the generator draws a poster <em>into</em>. These posters
+              are already designed, so there is nothing to lay out and nothing to approve in the
+              vertical. The notice above does not apply here.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">{manualUploadAction}</div>
+          </div>
         )}
       </div>
     );

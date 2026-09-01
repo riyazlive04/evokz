@@ -484,10 +484,12 @@ export default async function ClientDetailPage({
             Bulk content import
           </CardTitle>
           <CardDescription>
-            Write the theme, caption, hashtags, and image prompt yourself instead of asking the
-            generator for them, then load the sheet here. Imported days dispatch exactly like
-            generated ones and cost nothing to write. The poster&apos;s text layer is the one
-            thing still generated — it is derived from each imported day on first render.
+            Two ways in, and they are not the same thing. <strong>Import a sheet</strong> to write
+            the theme, caption, hashtags and image prompt yourself instead of asking the generator
+            for them — those days still get a poster drawn for them here, from a template the sheet
+            names, so the vertical needs an approved layout. <strong>Upload templates</strong> is
+            the other one: finished posters made elsewhere, which are stored and scheduled as they
+            are. Nothing is drawn, no template is involved, and no approval is needed afterwards.
           </CardDescription>
         </CardHeader>
         <CardContent>
