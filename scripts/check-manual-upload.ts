@@ -24,6 +24,7 @@ import {
   type ManualSheetRow,
 } from '@/lib/manual-upload-match';
 import { planManualSchedule } from '@/lib/manual-upload-schedule';
+import { describeCronTime } from '@/lib/time';
 
 let bad = 0;
 const t = (name: string, ok: boolean, extra = ''): void => {
@@ -423,7 +424,29 @@ const iso = (date: Date) =>
   t('no pairs schedules nothing and reports nothing left', plan.scheduled.length === 0 && plan.unscheduled.length === 0);
 }
 
+
 // ===========================================================================
+console.log('\n--- delivery-time wording ------------------------------------');
+// ===========================================================================
+
+{
+  const cases: Array<[string, string]> = [
+    ['12:00', '12:00 noon'],
+    ['00:00', '12:00 midnight'],
+    ['09:00', '9:00 AM'],
+    ['11:43', '11:43 AM'],
+    ['13:30', '1:30 PM'],
+    ['23:59', '11:59 PM'],
+    ['12:30', '12:30 PM'],
+    ['00:30', '12:30 AM'],
+  ];
+  for (const [value, expected] of cases) {
+    t(`"${value}" reads as "${expected}"`, describeCronTime(value) === expected, describeCronTime(value));
+  }
+  t('a malformed value is passed through rather than guessed at',
+    describeCronTime('nonsense') === 'nonsense');
+}
+
 console.log(
   bad === 0 ? '\nall manual-upload checks passed' : `\n${bad} manual-upload check(s) FAILED`,
 );

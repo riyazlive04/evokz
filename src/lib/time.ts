@@ -245,6 +245,35 @@ export function nthDeliveryDate(
   );
 }
 
+/**
+ * An "HH:MM" delivery minute written the way people say it — "9:00 AM", "12:00
+ * noon", "12:00 midnight".
+ *
+ * The stored value is 24-hour and unambiguous to the machine. It is not
+ * unambiguous to a person: `12:00` is read as midnight about as often as noon,
+ * and the two are twelve hours and one day apart when the question is "will this
+ * still go out today". An operator who reads the field as midnight sets a
+ * delivery time they think is hours away and has in fact already passed.
+ *
+ * So the console prints this beside the input rather than trusting the reader to
+ * know the convention. Noon and midnight are named outright, because those are
+ * the two the 12-hour clock genuinely cannot express without a word.
+ */
+export function describeCronTime(value: string): string {
+  const match = HH_MM_PATTERN.exec(value);
+  if (!match) return value;
+
+  const hour = Number.parseInt(match[1]!, 10);
+  const minute = match[2]!;
+
+  if (hour === 12 && minute === '00') return '12:00 noon';
+  if (hour === 0 && minute === '00') return '12:00 midnight';
+
+  const suffix = hour < 12 ? 'AM' : 'PM';
+  const twelve = hour % 12 === 0 ? 12 : hour % 12;
+  return `${twelve}:${minute} ${suffix}`;
+}
+
 /** "Every day", "Mon–Fri", "Weekends", or an explicit list. */
 export function describeDeliveryDays(days: readonly number[]): string {
   const allowed = normalizeDeliveryDays(days);

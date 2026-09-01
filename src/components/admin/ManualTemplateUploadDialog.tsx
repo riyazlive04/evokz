@@ -32,6 +32,7 @@ import {
   parseManualSheet,
 } from '@/lib/manual-upload-match';
 import { planManualSchedule } from '@/lib/manual-upload-schedule';
+import { describeCronTime } from '@/lib/time';
 
 /**
  * Upload a batch of already-finished posters and schedule them.
@@ -105,6 +106,8 @@ export function ManualTemplateUploadDialog({
   deliveryDays,
   timeZone,
   notBefore,
+  cronTime,
+  todayIsSpent,
 }: {
   clientId: string;
   companyName: string;
@@ -125,6 +128,22 @@ export function ManualTemplateUploadDialog({
    * server fact, and a browser in another zone would preview the wrong day.
    */
   notBefore: string;
+  /** The client's delivery minute, "HH:MM", for the explanation below. */
+  cronTime: string;
+  /**
+   * Whether today's delivery minute has already gone by.
+   *
+   * The single most confusing thing this flow can do is quietly begin tomorrow.
+   * Nothing is wrong when it does — a row placed on a minute that has passed is
+   * picked up by no sweep, ever, so writing one would be worse — but from the
+   * outside it looks like the upload ignored today for no reason, and the
+   * operator's next move (raise the delivery time, then upload) is not one the
+   * screen suggests.
+   *
+   * Computed on the server beside `notBefore`, from the same comparison, so the
+   * sentence and the schedule can never disagree.
+   */
+  todayIsSpent: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [images, setImages] = React.useState<File[]>([]);
@@ -507,6 +526,24 @@ export function ManualTemplateUploadDialog({
         {/* ---- Confirm screen ---- */}
         {(images.length > 0 || parse.rows.length > 0) && results === null && (
           <div className="space-y-3 border-t border-border pt-3">
+            {/* Why the first poster lands where it does. Shown whenever there
+                is something to schedule, because "why not today" is asked about
+                a successful run rather than a failed one. */}
+            {todayIsSpent && plan.scheduled.length > 0 && (
+              <p className="rounded-md border border-warning-ink/30 bg-warning-ink/5 px-2.5 py-2 text-[11px] text-warning-ink">
+                <span className="font-semibold">Today is not available.</span>{' '}
+                {companyName}&apos;s delivery time of{' '}
+                <span className="font-mono">{cronTime}</span> ({describeCronTime(cronTime)}) has
+                already passed, and a poster placed on a delivery minute that has gone by is
+                never picked up — so the first one goes out{' '}
+                <span className="font-mono">
+                  {dateFormat.format(plan.scheduled[0]!.scheduledDate)}
+                </span>{' '}
+                instead. To use today, close this, set a delivery time later than now, then
+                upload again.
+              </p>
+            )}
+
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
               <span className="text-muted-foreground">
                 <span className="font-mono text-foreground">{match.pairs.length}</span> matched

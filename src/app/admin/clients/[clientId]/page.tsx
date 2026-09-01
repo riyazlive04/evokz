@@ -210,6 +210,15 @@ export default async function ClientDetailPage({
     timelineIsHistory = true;
   }
 
+  /*
+   * Whether this client's delivery minute has already gone by today.
+   *
+   * Named once and used twice — for the manual uploader's date floor and for the
+   * sentence that explains it — because those two disagreeing is exactly the bug
+   * that would make the explanation worse than none at all.
+   */
+  const todayIsSpent = toTimeString(now, timeZone) >= client.cronTime;
+
   const brand = parseBrandGuideline(client.brandGuideline);
   const sizePreset = resolveImageSizePreset(
     client.imageSizePreset,
@@ -508,10 +517,9 @@ export default async function ClientDetailPage({
                  * another zone would otherwise preview a day the sweep will
                  * never look at.
                  */
-                notBefore={(toTimeString(now, timeZone) >= client.cronTime
-                  ? tomorrowStart
-                  : todayStart
-                ).toISOString()}
+                notBefore={(todayIsSpent ? tomorrowStart : todayStart).toISOString()}
+                cronTime={client.cronTime}
+                todayIsSpent={todayIsSpent}
               />
             }
           />

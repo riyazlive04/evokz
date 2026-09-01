@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAction } from '@/hooks/use-action';
+import { describeCronTime } from '@/lib/time';
 
 /**
  * The mutating controls for a single client, laid out for the detail page.
@@ -119,7 +120,10 @@ export function ClientControls({
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-x-4 gap-y-4 sm:gap-x-6">
         <div className="space-y-1.5">
-          <Label htmlFor="client-cron-time">Delivery time ({timeZone})</Label>
+          <Label htmlFor="client-cron-time">
+            Delivery time ({timeZone}){' '}
+            <span className="font-normal text-muted-foreground">· 24-hour</span>
+          </Label>
           <div className="flex items-center gap-1.5">
             <Input
               id="client-cron-time"
@@ -136,6 +140,13 @@ export function ClientControls({
               }}
               className="w-32 font-mono"
             />
+
+            {/* What the operator just typed, in words. `12:00` is read as
+                midnight as often as noon, and the difference decides whether a
+                poster can still go out today. */}
+            <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+              {describeCronTime(cronTime)}
+            </span>
 
             {dirty && (
               <>
