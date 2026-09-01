@@ -135,21 +135,31 @@ export function ManualTemplateUploadDialog({
   const [results, setResults] = React.useState<ManualPosterOutcome[] | null>(null);
 
   const filesInput = React.useRef<HTMLInputElement>(null);
-  const folderInput = React.useRef<HTMLInputElement>(null);
+  const folderInput = React.useRef<HTMLInputElement | null>(null);
 
-  /*
-   * `webkitdirectory` set imperatively rather than as a JSX prop.
+  /**
+   * Turns the folder input into a directory picker as it mounts.
    *
-   * It is not in React's HTMLInputElement typings — it predates the standard and
-   * is still prefixed everywhere — so writing it inline costs an `any` cast. A
-   * ref and `setAttribute` keeps the file honestly typed, and the attribute only
-   * has to be applied once.
+   * `webkitdirectory` is not in React's `HTMLInputElement` typings — it predates
+   * the standard and is still prefixed in every engine — so setting it as a JSX
+   * prop costs an `any` cast. It is applied here instead.
    *
-   * Every browser this console runs in supports it. If one did not, the input
-   * would simply behave as a multi-file picker, which is the other button.
+   * **A callback ref, not an effect, and that distinction is the whole fix.**
+   * This input lives inside `DialogContent`, and Radix unmounts dialog content
+   * while the dialog is closed. A `useEffect(…, [])` therefore runs once, on the
+   * component's own mount, at a moment when the input does not exist — so
+   * `.current` is null, `setAttribute` never happens, and the button opens an
+   * ordinary file picker that cannot select a folder at all. Nothing errors; it
+   * simply does the wrong thing, which is why it survived a browser test:
+   * Playwright's `setInputFiles` writes straight to the input and never opens the
+   * picker the attribute governs.
+   *
+   * A callback ref fires on every mount of the node, which is exactly the event
+   * that matters here — the dialog being opened.
    */
-  React.useEffect(() => {
-    folderInput.current?.setAttribute('webkitdirectory', '');
+  const attachFolderInput = React.useCallback((node: HTMLInputElement | null) => {
+    folderInput.current = node;
+    node?.setAttribute('webkitdirectory', '');
   }, []);
 
   const upload = useAction(uploadManualPoster);
@@ -416,7 +426,7 @@ export function ManualTemplateUploadDialog({
                 by folder, and an accept list would only hide files from the
                 dialog's own preview while still handing them over. */}
             <input
-              ref={folderInput}
+              ref={attachFolderInput}
               type="file"
               multiple
               onChange={handlePick}
