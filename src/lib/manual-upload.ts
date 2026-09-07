@@ -80,7 +80,8 @@ export interface StoreManualPosterInput {
   /** The `day-N` label from the filename. Reporting only — not the campaign day. */
   day: number;
   caption: string;
-  hashtags: string;
+  /** Absolute http(s) URL to send under the caption, or `''` for none. */
+  link: string;
   fileName: string;
   mimeType: string;
   body: Buffer;
@@ -121,15 +122,28 @@ export async function storeManualPoster(
    * Re-validated here even though the browser validated the same cells.
    *
    * The panel's parse is a courtesy — the same relationship `applyCalendarImport`
-   * has with `CalendarImportPanel`. A caption that arrives blank or a hashtag
-   * string three pages long has not been through the schema until it has been
-   * through it *here*.
+   * has with `CalendarImportPanel`. A caption that arrives blank, or a link that
+   * is not an http(s) URL, has not been through the schema until it has been
+   * through it *here*. The schema normalises the link as part of parsing, so a
+   * bare `evokz.in/book` becomes absolute on this side too rather than only in
+   * the browser that happened to send it.
+   *
+   * A failure is reported as a refusal rather than thrown, so the panel lists it
+   * against the file it belongs to instead of failing the whole batch with a
+   * validation error nobody can attribute.
    */
-  const copy = manualSheetRowSchema.parse({
+  const parsedCopy = manualSheetRowSchema.safeParse({
     day: input.day,
     caption: input.caption,
-    hashtags: input.hashtags,
+    link: input.link,
   });
+  if (!parsedCopy.success) {
+    throw new ManualUploadRefusal(
+      parsedCopy.error.issues.map((issue) => issue.message).join('; '),
+      input.day,
+    );
+  }
+  const copy = parsedCopy.data;
 
   const client = await prisma.client.findUnique({
     where: { id: input.clientId },
@@ -171,7 +185,7 @@ export async function storeManualPoster(
 
   const timeZone = getAppTimeZone();
   const plan = planManualSchedule(
-    [{ day: copy.day, fileName: input.fileName, caption: copy.caption, hashtags: copy.hashtags }],
+    [{ day: copy.day, fileName: input.fileName, caption: copy.caption, link: copy.link }],
     {
       startDate: client.startDate,
       endDate: client.endDate,
@@ -231,7 +245,23 @@ export async function storeManualPoster(
         // render path to do and nothing for it to claim. See the note above.
         deliveryStatus: DeliveryStatus.GENERATED,
         caption: copy.caption,
-        hashtags: copy.hashtags,
+        /*
+         * The link goes in the `hashtags` column, and the column's name is the
+         * only thing wrong with that.
+         *
+         * `composeCaption` — the one function that builds the WhatsApp body —
+         * does exactly `caption + "\n\n" + hashtags`, and returns the caption
+         * alone when that field is empty. So the column's actual role has always
+         * been "the block sent under the caption"; hashtags were simply the first
+         * thing to occupy it. A link is the next.
+         *
+         * Storing it here is what lets this feature carry links without touching
+         * `ai-pipeline.ts` at all. The alternative — a `linkUrl` column — would
+         * need the composer taught to read it, and that file is not ours to
+         * change. Pipeline rows keep putting real hashtags in the same column and
+         * are unaffected.
+         */
+        hashtags: copy.link,
         // See the module note. The column is NOT NULL and this row has no brief.
         imagePrompt: '',
         gDriveFileId: uploaded.fileId,

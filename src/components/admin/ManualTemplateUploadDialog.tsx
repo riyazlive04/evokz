@@ -373,7 +373,7 @@ export function ManualTemplateUploadDialog({
       body.set('poster', file);
       body.set('day', String(entry.pair.day));
       body.set('caption', entry.pair.caption);
-      body.set('hashtags', entry.pair.hashtags);
+      body.set('link', entry.pair.link);
 
       const outcome = await upload.run(clientId, body);
       if (outcome.ok) {
@@ -502,8 +502,8 @@ export function ManualTemplateUploadDialog({
             <span className="font-mono">day-1</span> takes the soonest open delivery day. The
             sheet is CSV or TSV with three columns:{' '}
             <span className="font-mono">{MANUAL_COLUMNS.join(', ')}</span>. A caption is required
-            on every row; hashtags are optional. Nothing is scheduled unless both halves are
-            present.
+            on every row; the link is optional and is sent on its own line under the caption.
+            Nothing is scheduled unless both halves are present.
           </p>
         </div>
 
@@ -579,8 +579,16 @@ export function ManualTemplateUploadDialog({
                       </span>
                       <span className="line-clamp-1 flex-1 text-[10px] text-muted-foreground/80">
                         {entry.pair.caption}
-                        {entry.pair.hashtags ? ` ${entry.pair.hashtags}` : ''}
                       </span>
+                      {/* Shown on its own, and not truncated into the caption:
+                          a link is the half of the message an operator most
+                          needs to read character by character before it goes to
+                          a client. */}
+                      {entry.pair.link && (
+                        <span className="w-full truncate pl-1 font-mono text-[10px] text-brand-to">
+                          {entry.pair.link}
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>

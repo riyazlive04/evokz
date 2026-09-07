@@ -19,6 +19,7 @@
  */
 import {
   matchManualUploads,
+  normalizeLink,
   parseManualSheet,
   readDayFromFileName,
   type ManualSheetRow,
@@ -32,7 +33,7 @@ const t = (name: string, ok: boolean, extra = ''): void => {
   if (!ok) bad += 1;
 };
 
-const HEAD = 'day,caption,hashtags';
+const HEAD = 'day,caption,link';
 /*
  * Comma-free on purpose. These strings are pasted straight into CSV fixtures
  * below, so a comma inside one would split the cell and the failure would look
@@ -46,20 +47,20 @@ console.log('\n--- sheet parsing -------------------------------------------');
 // ===========================================================================
 
 {
-  const p = parseManualSheet(`${HEAD}\n1,${CAP(1)},#one #two\n2,${CAP(2)},`);
+  const p = parseManualSheet(`${HEAD}\n1,${CAP(1)},https://evokz.in/book\n2,${CAP(2)},`);
   t('a clean two-row sheet parses', p.error === null && p.rows.length === 2, p.error ?? '');
-  t('hashtags are normalised', p.rows[0]?.hashtags === '#one #two', p.rows[0]?.hashtags);
-  t('a blank hashtags cell is allowed', p.rows[1]?.hashtags === '', JSON.stringify(p.rows[1]));
+  t('a link is carried through', p.rows[0]?.link === 'https://evokz.in/book', p.rows[0]?.link);
+  t('a blank link cell is allowed', p.rows[1]?.link === '', JSON.stringify(p.rows[1]));
   t('delimiter is reported', p.delimiter === 'comma', String(p.delimiter));
 }
 
 {
-  const p = parseManualSheet(`day\tcaption\thashtags\n1\t${CAP(1)}\t#a`);
+  const p = parseManualSheet(`day\tcaption\tlink\n1\t${CAP(1)}\thttps://evokz.in`);
   t('a TSV is sniffed', p.delimiter === 'tab' && p.rows.length === 1, p.error ?? '');
 }
 
 {
-  const p = parseManualSheet(`${HEAD}\n1,"A caption, with a comma and ""quotes"" in it",#a`);
+  const p = parseManualSheet(`${HEAD}\n1,"A caption, with a comma and ""quotes"" in it",https://evokz.in/a`);
   t(
     'a quoted caption keeps its comma and quotes',
     p.rows[0]?.caption === 'A caption, with a comma and "quotes" in it',
@@ -70,16 +71,16 @@ console.log('\n--- sheet parsing -------------------------------------------');
 {
   const p = parseManualSheet('day,caption\nday-7,A caption written for day seven.');
   t('the day cell accepts the filename form', p.rows[0]?.day === 7, JSON.stringify(p.rows[0]));
-  t('hashtags may be absent entirely', p.rows[0]?.hashtags === '', JSON.stringify(p.rows[0]));
+  t('the link column may be absent entirely', p.rows[0]?.link === '', JSON.stringify(p.rows[0]));
 }
 
 {
-  const p = parseManualSheet('day,hashtags\n1,#a');
+  const p = parseManualSheet('day,link\n1,https://evokz.in');
   t('a sheet with no caption column is fatal', (p.error ?? '').includes('caption'), p.error ?? '');
 }
 
 {
-  const p = parseManualSheet(`${HEAD}\n1,,#a`);
+  const p = parseManualSheet(`${HEAD}\n1,,https://evokz.in/a`);
   t(
     'a blank caption is refused, not defaulted',
     p.rows.length === 0 && p.problems[0]?.issue.includes('Caption is required') === true,
@@ -88,7 +89,7 @@ console.log('\n--- sheet parsing -------------------------------------------');
 }
 
 {
-  const p = parseManualSheet(`${HEAD}\n,${CAP(1)},#a\nbanana,${CAP(2)},#b\n0,${CAP(3)},#c`);
+  const p = parseManualSheet(`${HEAD}\n,${CAP(1)},https://evokz.in/a\nbanana,${CAP(2)},https://evokz.in/b\n0,${CAP(3)},https://evokz.in/c`);
   t(
     'blank / non-numeric / zero day values are all refused',
     p.rows.length === 0 && p.problems.length === 3,
@@ -107,7 +108,7 @@ console.log('\n--- sheet parsing -------------------------------------------');
 }
 
 {
-  const p = parseManualSheet(`${HEAD}\n4,${CAP(4)},#a\n4,A different caption for day four.,#b`);
+  const p = parseManualSheet(`${HEAD}\n4,${CAP(4)},https://evokz.in/a\n4,A different caption for day four.,https://evokz.in/b`);
   t(
     'a repeated day keeps the first row and refuses the second',
     p.rows.length === 1 && p.rows[0]?.caption === CAP(4) && p.problems.length === 1,
@@ -121,7 +122,7 @@ console.log('\n--- sheet parsing -------------------------------------------');
 }
 
 {
-  const p = parseManualSheet(`day,caption,hashtags,image prompt\n1,${CAP(1)},#a,ignored`);
+  const p = parseManualSheet(`day,caption,link,image prompt\n1,${CAP(1)},https://evokz.in,ignored`);
   t(
     'an unknown column is carried as ignored rather than failing',
     p.rows.length === 1 && p.ignoredColumns.includes('image prompt'),
@@ -139,6 +140,89 @@ console.log('\n--- sheet parsing -------------------------------------------');
     'a file with no recognisable header is fatal',
     (parseManualSheet('alpha,beta\n1,2').error ?? '').includes('No header row recognised'),
   );
+}
+
+// ===========================================================================
+console.log('\n--- links ---------------------------------------------------');
+// ===========================================================================
+
+{
+  const ok: Array<[string, string]> = [
+    ['https://evokz.in/book', 'https://evokz.in/book'],
+    ['http://evokz.in/x', 'http://evokz.in/x'],
+    // A bare domain is what people type; it is given the web's scheme.
+    ['evokz.in/book', 'https://evokz.in/book'],
+    ['www.evokz.in', 'https://www.evokz.in/'],
+    ['  https://evokz.in/a?b=c  ', 'https://evokz.in/a?b=c'],
+    ['', ''],
+  ];
+  for (const [raw, expected] of ok) {
+    const result = normalizeLink(raw);
+    t(
+      `link "${raw.trim() || '(blank)'}" normalises to "${expected || '(blank)'}"`,
+      'url' in result && result.url === expected,
+      JSON.stringify(result),
+    );
+  }
+
+  const bad: Array<[string, string]> = [
+    ['javascript:alert(1)', 'javascript'],
+    ['mailto:a@b.com', 'mailto'],
+    ['tel:+919876543210', 'tel'],
+    ['ftp://files.example.com', 'ftp'],
+  ];
+  for (const [raw, scheme] of bad) {
+    const result = normalizeLink(raw);
+    t(
+      `"${raw}" is refused as a ${scheme}: link`,
+      'issue' in result && result.issue.includes(`${scheme}: link`),
+      JSON.stringify(result),
+    );
+  }
+
+  for (const raw of ['not a link at all', 'https://book', 'http://']) {
+    const result = normalizeLink(raw);
+    t(`"${raw}" is refused`, 'issue' in result, JSON.stringify(result));
+  }
+}
+
+{
+  const p = parseManualSheet(`${HEAD}\n1,${CAP(1)},javascript:alert(1)`);
+  t(
+    'a bad link fails its row rather than the sheet',
+    p.error === null && p.rows.length === 0 && p.problems.length === 1,
+    JSON.stringify(p.problems),
+  );
+  t(
+    'and the row problem quotes the cell back',
+    p.problems[0]?.issue.includes('javascript') === true,
+    p.problems[0]?.issue,
+  );
+}
+
+{
+  const p = parseManualSheet(`${HEAD}\n1,${CAP(1)},evokz.in/offer`);
+  t(
+    'a bare domain is accepted and shown normalised',
+    p.rows[0]?.link === 'https://evokz.in/offer',
+    p.rows[0]?.link,
+  );
+}
+
+{
+  // The retired contract: refused loudly, never silently read as "no link".
+  const p = parseManualSheet(`day,caption,hashtags\n1,${CAP(1)},#evokz`);
+  t(
+    'a sheet still headed "hashtags" is refused outright',
+    (p.error ?? '').includes('no longer used'),
+    p.error ?? '',
+  );
+  t(
+    'and the refusal says what to rename it to',
+    (p.error ?? '').includes('"link"'),
+    p.error ?? '',
+  );
+  t('and nothing is parsed from it', p.rows.length === 0);
 }
 
 // ===========================================================================
@@ -173,7 +257,7 @@ console.log('\n--- matching ------------------------------------------------');
 // ===========================================================================
 
 const rowsFor = (...days: number[]): ManualSheetRow[] =>
-  days.map((day) => ({ day, caption: CAP(day), hashtags: `#day${day}` }));
+  days.map((day) => ({ day, caption: CAP(day), link: `https://evokz.in/day-${day}` }));
 
 // Scenario 1 — clean full match.
 {
@@ -276,7 +360,7 @@ const START = new Date('2026-09-01T00:00:00+05:30');
 const END = new Date('2026-09-30T00:00:00+05:30');
 
 const pairsFor = (...days: number[]) =>
-  days.map((day) => ({ day, fileName: `day-${day}.png`, caption: CAP(day), hashtags: '' }));
+  days.map((day) => ({ day, fileName: `day-${day}.png`, caption: CAP(day), link: '' }));
 
 const baseWindow = {
   startDate: START,

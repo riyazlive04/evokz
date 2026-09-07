@@ -1928,14 +1928,14 @@ export async function uploadManualPoster(
       .max(3650)
       .parse(formData.get('day'));
     const caption = z.string().parse(formData.get('caption') ?? '');
-    const hashtags = z.string().parse(formData.get('hashtags') ?? '');
+    const link = z.string().parse(formData.get('link') ?? '');
 
     try {
       const stored = await storeManualPoster({
         clientId: id,
         day,
         caption,
-        hashtags,
+        link,
         fileName: file.name,
         mimeType: file.type,
         body: Buffer.from(await file.arrayBuffer()),

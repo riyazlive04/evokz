@@ -1,7 +1,5 @@
 import { z } from 'zod';
 
-import { normalizeHashtags } from '@/lib/calendar-parse';
-
 /**
  * The lightweight caption sheet for manually-uploaded posters, and the rule that
  * pairs one of its rows with one uploaded image.
@@ -12,7 +10,7 @@ import { normalizeHashtags } from '@/lib/calendar-parse';
  * optionally the typography to set. None of that applies here. A manual upload
  * is a poster somebody already finished in a design tool; the only thing still
  * missing is the words WhatsApp sends beside it. So the sheet carries exactly
- * three columns — `day`, `caption`, `hashtags` — and asking an operator to fill
+ * three columns — `day`, `caption`, `link` — and asking an operator to fill
  * a template name and an image brief for a file that will never be rendered
  * would be asking them to lie to the importer.
  *
@@ -42,7 +40,12 @@ import { normalizeHashtags } from '@/lib/calendar-parse';
 export const MANUAL_FIELD_LIMITS = {
   /** Matches `ContentCalendar.caption`, which is unbounded TEXT in Postgres. */
   caption: { min: 1, max: 2_000 },
-  hashtags: { max: 400 },
+  /**
+   * Generous for a URL, and a long way short of anything that would make a
+   * WhatsApp message unreadable. Tracking parameters are what push a link past
+   * the couple of hundred characters a plain one needs.
+   */
+  link: { max: 500 },
 } as const;
 
 /** The longest plan runs 365 days; the slack absorbs a few stray sheet rows. */
@@ -92,15 +95,33 @@ export const manualSheetRowSchema = z.object({
     .min(MANUAL_FIELD_LIMITS.caption.min, 'Caption is required')
     .max(MANUAL_FIELD_LIMITS.caption.max, 'Caption is too long'),
   /**
-   * Optional, and normalised through the importer's own rule so a manually
-   * uploaded day's tags read identically to an imported one's — bare words get
-   * their `#`, duplicates collapse, separators become single spaces.
+   * A link to send under the caption. Optional — a blank cell sends the caption
+   * alone, exactly as a blank hashtags cell used to.
+   *
+   * **Normalised inside the schema, not before it, and that placement is the
+   * point.** The first version validated in the browser parser and left the
+   * schema checking only length, which meant the server — where
+   * `storeManualPoster` parses the same schema against whatever the wire sent —
+   * accepted anything: a bare domain stayed bare, and `javascript:` was written
+   * to the database. The module claims this schema is re-validated server-side
+   * precisely so the browser cannot be trusted, and for this field that claim
+   * was false.
+   *
+   * Here, every caller gets the same answer and there is no path that skips it.
    */
-  hashtags: z
+  link: z
     .string()
     .trim()
-    .max(MANUAL_FIELD_LIMITS.hashtags.max, 'Hashtags are too long')
-    .default(''),
+    .max(MANUAL_FIELD_LIMITS.link.max, 'Link is too long')
+    .default('')
+    .transform((value, ctx) => {
+      const result = normalizeLink(value);
+      if ('issue' in result) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: result.issue });
+        return z.NEVER;
+      }
+      return result.url;
+    }),
 });
 
 export type ManualSheetRow = z.infer<typeof manualSheetRowSchema>;
@@ -109,13 +130,13 @@ export type ManualSheetRow = z.infer<typeof manualSheetRowSchema>;
 // Column recognition
 // ---------------------------------------------------------------------------
 
-type ManualColumn = 'day' | 'caption' | 'hashtags';
+type ManualColumn = 'day' | 'caption' | 'link';
 
 /** Canonical spelling of each column, in template order. */
 export const MANUAL_COLUMN_LABELS: Record<ManualColumn, string> = {
   day: 'day',
   caption: 'caption',
-  hashtags: 'hashtags',
+  link: 'link',
 };
 
 /** Without these a row cannot be paired with an image or sent. */
@@ -144,6 +165,30 @@ const MANUAL_HEADER_ALIASES: Record<string, ManualColumn> = {
   posttext: 'caption',
   message: 'caption',
 
+  link: 'link',
+  links: 'link',
+  url: 'link',
+  weblink: 'link',
+  linkurl: 'link',
+  website: 'link',
+  cta: 'link',
+  ctalink: 'link',
+};
+
+/**
+ * Header spellings that used to mean the third column and no longer do.
+ *
+ * The column carries a link now, and hashtags are not sent at all. A sheet
+ * written under the old contract therefore has to be refused rather than
+ * quietly read as having no link — sending a run of captions with their tails
+ * missing, and nothing anywhere saying so, is the exact failure this whole
+ * confirm screen exists to prevent.
+ *
+ * Recognised here rather than left out of the alias table, because "unknown
+ * column" is the wrong message: the operator did not mistype anything, the
+ * format changed underneath them, and the fix is one word in one cell.
+ */
+const RETIRED_COLUMNS: Record<string, string> = {
   hashtags: 'hashtags',
   hashtag: 'hashtags',
   tags: 'hashtags',
@@ -310,6 +355,25 @@ export function parseManualSheet(raw: string): ManualSheetParse {
     );
   }
 
+  /*
+   * A sheet written under the old contract stops here rather than importing.
+   *
+   * Its third column says `hashtags`, which nothing recognises any more, so
+   * every row would read as having no link and a batch of captions would go out
+   * with their tails silently missing. One named refusal costs a header rename;
+   * the alternative costs a campaign nobody inspects until a client mentions it.
+   */
+  const retired = header.fields.find(
+    (cell) => RETIRED_COLUMNS[normalizeHeader(cell)] !== undefined,
+  );
+  if (retired) {
+    return fatal(
+      `The "${retired.trim()}" column is no longer used — posters now carry a link instead of ` +
+        'hashtags. Rename that column to "link" and put a URL in it, or delete the column to ' +
+        'send captions on their own.',
+    );
+  }
+
   const ignoredColumns = header.fields.filter(
     (cell, index) => columns[index] === null && cell.trim().length > 0,
   );
@@ -368,10 +432,17 @@ export function parseManualSheet(raw: string): ManualSheetParse {
       continue;
     }
 
+    /*
+     * One parse, and every complaint the row has comes back from it.
+     *
+     * A row with no caption and a mistyped link has two things wrong, and Zod
+     * reports both — so the operator fixes the row once instead of coming back
+     * for a second round over the same line.
+     */
     const parsed = manualSheetRowSchema.safeParse({
       day,
       caption: read('caption'),
-      hashtags: read('hashtags'),
+      link: read('link'),
     });
 
     if (!parsed.success) {
@@ -385,7 +456,8 @@ export function parseManualSheet(raw: string): ManualSheetParse {
     }
 
     seen.set(day, record.line);
-    rows.push({ ...parsed.data, hashtags: normalizeHashtags(parsed.data.hashtags) });
+    // Already normalised above; the schema only bounded its length.
+    rows.push(parsed.data);
   }
 
   return {
@@ -416,6 +488,55 @@ function readDayCell(raw: string): number | null {
   }
 
   return readDayFromFileName(trimmed);
+}
+
+/**
+ * Reads a link cell into an absolute http(s) URL, or reports why it cannot.
+ *
+ * Returns `''` for an empty cell — a row with no link is normal and sends the
+ * caption alone. Returns a string for a value that is not usable, which the
+ * caller turns into a row problem; the operator sees the cell they typed quoted
+ * back rather than a silently dropped link.
+ *
+ * **A bare `evokz.in/book` is accepted and given `https://`.** That is the form
+ * people type, and refusing it would fail a row over a prefix everybody omits.
+ * The normalised result is what the confirm screen displays, so the change is
+ * shown rather than made behind the operator's back.
+ *
+ * Only http and https. Anything else — `mailto:`, `tel:`, `javascript:`, a
+ * Windows path that wandered into the column — is refused. WhatsApp only
+ * linkifies web URLs, so the others would arrive as unclickable text pretending
+ * to be a link, which is worse than an empty cell.
+ */
+export function normalizeLink(raw: string): { url: string } | { issue: string } {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { url: '' };
+
+  // A scheme we will not send, named rather than lumped in with "not a link".
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(trimmed)?.[1]?.toLowerCase();
+  if (scheme && scheme !== 'http' && scheme !== 'https') {
+    return {
+      issue: `"${trimmed}" is a ${scheme}: link. Only http and https links can be sent.`,
+    };
+  }
+
+  // No scheme at all: assume the web, which is what a bare domain means.
+  const candidate = scheme ? trimmed : `https://${trimmed}`;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return { issue: `"${trimmed}" is not a usable link. Write it as https://example.com/page.` };
+  }
+
+  // `new URL` accepts a hostname with no dot ("https://book"), which resolves
+  // nowhere. A link that cannot be opened is not worth sending.
+  if (!parsed.hostname.includes('.') || parsed.hostname.endsWith('.')) {
+    return { issue: `"${trimmed}" has no valid domain. Write it as https://example.com/page.` };
+  }
+
+  return { url: parsed.toString() };
 }
 
 function hasContent(record: RawRecord): boolean {
@@ -520,7 +641,8 @@ export interface ManualPair {
   day: number;
   fileName: string;
   caption: string;
-  hashtags: string;
+  /** Absolute http(s) URL sent under the caption, or `''` for none. */
+  link: string;
 }
 
 /** An uploaded image that will not be scheduled, and why. */
@@ -619,7 +741,7 @@ export function matchManualUploads(
       day,
       fileName,
       caption: row.caption,
-      hashtags: row.hashtags,
+      link: row.link,
     });
   }
 
