@@ -1,0 +1,23 @@
+﻿name: evokz-ai-dev
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: evokz_ai_dev_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evokz_dev
+      POSTGRES_PASSWORD: evokz_dev_password
+      POSTGRES_DB: evokz_ai_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - evokz_ai_dev_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evokz_dev -d evokz_ai_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  evokz_ai_dev_pgdata:

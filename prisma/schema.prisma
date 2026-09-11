@@ -559,3 +559,21 @@ model AppSetting {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+/// History of poster creations, variations, and edits created in the AI Poster Studio.
+model PosterStudioGeneration {
+  id                 String   @id @default(uuid())
+  prompt             String   @db.Text
+  mode               String   @default("generate") // generate | edit | variation
+  aspectRatio        String   @default("1024x1792") // 1024x1024 | 1024x1792 | 1792x1024
+  referenceUrl       String?  @db.Text
+  imageUrl           String   @db.Text
+  revisedPrompt      String?  @db.Text
+  parentGenerationId String?
+  clientId           String?
+  createdAt          DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([clientId])
+}
+

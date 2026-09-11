@@ -8,6 +8,7 @@ import {
   Gauge,
   Layers,
   MonitorPlay,
+  Sparkles,
   Users,
   type LucideIcon,
 } from 'lucide-react';
@@ -31,6 +32,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { href: '/admin/dashboard', label: 'Dashboard', icon: Gauge },
+  { href: '/admin/poster-studio', label: 'Poster Studio', icon: Sparkles, nested: true },
   { href: '/admin/plans', label: 'Plan', icon: Layers },
   { href: '/admin/verticals', label: 'Verticals', icon: Database },
   { href: '/admin/clients', label: 'Clients', icon: Users, nested: true },
