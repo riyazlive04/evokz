@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
-import { optionalEnv, requireEnv } from '@/lib/env';
-import { recordOpenAiUsage } from '@/lib/usage';
+import { type Uploadable } from 'openai/uploads';
+import { optionalEnv } from '@/lib/env';
 import { prisma } from '@/lib/prisma';
 import { UsageKeySource, UsageProvider } from '@prisma/client';
 
@@ -9,9 +9,8 @@ export type PosterStudioAspectRatio = '1024x1024' | '1024x1792' | '1792x1024';
 export interface ImageGenerationOptions {
   prompt: string;
   size?: PosterStudioAspectRatio;
-  quality?: 'standard' | 'hd';
-  model?: 'dall-e-3' | 'dall-e-2';
-  style?: 'vivid' | 'natural';
+  quality?: 'standard' | 'low' | 'medium' | 'high' | 'auto';
+  model?: string;
   clientId?: string | null;
 }
 
@@ -20,48 +19,44 @@ export interface ImageEditOptions {
   imageBuffer?: Buffer;
   imageDataUri?: string;
   size?: PosterStudioAspectRatio;
+  quality?: 'standard' | 'low' | 'medium' | 'high' | 'auto';
+  model?: string;
   clientId?: string | null;
 }
 
 export interface StudioImageResult {
-  imageUrl: string; // Base64 Data URI or HTTP URL
+  imageUrl: string;
   revisedPrompt?: string;
   model: string;
   size: PosterStudioAspectRatio;
 }
+
+const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
 
 let cachedClient: OpenAI | null = null;
 
 function getOpenAIClient(): OpenAI {
   if (cachedClient) return cachedClient;
   const apiKey = optionalEnv('OPENAI_API_KEY', '');
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY is not configured. Please add OPENAI_API_KEY to your environment variables to enable live AI image generation.');
+  if (!apiKey || apiKey.trim() === '') {
+    throw new Error(
+      'OPENAI_API_KEY is missing. Please configure OPENAI_API_KEY in your environment variables to enable live AI poster generation.',
+    );
   }
   cachedClient = new OpenAI({ apiKey });
   return cachedClient;
 }
 
 /**
- * Price estimation in USD Micros for DALL-E models (standard/hd, sizes).
+ * Record OpenAI image usage into the UsageEvent ledger.
+ * Does not invent fake pricing; records actual tokens/images spent.
  */
-function estimateImageCostMicros(model: string, size: PosterStudioAspectRatio, quality: 'standard' | 'hd' = 'standard'): number {
-  if (model === 'dall-e-3') {
-    if (quality === 'hd') {
-      return size === '1024x1024' ? 80_000 : 120_000; // $0.080 - $0.120
-    }
-    return size === '1024x1024' ? 40_000 : 80_000; // $0.040 - $0.080
-  }
-  // DALL-E 2 standard 1024x1024
-  return 20_000; // $0.020
-}
-
-/**
- * Record OpenAI DALL-E image generation usage into UsageEvent ledger.
- */
-async function recordStudioImageUsage(model: string, size: PosterStudioAspectRatio, quality: 'standard' | 'hd', clientId?: string | null): Promise<void> {
+async function recordStudioImageUsage(
+  model: string,
+  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number },
+  clientId?: string | null,
+): Promise<void> {
   try {
-    const costUsdMicros = estimateImageCostMicros(model, size, quality);
     await prisma.usageEvent.create({
       data: {
         clientId: clientId ?? null,
@@ -69,23 +64,54 @@ async function recordStudioImageUsage(model: string, size: PosterStudioAspectRat
         operation: 'image',
         model,
         imageCount: 1,
-        costUsdMicros,
+        inputTokens: usage?.input_tokens ?? 0,
+        outputTokens: usage?.output_tokens ?? 0,
+        costUsdMicros: 0, // Provider billing reconciliation comes from OpenAI account dashboard
         keySource: UsageKeySource.PLATFORM,
       },
     });
   } catch (err) {
-    console.error('[studio:usage] Failed to record image spend ledger:', err);
+    console.error('[studio:usage] Failed to record image spend ledger entry:', err);
   }
 }
 
 /**
- * Generate a new poster image via OpenAI DALL-E API.
+ * Helper to convert a Data URI or Buffer to an OpenAI Uploadable File object.
+ */
+async function prepareUploadableImage(imageDataUri?: string, imageBuffer?: Buffer): Promise<Uploadable> {
+  if (imageBuffer) {
+    return await OpenAI.toFile(imageBuffer, 'reference.png', { type: 'image/png' });
+  }
+
+  if (imageDataUri) {
+    const matches = imageDataUri.match(/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/);
+    if (!matches || !matches[2]) {
+      throw new Error('Invalid image reference format. Expected a valid image Data URI.');
+    }
+    const mimeType = matches[1] || 'image/png';
+    const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+    if (!allowedMimeTypes.includes(mimeType.toLowerCase())) {
+      throw new Error(`Unsupported image format: ${mimeType}. Please upload a PNG, JPEG, or WebP image.`);
+    }
+
+    const buffer = Buffer.from(matches[2], 'base64');
+    if (buffer.length > 50 * 1024 * 1024) {
+      throw new Error('Reference image file size exceeds the 50 MB limit.');
+    }
+
+    const ext = mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
+    return await OpenAI.toFile(buffer, `reference.${ext}`, { type: mimeType });
+  }
+
+  throw new Error('No reference image content provided.');
+}
+
+/**
+ * Generate a new poster image via OpenAI GPT-Image-2 API (Text-to-Image).
  */
 export async function generateStudioImage(options: ImageGenerationOptions): Promise<StudioImageResult> {
-  const model = options.model ?? 'dall-e-3';
+  const model = options.model ?? DEFAULT_IMAGE_MODEL;
   const size = options.size ?? '1024x1792';
-  const quality = options.quality ?? 'standard';
-  const style = options.style ?? 'vivid';
 
   try {
     const client = getOpenAIClient();
@@ -95,22 +121,22 @@ export async function generateStudioImage(options: ImageGenerationOptions): Prom
       prompt: options.prompt,
       n: 1,
       size,
-      quality: model === 'dall-e-3' ? quality : undefined,
-      style: model === 'dall-e-3' ? style : undefined,
-      response_format: 'b64_json',
     });
 
     const imageItem = response.data?.[0];
-    if (!imageItem || (!imageItem.b64_json && !imageItem.url)) {
-      throw new Error('OpenAI Image API returned no image data.');
+    if (!imageItem) {
+      throw new Error('OpenAI Image API returned an empty response.');
     }
 
     const imageUrl = imageItem.b64_json
       ? `data:image/png;base64,${imageItem.b64_json}`
-      : imageItem.url!;
+      : imageItem.url;
 
-    // Log to UsageEvent
-    await recordStudioImageUsage(model, size, quality, options.clientId);
+    if (!imageUrl) {
+      throw new Error('OpenAI Image API returned no image URL or Base64 payload.');
+    }
+
+    await recordStudioImageUsage(model, response.usage, options.clientId);
 
     return {
       imageUrl,
@@ -120,67 +146,89 @@ export async function generateStudioImage(options: ImageGenerationOptions): Prom
     };
   } catch (error: any) {
     console.error('[studio:openai-images] Image generation error:', error);
-
-    // Format operator-safe error messages
-    if (error?.status === 401 || error?.message?.includes('OPENAI_API_KEY')) {
-      throw new Error('OPENAI_API_KEY was missing or rejected. Please verify your API key in environment variables.');
-    }
-    if (error?.status === 429) {
-      throw new Error('OpenAI rate limit or quota exceeded. Please check your OpenAI account billing or try again later.');
-    }
-    if (error?.code === 'content_policy_violation' || error?.message?.includes('safety system')) {
-      throw new Error('The prompt violated OpenAI safety policies. Please adjust your request details.');
-    }
-    throw new Error(`Poster generation failed: ${error?.message || 'Unknown provider error'}`);
+    throw formatOperatorError(error);
   }
 }
 
 /**
- * Edit or apply natural language variation instructions to an image.
+ * Edit or generate variations of an existing poster/image using OpenAI GPT-Image-2 API (Image-to-Image / Edit).
  */
 export async function editStudioImage(options: ImageEditOptions): Promise<StudioImageResult> {
+  const model = options.model ?? DEFAULT_IMAGE_MODEL;
   const size = options.size ?? '1024x1792';
 
-  try {
-    const client = getOpenAIClient();
-
-    // If imageBuffer is supplied and size is square (1024x1024), DALL-E 2 edit API can be called
-    if (options.imageBuffer && size === '1024x1024') {
-      try {
-        // Prepare image file for DALL-E 2 API
-        const file = await OpenAI.toFile(options.imageBuffer, 'reference.png', { type: 'image/png' });
-        const response = await client.images.edit({
-          image: file,
-          prompt: options.prompt,
-          n: 1,
-          size: '1024x1024',
-          response_format: 'b64_json',
-        });
-
-        const item = response.data?.[0];
-        if (item?.b64_json) {
-          await recordStudioImageUsage('dall-e-2', '1024x1024', 'standard', options.clientId);
-          return {
-            imageUrl: `data:image/png;base64,${item.b64_json}`,
-            revisedPrompt: options.prompt,
-            model: 'dall-e-2-edit',
-            size: '1024x1024',
-          };
-        }
-      } catch (editErr) {
-        console.warn('[studio:openai-images] DALL-E 2 direct edit fallback to DALL-E 3 guided generation:', editErr);
-      }
-    }
-
-    // High-fidelity fallback/default edit pipeline using DALL-E 3 with full descriptive prompt context
+  // If no reference image is supplied, fall back cleanly to text-to-image generation
+  if (!options.imageDataUri && !options.imageBuffer) {
     return await generateStudioImage({
       prompt: options.prompt,
       size,
-      model: 'dall-e-3',
+      model,
       clientId: options.clientId,
     });
+  }
+
+  try {
+    const client = getOpenAIClient();
+    const uploadableFile = await prepareUploadableImage(options.imageDataUri, options.imageBuffer);
+
+    const response = await client.images.edit({
+      model,
+      image: uploadableFile,
+      prompt: options.prompt,
+      n: 1,
+      size,
+    });
+
+    const imageItem = response.data?.[0];
+    if (!imageItem) {
+      throw new Error('OpenAI Image Edit API returned an empty response.');
+    }
+
+    const imageUrl = imageItem.b64_json
+      ? `data:image/png;base64,${imageItem.b64_json}`
+      : imageItem.url;
+
+    if (!imageUrl) {
+      throw new Error('OpenAI Image Edit API returned no image payload.');
+    }
+
+    await recordStudioImageUsage(model, response.usage, options.clientId);
+
+    return {
+      imageUrl,
+      revisedPrompt: imageItem.revised_prompt ?? options.prompt,
+      model,
+      size,
+    };
   } catch (error: any) {
     console.error('[studio:openai-images] Image edit error:', error);
-    throw new Error(`Image edit failed: ${error?.message || 'Unknown error'}`);
+    throw formatOperatorError(error);
   }
+}
+
+/**
+ * Format provider and network errors into clean, operator-safe messages.
+ */
+function formatOperatorError(error: any): Error {
+  if (error instanceof Error && error.message.includes('OPENAI_API_KEY is missing')) {
+    return error;
+  }
+
+  const status = error?.status ?? error?.statusCode;
+  const message = error?.message || 'Unknown provider error';
+
+  if (status === 401 || message.includes('API key') || message.includes('unauthorized')) {
+    return new Error('OPENAI_API_KEY was rejected. Please verify your OpenAI API key in environment variables.');
+  }
+  if (status === 429 || message.includes('rate limit') || message.includes('quota')) {
+    return new Error('OpenAI rate limit or billing quota exceeded. Please verify your OpenAI account plan and billing.');
+  }
+  if (error?.code === 'content_policy_violation' || message.includes('safety') || message.includes('policy')) {
+    return new Error('The poster request was declined by OpenAI safety policies. Please refine your prompt description.');
+  }
+  if (status >= 500) {
+    return new Error('OpenAI API service is temporarily unavailable. Please try again in a few moments.');
+  }
+
+  return new Error(`Poster generation error: ${message}`);
 }
