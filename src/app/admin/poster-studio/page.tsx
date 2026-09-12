@@ -1,6 +1,9 @@
 import React from 'react';
-import { prisma } from '@/lib/prisma';
+import { Sparkles } from 'lucide-react';
+
+import { PageHeader } from '@/components/admin/PageHeader';
 import { PosterStudioWorkspace } from '@/components/studio/poster-studio-workspace';
+import { prisma } from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,8 +27,14 @@ export default async function PosterStudioPage() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950">
+    <div className="space-y-6">
+      <PageHeader
+        icon={Sparkles}
+        eyebrow="AI Studio"
+        title="AI Poster Studio"
+        description="Design studio-grade marketing posters, reference-guided layouts, and natural language edits."
+      />
       <PosterStudioWorkspace initialClients={clients} initialHistory={history} />
-    </main>
+    </div>
   );
 }
