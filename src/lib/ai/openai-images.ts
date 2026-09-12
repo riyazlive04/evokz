@@ -95,8 +95,8 @@ async function prepareUploadableImage(imageDataUri?: string, imageBuffer?: Buffe
     }
 
     const buffer = Buffer.from(matches[2], 'base64');
-    if (buffer.length > 50 * 1024 * 1024) {
-      throw new Error('Reference image file size exceeds the 50 MB limit.');
+    if (buffer.length > 10 * 1024 * 1024) {
+      throw new Error('Reference image file size exceeds the 10 MB limit.');
     }
 
     const ext = mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';

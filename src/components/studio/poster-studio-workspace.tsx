@@ -15,8 +15,8 @@ import {
   CheckCircle2,
   X,
   Building2,
-  Maximize2,
-  FileCode,
+  Copy,
+  Info,
 } from 'lucide-react';
 
 import {
@@ -89,8 +89,9 @@ export function PosterStudioWorkspace({
       return;
     }
 
-    if (file.size > 8 * 1024 * 1024) {
-      setError('Image file is too large. Maximum size is 8 MB.');
+    // Production-safe 10 MB limit (consistent with backend validation)
+    if (file.size > 10 * 1024 * 1024) {
+      setError('Image file is too large. Maximum size is 10 MB.');
       return;
     }
 
@@ -118,13 +119,26 @@ export function PosterStudioWorkspace({
       return;
     }
 
+    if (mode === 'edit' && !editInstruction.trim()) {
+      setError('Please enter natural-language edit instructions for what to modify.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setSuccess(null);
+
+    const isEdit = mode === 'edit';
+    const isVar = mode === 'variation';
+
     setStatusMessage(
-      referenceDataUri
-        ? 'Analyzing reference layout & generating AI poster...'
-        : 'Connecting to OpenAI API to render poster graphics...',
+      isEdit
+        ? 'Applying edit instructions to poster...'
+        : isVar
+          ? 'Generating variation from parent poster...'
+          : referenceDataUri
+            ? 'Analyzing reference layout & generating AI poster...'
+            : 'Connecting to OpenAI API to render poster graphics...',
     );
 
     try {
@@ -133,7 +147,7 @@ export function PosterStudioWorkspace({
         mode,
         aspectRatio,
         referenceDataUri: referenceDataUri ?? undefined,
-        editInstruction: editInstruction.trim() || undefined,
+        editInstruction: mode === 'edit' ? editInstruction.trim() : undefined,
         parentGenerationId: currentGeneration?.id,
         clientId: selectedClientId || undefined,
         hybridOverlay,
@@ -148,7 +162,13 @@ export function PosterStudioWorkspace({
         if (res.data.analysis) {
           setCurrentAnalysis(res.data.analysis);
         }
-        setSuccess('Poster generated successfully!');
+        setSuccess(
+          isEdit
+            ? 'Poster edit applied successfully!'
+            : isVar
+              ? 'Poster variation generated successfully!'
+              : 'Poster generated successfully!',
+        );
       }
     } catch (err: any) {
       setError(err?.message || 'An unexpected error occurred during poster generation.');
@@ -168,12 +188,20 @@ export function PosterStudioWorkspace({
     document.body.removeChild(link);
   };
 
-  // Reuse as Reference
-  const handleUseAsReference = (item: StudioHistoryItem) => {
+  // Set Item as Edit Reference
+  const handleUseAsEditReference = (item: StudioHistoryItem) => {
     setReferenceDataUri(item.imageUrl);
     setReferenceFileName(`Generation ${item.id.slice(0, 6)}`);
     setMode('edit');
-    setSuccess('Poster set as reference! Enter your edit instruction below.');
+    setSuccess('Poster attached for editing! Enter your edit instructions below.');
+  };
+
+  // Set Item as Variation Parent
+  const handleUseAsVariationParent = (item: StudioHistoryItem) => {
+    setReferenceDataUri(item.imageUrl);
+    setReferenceFileName(`Generation ${item.id.slice(0, 6)}`);
+    setMode('variation');
+    setSuccess('Poster set as variation parent!');
   };
 
   // Delete item
@@ -184,6 +212,33 @@ export function PosterStudioWorkspace({
       const remaining = history.filter((h) => h.id !== id);
       setCurrentGeneration(remaining[0] ?? null);
     }
+  };
+
+  // Button text by mode
+  const getButtonText = () => {
+    if (mode === 'edit') return 'Apply Edit Instruction';
+    if (mode === 'variation') return 'Generate Variation';
+    return 'Generate AI Poster';
+  };
+
+  // Empty state title and subtitle by mode
+  const getEmptyStateContent = () => {
+    if (mode === 'edit') {
+      return {
+        title: 'No Image Selected for Edit',
+        subtitle: 'Select or upload a poster, then describe the changes you want.',
+      };
+    }
+    if (mode === 'variation') {
+      return {
+        title: 'No Poster Selected for Variation',
+        subtitle: 'Select a generated poster and create a new variation.',
+      };
+    }
+    return {
+      title: 'No Poster Generated Yet',
+      subtitle: 'Describe your poster and generate your first AI design.',
+    };
   };
 
   return (
@@ -293,6 +348,16 @@ export function PosterStudioWorkspace({
             </select>
           </div>
 
+          {/* Variation Mode Helpful Guidance Box */}
+          {mode === 'variation' && !referenceDataUri && (
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground flex items-start gap-2 animate-in fade-in">
+              <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+              <p className="leading-snug">
+                Variation mode creates a new design variant based on an existing poster. Select a poster from History or upload a reference image.
+              </p>
+            </div>
+          )}
+
           {/* Poster Description Input */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
@@ -304,18 +369,25 @@ export function PosterStudioWorkspace({
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="e.g. Luxury 3-BHK apartment launch event in South Mumbai, warm sunset ambient lighting, modern architectural photography, elegant gold accents..."
+              placeholder={
+                mode === 'variation'
+                  ? 'e.g. Create a variant with warmer evening lighting and a different camera angle'
+                  : 'e.g. Luxury 3-BHK apartment launch event in South Mumbai, warm sunset ambient lighting, modern architectural photography, elegant gold accents...'
+              }
               rows={4}
               className="w-full bg-background border border-input rounded-lg p-3 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring resize-none leading-relaxed"
             />
           </div>
 
-          {/* Edit Instruction (when in Edit or Variation mode) */}
-          {(mode === 'edit' || mode === 'variation') && (
+          {/* Conditional Edit Instruction (ONLY when Mode = Edit) */}
+          {mode === 'edit' && (
             <div className="space-y-1.5 animate-in fade-in">
-              <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                <Wand2 className="w-3.5 h-3.5 text-amber-500" /> Natural-Language Edit Instructions
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
+                  <Wand2 className="w-3.5 h-3.5 text-amber-500" /> Natural-Language Edit Instructions
+                </label>
+                <span className="text-[10px] text-muted-foreground">Required</span>
+              </div>
               <input
                 type="text"
                 value={editInstruction}
@@ -330,17 +402,22 @@ export function PosterStudioWorkspace({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                <ImageIcon className="w-3.5 h-3.5 text-brand-to" /> Reference Poster / Style Guide
+                <ImageIcon className="w-3.5 h-3.5 text-brand-to" />
+                {mode === 'edit' ? 'Target Image to Edit' : mode === 'variation' ? 'Parent Image for Variation' : 'Reference Poster / Style Guide'}
               </label>
-              <span className="text-[10px] text-muted-foreground">Optional</span>
+              <span className="text-[10px] text-muted-foreground">
+                {mode === 'edit' || mode === 'variation' ? 'Recommended' : 'Optional'}
+              </span>
             </div>
 
             {referenceDataUri ? (
               <div className="relative border border-border bg-muted/40 rounded-lg p-2 flex items-center gap-3">
                 <img src={referenceDataUri} alt="Reference" className="w-12 h-16 object-cover rounded border border-border shadow-sm" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-foreground truncate">{referenceFileName || 'Reference Image'}</p>
-                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">Attached for image-to-image guidance</p>
+                  <p className="text-xs font-medium text-foreground truncate">{referenceFileName || 'Attached Poster'}</p>
+                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                    {mode === 'edit' ? 'Target image attached for editing' : mode === 'variation' ? 'Parent poster attached for variation' : 'Attached for reference guidance'}
+                  </p>
                 </div>
                 <button
                   type="button"
@@ -356,8 +433,10 @@ export function PosterStudioWorkspace({
                 className="border border-dashed border-input hover:border-primary/50 bg-background rounded-lg p-4 text-center cursor-pointer transition-colors"
               >
                 <Upload className="w-5 h-5 text-muted-foreground mx-auto mb-1" />
-                <p className="text-xs font-medium text-foreground">Upload Reference Poster</p>
-                <p className="text-[10px] text-muted-foreground">PNG, JPG or WebP up to 8MB</p>
+                <p className="text-xs font-medium text-foreground">
+                  {mode === 'edit' ? 'Upload Target Image to Edit' : mode === 'variation' ? 'Upload Parent Poster' : 'Upload Reference Poster'}
+                </p>
+                <p className="text-[10px] text-muted-foreground">PNG, JPG or WebP up to 10 MB</p>
                 <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
               </div>
             )}
@@ -406,7 +485,7 @@ export function PosterStudioWorkspace({
             />
           </div>
 
-          {/* Generate Button */}
+          {/* Context-Aware Primary Action Button */}
           <button
             type="button"
             disabled={loading}
@@ -416,14 +495,12 @@ export function PosterStudioWorkspace({
             {loading ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                <span>Generating Poster...</span>
+                <span>Processing Request...</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4 text-amber-200" />
-                <span>
-                  {mode === 'edit' ? 'Apply Edit Instruction' : mode === 'variation' ? 'Generate Variation' : 'Generate AI Poster'}
-                </span>
+                <span>{getButtonText()}</span>
               </>
             )}
           </button>
@@ -484,14 +561,15 @@ export function PosterStudioWorkspace({
               </div>
             </div>
           ) : (
+            /* Mode-aware empty state */
             <div className="flex flex-col items-center justify-center gap-3 text-center p-8 max-w-sm">
               <div className="w-14 h-14 rounded-2xl bg-muted border border-border flex items-center justify-center text-muted-foreground">
                 <ImageIcon className="w-7 h-7" />
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-foreground">No Poster Generated Yet</h3>
+                <h3 className="text-sm font-semibold text-foreground">{getEmptyStateContent().title}</h3>
                 <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                  Enter a concept prompt on the left panel to render high-fidelity marketing posters using AI.
+                  {getEmptyStateContent().subtitle}
                 </p>
               </div>
             </div>
@@ -531,12 +609,12 @@ export function PosterStudioWorkspace({
                     </div>
                   </div>
 
-                  <div className="mt-2.5 pt-2 border-t border-border flex items-center justify-between text-[11px]">
+                  <div className="mt-2.5 pt-2 border-t border-border flex items-center justify-between text-[11px] gap-1">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleUseAsReference(item);
+                        handleUseAsEditReference(item);
                       }}
                       className="text-muted-foreground hover:text-primary flex items-center gap-1 font-medium"
                     >
@@ -546,11 +624,21 @@ export function PosterStudioWorkspace({
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
+                        handleUseAsVariationParent(item);
+                      }}
+                      className="text-muted-foreground hover:text-brand-to flex items-center gap-1 font-medium"
+                    >
+                      <Copy className="w-3 h-3" /> Variant
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
                         handleDownload(item.imageUrl, `poster-${item.id.slice(0, 6)}.png`);
                       }}
-                      className="text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 flex items-center gap-1 font-medium"
+                      className="text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 p-0.5"
                     >
-                      <Download className="w-3 h-3" /> Save
+                      <Download className="w-3 h-3" />
                     </button>
                     <button
                       type="button"
