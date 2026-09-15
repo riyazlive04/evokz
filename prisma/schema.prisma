@@ -672,6 +672,11 @@ model ContentCalendar {
   /// Last poster generation attempt for this slot. Null on legacy rows, whose
   /// generation is described by `deliveryStatus` and `generationQueuedAt`.
   generationStatus      PosterGenerationStatus?
+  /// When the current or last campaign poster generation attempt started (Phase
+  /// 4). Identifies the attempt that holds the GENERATING claim, so a finished
+  /// attempt cannot overwrite a newer one, and lets an attempt interrupted by a
+  /// crash be recognised as stale and retried. Null on legacy rows.
+  posterGenerationStartedAt DateTime?
   /// Allocator for `PosterVersion.versionNumber`: incremented atomically in the
   /// transaction that inserts a version, so numbers are never reused.
   lastPosterVersion     Int                     @default(0)

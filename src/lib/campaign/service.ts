@@ -80,6 +80,18 @@ function inTransaction<T>(
   return '$transaction' in db ? db.$transaction(work) : work(db);
 }
 
+/**
+ * Like `inTransaction`, with a longer timeout for multi-row writes (Phase 4
+ * poster generation records a studio row, a version and the day's status
+ * together). Runs directly inside the caller's transaction.
+ */
+export function runInCampaignTransaction<T>(
+  db: CampaignDb,
+  work: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  return '$transaction' in db ? db.$transaction(work, { timeout: 60_000, maxWait: 10_000 }) : work(db);
+}
+
 function parseInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, input: unknown): T {
   const parsed = schema.safeParse(input);
   if (!parsed.success) {
@@ -588,10 +600,22 @@ const addVersionSchema = z
     /** Default true. Subject to `shouldAutoActivate`. */
     activate: z.boolean().optional(),
   })
-  .refine((value) => (value.source === 'POSTER_STUDIO') === Boolean(value.studioGenerationId), {
-    message: 'studioGenerationId is required for POSTER_STUDIO versions and only for them',
-    path: ['studioGenerationId'],
-  });
+  // POSTER_STUDIO always has its studio row; a manual upload never does. A
+  // PIPELINE version may: rolling campaign generation (Phase 4) runs the Poster
+  // Studio pipeline, whose row holds the raw artwork, the final poster and the
+  // prompts behind the version.
+  .refine(
+    (value) =>
+      value.source === 'POSTER_STUDIO'
+        ? Boolean(value.studioGenerationId)
+        : value.source === 'MANUAL_UPLOAD'
+          ? !value.studioGenerationId
+          : true,
+    {
+      message: 'studioGenerationId is required for POSTER_STUDIO versions and not allowed for MANUAL_UPLOAD',
+      path: ['studioGenerationId'],
+    },
+  );
 
 export type AddPosterVersionInput = z.input<typeof addVersionSchema>;
 

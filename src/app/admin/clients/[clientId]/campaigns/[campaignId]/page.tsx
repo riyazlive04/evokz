@@ -1,11 +1,12 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { AlertTriangle, ArrowLeft, CalendarRange, CheckCircle2, CircleDashed, ImageOff, LayoutTemplate, PencilLine } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CalendarRange, CheckCircle2, CircleDashed, ImageOff, Images, LayoutTemplate, PencilLine } from 'lucide-react';
 
 import { PageHeader } from '@/components/admin/PageHeader';
 import { StatTile } from '@/components/admin/StatTile';
 import { CampaignCalendar, type CampaignDayView } from '@/components/campaign/CampaignCalendar';
+import { CampaignPosterGeneration, type PosterDayView } from '@/components/campaign/CampaignPosterGeneration';
 import {
   CampaignTemplateMapping,
   type MappingDayView,
@@ -16,8 +17,9 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { resolveContentStrategy, SUGGESTED_TEMPLATE_TYPES } from '@/lib/campaign/content-strategy';
 import { campaignAllowsChanges, isVersionCurrent } from '@/lib/campaign/model';
+import { POSTER_STATE_LABELS } from '@/lib/campaign/poster-generation';
+import { eligibilityFor, loadPosterOverview } from '@/lib/campaign/poster-generation-service';
 import { aspectFit, describeAspect } from '@/lib/campaign/template-mapping';
-import { loadCampaignMappingOverview } from '@/lib/campaign/template-mapping-service';
 import { prisma } from '@/lib/prisma';
 import { describeDeliveryDays, formatDisplayDate, getAppTimeZone } from '@/lib/time';
 
@@ -26,11 +28,12 @@ export const dynamic = 'force-dynamic';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Campaign calendar (Phase 2 content, Phase 3 template mapping).
+ * Campaign calendar (Phase 2 content, Phase 3 template mapping, Phase 4 posters).
  *
- * Every day of the campaign with its content state and its template. Content
- * work happens in `CampaignCalendar`, mapping in `CampaignTemplateMapping`;
- * nothing on this page renders a poster or sends a message.
+ * Every day of the campaign with its content state and its template, and the
+ * posters of the rolling window. Content work happens in `CampaignCalendar`,
+ * mapping in `CampaignTemplateMapping`, posters in `CampaignPosterGeneration`.
+ * Nothing on this page sends a message.
  */
 export default async function CampaignCalendarPage({
   params,
@@ -83,8 +86,49 @@ export default async function CampaignCalendarPage({
   const { strategy, source } = resolveContentStrategy(campaign.category.contentStrategy);
   const dateFormat = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone });
 
+  // ---- Posters (Phase 4), which also carries the template mapping (Phase 3) ---
+  const posters = await loadPosterOverview(prisma, campaign.id, { timeZone });
+  const mapping = posters.mapping;
+
+  const quietReasons = new Set(['campaign-not-active', 'campaign-closed', 'unsupported-aspect', 'brand-canvas-unavailable', 'already-generated']);
+  const windowDays: PosterDayView[] = posters.days
+    .filter((day) => day.inWindow)
+    .map((day) => {
+      const lastFailed = day.generationStatus === 'FAILED' && day.errorMessage;
+      let note: string | null = null;
+      if (day.state === 'failed' && lastFailed) note = day.errorMessage;
+      else if (day.activeVersion && lastFailed) note = `Last regeneration failed: ${day.errorMessage}`;
+      else if (day.state === 'outdated') note = 'Content or template changed after this poster was made.';
+      else if (!day.upcoming.eligible && !quietReasons.has(day.upcoming.reason) && day.upcoming.reason !== 'generating') note = day.upcoming.message;
+      return {
+        id: day.id,
+        dayNumber: day.dayNumber,
+        dateLabel: dateFormat.format(day.scheduledDate),
+        headline: day.headline,
+        templateLabel: day.templateLabel,
+        templateSource: day.mapping.source,
+        state: day.state,
+        stateLabel: POSTER_STATE_LABELS[day.state],
+        note,
+        generating: day.generating,
+        active: day.activeVersion
+          ? { versionId: day.activeVersion.id, versionNumber: day.activeVersion.versionNumber, generationId: day.activeVersion.studioGenerationId }
+          : null,
+        versionCount: day.versionCount,
+        canGenerate: eligibilityFor(posters, day, 'missing', true).eligible,
+        canRegenerate: Boolean(day.activeVersion) && eligibilityFor(posters, day, 'regenerate', true).eligible,
+      };
+    });
+  const posterBlockers = [
+    posters.campaign.status === 'DRAFT' || posters.campaign.status === 'PAUSED'
+      ? `The campaign is ${posters.campaign.status.toLowerCase()} — activate it to generate posters.`
+      : null,
+    posters.brandCanvas.available ? null : `Brand Canvas unavailable — ${posters.brandCanvas.reason}.`,
+    posters.studioAspect ? null : `This client's ${posters.targetAspectLabel} output is not a Poster Studio format (9:16, 1:1 or 16:9).`,
+  ].filter((blocker): blocker is string => blocker !== null);
+  const windowLabel = `${formatDisplayDate(posters.window.start, timeZone)} → ${formatDisplayDate(new Date(posters.window.end.getTime() - 1), timeZone)} · ${posters.studioAspect ?? posters.targetAspectLabel} posters · ${posters.campaign.approvalPolicy === 'AUTO_APPROVE' ? 'approved automatically' : 'manual approval'}`;
+
   // ---- Template mapping --------------------------------------------------------
-  const mapping = await loadCampaignMappingOverview(prisma, campaign.id);
   const templateLabels = new Map(mapping.context.templates.map((template) => [template.id, template.label]));
   const pillarLabel = (key: string) => strategy.pillars.find((pillar) => pillar.key === key)?.label ?? key;
   const mappingTemplates: MappingTemplateView[] = mapping.context.templates.map((template) => ({
@@ -192,6 +236,34 @@ export default async function CampaignCalendarPage({
           tone={postersOutdated > 0 ? 'amber' : 'slate'}
         />
       </section>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Images className="h-4 w-4 text-brand-to" />
+            Poster generation
+          </CardTitle>
+          <CardDescription>
+            Posters are made only for the next {posters.window.days} days, one at a time, with the AI Poster Studio pipeline:
+            the day&apos;s content, its mapped template as the reference, and the client&apos;s Brand Canvas footer. Every
+            batch asks for confirmation first. Changing content or a template marks a poster outdated — it is never
+            regenerated automatically. Nothing is sent to WhatsApp.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CampaignPosterGeneration
+            campaignId={campaign.id}
+            status={campaign.status}
+            closed={!campaignAllowsChanges(campaign.status)}
+            windowLabel={windowLabel}
+            windowDays={posters.window.days}
+            summary={posters.summary}
+            days={windowDays}
+            durationDays={campaign.durationDays}
+            blockers={posterBlockers}
+          />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

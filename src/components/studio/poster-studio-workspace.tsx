@@ -30,6 +30,8 @@ import {
   generateStudioPosterAction,
   loadStudioBrandCanvasAction,
 } from '@/app/admin/poster-studio/actions';
+import { CampaignDayStudioBanner } from '@/components/campaign/CampaignDayStudioBanner';
+import type { CampaignDayStudioContext } from '@/lib/campaign/poster-generation-service';
 import type { StudioBrandCanvasSummary } from '@/lib/poster-studio/brand-context';
 import type { StudioHistoryItem } from '@/lib/poster-studio/history';
 import {
@@ -56,6 +58,8 @@ interface PosterStudioWorkspaceProps {
   loadErrors: string[];
   model: string;
   quality: string;
+  /** Set when the studio was opened from a campaign day (`?campaignDay=`). */
+  campaignDay?: CampaignDayStudioContext | null;
 }
 
 /**
@@ -153,23 +157,36 @@ export function PosterStudioWorkspace({
   loadErrors,
   model,
   quality,
+  campaignDay = null,
 }: PosterStudioWorkspaceProps) {
-  const [mode, setMode] = useState<StudioMode>('GENERATE');
+  // Opened from a campaign day: start on an Edit of the day's active poster (its
+  // RAW artwork, as any History edit), or on a Generate from the day's content
+  // when it has no poster yet. Everything after that is the studio as usual.
+  const campaignSource = campaignDay?.activeGenerationId ?? null;
+  const [mode, setMode] = useState<StudioMode>(campaignDay ? (campaignSource ? 'EDIT' : 'GENERATE') : 'GENERATE');
   // One draft per mode: a brief is not an edit instruction, and switching tabs
   // should neither send the wrong text nor throw away what was typed.
   const [drafts, setDrafts] = useState<Record<StudioMode, string>>({
-    GENERATE: '',
+    GENERATE: campaignDay && !campaignSource ? campaignDay.brief : '',
     EDIT: '',
     VARIATION: '',
   });
-  const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>('9:16');
-  const [clientId, setClientId] = useState('');
+  const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>(campaignDay?.aspectRatio ?? '9:16');
+  const [clientId, setClientId] = useState(campaignDay?.clientId ?? '');
   const [textFree, setTextFree] = useState(false);
-  const [attachment, setAttachment] = useState<Attachment | null>(null);
+  const [attachment, setAttachment] = useState<Attachment | null>(
+    campaignDay && campaignSource
+      ? {
+          kind: 'generation-output',
+          generationId: campaignSource,
+          label: `Campaign day ${campaignDay.dayNumber} · v${campaignDay.activeVersionNumber}`,
+        }
+      : null,
+  );
   const [uploadPreviewUrl, setUploadPreviewUrl] = useState<string | null>(null);
 
   const [history, setHistory] = useState<StudioHistoryItem[]>(initialHistory);
-  const [currentId, setCurrentId] = useState<string | null>(initialHistory[0]?.id ?? null);
+  const [currentId, setCurrentId] = useState<string | null>(campaignSource ?? initialHistory[0]?.id ?? null);
   const [brokenPreviewId, setBrokenPreviewId] = useState<string | null>(null);
   /** Bumped by "Try again" on a preview that failed to load, to refetch it. */
   const [previewAttempt, setPreviewAttempt] = useState(0);
@@ -473,6 +490,8 @@ export function PosterStudioWorkspace({
           {message}
         </Banner>
       ))}
+
+      {campaignDay && <CampaignDayStudioBanner context={campaignDay} current={current} busy={loading} />}
 
       {error && (
         <Banner tone="error" icon={AlertCircle} onDismiss={() => setError(null)}>

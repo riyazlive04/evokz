@@ -15,6 +15,7 @@ import {
   buildVariationPrompt,
   VARIATION_APPROACHES,
 } from '@/lib/ai/studio-prompts';
+import { countCampaignVersionsUsingStudioGeneration } from '@/lib/campaign/poster-generation-service';
 import { MissingEnvError } from '@/lib/env';
 import {
   loadStudioBrandCanvas,
@@ -384,6 +385,16 @@ export async function deleteStudioGenerationAction(id: string): Promise<StudioDe
     });
     // Already gone is the state the operator asked for.
     if (!row) return { ok: true };
+
+    // A campaign poster version draws its image from this row's files. The
+    // foreign key would refuse the delete anyway; say why instead of failing.
+    const campaignVersions = await countCampaignVersionsUsingStudioGeneration(prisma, parsed.data);
+    if (campaignVersions > 0) {
+      return {
+        ok: false,
+        error: `This poster is used by ${campaignVersions} campaign poster version${campaignVersions === 1 ? '' : 's'}, so it cannot be deleted from History.`,
+      };
+    }
 
     await prisma.posterStudioGeneration.delete({ where: { id: parsed.data } });
     // Studio files only. A client's Brand Canvas logo is never referenced by a

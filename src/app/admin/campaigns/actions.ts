@@ -15,12 +15,23 @@ import {
 import { parseContentStrategyText } from '@/lib/campaign/content-strategy';
 import {
   CampaignDomainError,
+  changeCampaignStatus,
   createCampaign,
   markCampaignDayContentReviewed,
   updateCampaignDayContent,
   type CampaignDayContentPatch,
   type DayEditResult,
 } from '@/lib/campaign/service';
+import {
+  approveCampaignDayPoster,
+  generateCampaignDayPoster,
+  listCampaignDayPosterVersions,
+  loadPosterOverview,
+  planPosterBatch,
+  saveStudioPosterToCampaignDay,
+  type GenerateDayPosterResult,
+  type PosterBatchPlan,
+} from '@/lib/campaign/poster-generation-service';
 import type { AutoMapOutcome, MappingSource } from '@/lib/campaign/template-mapping';
 import {
   applyAutoMap,
@@ -34,15 +45,17 @@ import {
 import { prisma } from '@/lib/prisma';
 
 /**
- * Campaign calendar actions (Phase 2 content, Phase 3 template mapping).
+ * Campaign calendar actions (Phase 2 content, Phase 3 template mapping, Phase 4
+ * rolling poster generation).
  *
  * Thin wrappers over `src/lib/campaign`: parse the wire input, call one service,
  * map failures to operator copy. Behind the admin session like every other
  * action (`src/middleware.ts` gates `/admin/*`, which is where these POST).
  *
- * None of these renders a poster, touches a poster version or sends anything.
- * The legacy calendar tools refuse campaign clients (src/lib/calendar-scope.ts)
- * — these are the campaign-specific actions that explicitly target campaign days.
+ * Only the Phase 4 poster actions render posters or write poster versions, and
+ * none of these sends anything. The legacy calendar tools refuse campaign
+ * clients (src/lib/calendar-scope.ts) — these are the campaign-specific actions
+ * that explicitly target campaign days.
  */
 
 const uuid = z.string().uuid();
@@ -339,5 +352,107 @@ export async function setTemplateContentTypesAction(
     return { ok: true, data: result };
   } catch (error) {
     return toFailure(error, 'Saving the template content types');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rolling poster generation (Phase 4). Generates posters; never sends anything.
+// ---------------------------------------------------------------------------
+
+const posterModeSchema = z.enum(['missing', 'upcoming', 'regenerate']);
+const batchRequestSchema = z.object({
+  mode: posterModeSchema,
+  fromDay: z.number().int().min(1).max(730).optional(),
+  toDay: z.number().int().min(1).max(730).optional(),
+});
+
+/**
+ * What a batch would generate, and why every other day in scope would not.
+ * Writes nothing and calls no provider — it is the confirmation's data.
+ */
+export async function planPosterBatchAction(
+  campaignId: string,
+  request: z.input<typeof batchRequestSchema>,
+): Promise<ActionResult<PosterBatchPlan>> {
+  try {
+    const overview = await loadPosterOverview(prisma, uuid.parse(campaignId));
+    return { ok: true, data: planPosterBatch(overview, batchRequestSchema.parse(request)) };
+  } catch (error) {
+    return toFailure(error, 'Planning poster generation');
+  }
+}
+
+/**
+ * Generates ONE day's poster if it is eligible now. The calendar calls it once
+ * per day in sequence, so a batch shows progress, can be stopped between days,
+ * and keeps every poster already made if the tab closes.
+ */
+export async function generateCampaignDayPosterAction(
+  campaignId: string,
+  dayId: string,
+  request: { mode: 'missing' | 'upcoming' | 'regenerate'; explicit?: boolean },
+): Promise<ActionResult<GenerateDayPosterResult>> {
+  try {
+    const result = await generateCampaignDayPoster(prisma, uuid.parse(campaignId), uuid.parse(dayId), {
+      mode: posterModeSchema.parse(request.mode),
+      explicit: z.boolean().optional().parse(request.explicit),
+    });
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Generating the poster');
+  }
+}
+
+export async function approveCampaignDayPosterAction(dayId: string, versionId: string): Promise<ActionResult> {
+  try {
+    await approveCampaignDayPoster(prisma, uuid.parse(dayId), uuid.parse(versionId));
+    revalidateAdmin();
+    return { ok: true, data: undefined };
+  } catch (error) {
+    return toFailure(error, 'Approving the poster');
+  }
+}
+
+export async function loadCampaignDayPostersAction(dayId: string) {
+  try {
+    const listing = await listCampaignDayPosterVersions(prisma, uuid.parse(dayId));
+    return {
+      ok: true as const,
+      data: {
+        ...listing,
+        versions: listing.versions.map((version) => ({ ...version, createdAt: version.createdAt.toISOString() })),
+      },
+    };
+  } catch (error) {
+    return toFailure(error, 'Loading the poster versions');
+  }
+}
+
+/** Saves a Poster Studio poster (usually an Edit of the day's poster) as the day's new active version. */
+export async function saveStudioPosterToCampaignDayAction(
+  dayId: string,
+  generationId: string,
+): Promise<ActionResult<{ versionId: string; versionNumber: number; alreadySaved: boolean }>> {
+  try {
+    const result = await saveStudioPosterToCampaignDay(prisma, uuid.parse(dayId), uuid.parse(generationId));
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Saving the poster to the campaign day');
+  }
+}
+
+/** Activate, pause or resume a campaign. Activating sends nothing — delivery is not wired to campaigns. */
+export async function changeCampaignStatusAction(
+  campaignId: string,
+  status: 'ACTIVE' | 'PAUSED',
+): Promise<ActionResult<{ from: string; to: string }>> {
+  try {
+    const result = await changeCampaignStatus(prisma, uuid.parse(campaignId), z.enum(['ACTIVE', 'PAUSED']).parse(status));
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Changing the campaign status');
   }
 }
