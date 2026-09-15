@@ -514,6 +514,9 @@ async function mapDayTemplate(
     },
     data: {
       ...next,
+      ...(field === 'posterTemplateId'
+        ? { templateSelectedAt: templateId ? new Date() : null }
+        : { templateSuggestedAt: templateId ? new Date() : null }),
       ...(revisionBumped ? { contentRevision: { increment: 1 } } : {}),
     },
   });

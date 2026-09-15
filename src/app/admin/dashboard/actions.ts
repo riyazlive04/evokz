@@ -30,6 +30,7 @@ import {
 } from '@/lib/types/brand';
 import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
 import { CAMPAIGN_DAY_REFUSAL, LEGACY_CALENDAR } from '@/lib/calendar-scope';
+import { countOpenCampaignDaysReferencingTemplate } from '@/lib/campaign/template-mapping-service';
 import type { CalendarImportInput } from '@/lib/calendar-parse';
 import {
   ManualUploadRefusal,
@@ -3111,6 +3112,17 @@ export async function deleteVerticalTemplate(
       select: { gDriveFileId: true },
     });
     if (!template) return failure('That template no longer exists.');
+
+    // The delete would SetNull every campaign day mapped to it, silently
+    // discarding those mappings. Deactivating keeps them and flags the days.
+    const campaignDays = await countOpenCampaignDaysReferencingTemplate(prisma, id);
+    if (campaignDays > 0) {
+      return failure(
+        `Cannot delete: ${campaignDays} campaign day${campaignDays === 1 ? '' : 's'} ` +
+          'still map to this template. Deactivate it instead — those days keep it and ' +
+          'are flagged for a replacement — or remap them first.',
+      );
+    }
 
     await prisma.categoryTemplate.delete({ where: { id } });
     await trashDriveFile(template.gDriveFileId);

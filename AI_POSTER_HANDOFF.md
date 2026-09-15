@@ -5,6 +5,7 @@ Branch: `feature/ai-poster-studio` · Route: `/admin/poster-studio` · Not deplo
 Also on this branch:
 - **Campaign automation, Phase 1 — data foundation** (§17): schema, migration, domain rules and tests.
 - **Phase 2 — AI content calendar generation** (§18): content only. Includes the first campaign calendar UI at `/admin/clients/[clientId]/campaigns/[campaignId]`. No poster generation, template mapping, approval workflow or WhatsApp changes.
+- **Phase 3 — campaign template mapping** (§19, `vertical-phase3.md`): Auto Map with preview, manual and bulk mapping, mixed mode, inactive-template handling. No poster generation.
 
 ## 1. What it does
 
@@ -364,7 +365,7 @@ Content lives on the day. Posters are `PosterVersion` rows. A day can have conte
   - `contentTypes` (new; empty means any).
   - Aspect ratio comes from the existing `width`/`height` (`templateAspectRatio`).
   - `isActive` (new) lets a template be retired without deleting it; deletion would SetNull every mapping. The legacy rotation does not read `isActive` yet.
-  - Approval reuses `layoutApprovedAt`/`plateApprovedAt` (`isTemplateLayoutApproved`).
+  - Approval reuses `layoutApprovedAt` (`isTemplateLayoutApproved`) — the gate the renderer enforces for a pinned template. (Phase 1 also accepted `plateApprovedAt`; corrected in Phase 3, §19.)
 
 ### 17.7 Poster versions
 
@@ -639,3 +640,17 @@ Phase 1 and f5053c4 suites still pass: `check:campaign` 55, `check:campaign-db` 
 - **Changing a vertical's strategy** does not rewrite existing days. Days keep their old content type, shown as "(not in strategy)" in the editor, and later generation plans with the new pillars.
 - **Legacy views:** the client page's legacy stats and ledgers still count and list campaign days (§17.11 item 7).
 - **Colour lint:** `npm run lint:colors` reports colour classes in `src/components/studio/poster-studio-workspace.tsx` that were already there at f5053c4. No new file triggers it, and Poster Studio was not modified.
+
+## 19. Campaign automation — Phase 3: campaign template mapping
+
+**Status: template mapping only.** Full record: [`vertical-phase3.md`](vertical-phase3.md). No poster is generated, no provider is called, and no poster version is touched. Poster generation is Phase 4.
+
+- **Storage reused.** Auto Map writes only `ContentCalendar.suggestedTemplateId`; manual mapping writes only `posterTemplateId`. A manual choice therefore cannot be overwritten by an auto run. `effectiveTemplateId` and the `contentRevision` bump on an effective change are unchanged from §17.6.
+- **Migration `20260915230000_campaign_template_mapping`** (additive): `ContentCalendar.templateSelectedAt` and `templateSuggestedAt`. "Who" is not recorded: the console has one shared login.
+- **Compatibility** (hard rules): same vertical, `isActive`, approved (`layoutApprovedAt` and a readable spec), shape within 2% of the client's output preset or unmeasured, and `contentTypes` empty or containing the day's stored or planned type.
+- **Auto Map** (`planAutoMap`) is deterministic and previewed. Apply requires the preview's fingerprint. Days with no compatible template stay unmapped with a reason.
+- **Manual Map** is a days ↔ templates board: drag-and-drop on desktop; select template → select days → apply on touch. It supports selection, range and repeat-pattern bulk mapping.
+- **Deactivating a template** (vertical page → *Campaign use*) never changes days. They are flagged "Template inactive — action required" with a replacement workflow.
+- **Deleting a template** still referenced by open-campaign days is refused.
+- **Code:** `src/lib/campaign/template-mapping.ts` (pure), `src/lib/campaign/template-mapping-service.ts`, `src/components/campaign/CampaignTemplateMapping.tsx`.
+- **Tests:** `check:campaign-mapping` (62) and `check:campaign-mapping-db` (82).

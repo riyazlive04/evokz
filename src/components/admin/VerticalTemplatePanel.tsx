@@ -24,6 +24,7 @@ import {
   uploadTemplatePlate,
   uploadVerticalTemplate,
 } from '@/app/admin/dashboard/actions';
+import { setTemplateActiveAction, setTemplateContentTypesAction } from '@/app/admin/campaigns/actions';
 import { PlateRegionEditor } from '@/components/admin/PlateRegionEditor';
 import { Button } from '@/components/ui/button';
 import { useAction } from '@/hooks/use-action';
@@ -115,6 +116,14 @@ export interface VerticalTemplateRow {
   plateApproved: boolean;
   /** Whether posters from this template keep the reference's own colours. */
   usesTemplatePalette: boolean;
+
+  // ---- Campaign mapping (Phase 3) --------------------------------------------
+  /** Whether campaign days may be newly mapped to this template. */
+  isActive: boolean;
+  /** Content-type keys it suits; empty means any. */
+  contentTypes: string[];
+  /** Days of open campaigns currently using it (manual or auto). */
+  campaignDays: number;
 }
 
 
@@ -125,9 +134,12 @@ export function VerticalTemplatePanel({
   totalCount,
   standardLayoutName,
   rereadableCount,
+  pillars = [],
 }: {
   categoryId: string;
   categoryName: string;
+  /** The vertical's content-strategy pillars, for tagging templates. */
+  pillars?: Array<{ key: string; label: string }>;
   /** The current page of the library, not all of it. */
   templates: VerticalTemplateRow[];
   /** Every template in the vertical, across all pages. */
@@ -458,7 +470,7 @@ export function VerticalTemplatePanel({
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {templates.map((template) => (
-            <TemplateCard key={template.id} template={template} />
+            <TemplateCard key={template.id} template={template} pillars={pillars} />
           ))}
         </div>
       )}
@@ -486,7 +498,13 @@ function describeDelivery(width: number, height: number): string {
   return aspect > 1 ? `${aspect.toFixed(2)}:1 landscape` : `1:${(1 / aspect).toFixed(2)} portrait`;
 }
 
-function TemplateCard({ template }: { template: VerticalTemplateRow }) {
+function TemplateCard({
+  template,
+  pillars,
+}: {
+  template: VerticalTemplateRow;
+  pillars: Array<{ key: string; label: string }>;
+}) {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const remove = useAction(deleteVerticalTemplate);
   const rename = useAction(renameVerticalTemplate);
@@ -623,6 +641,8 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
         )}
       </div>
 
+      <CampaignUse template={template} pillars={pillars} />
+
       <LayoutReview template={template} />
 
       <PlateReview template={template} />
@@ -637,6 +657,141 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
         </p>
       )}
     </article>
+  );
+}
+
+/**
+ * How campaign template mapping may use this template (Phase 3).
+ *
+ * Deactivating retires a template without deleting it: campaign days already
+ * mapped to it keep it and are flagged "Template inactive — action required" on
+ * their calendar, so nothing is replaced behind anyone's back. Content types
+ * steer Auto Map; untagged means the template suits any day.
+ */
+function CampaignUse({
+  template,
+  pillars,
+}: {
+  template: VerticalTemplateRow;
+  pillars: Array<{ key: string; label: string }>;
+}) {
+  const active = useAction(setTemplateActiveAction);
+  const tags = useAction(setTemplateContentTypesAction);
+  const [confirmDeactivate, setConfirmDeactivate] = React.useState(false);
+  const [types, setTypes] = React.useState(template.contentTypes);
+
+  React.useEffect(() => {
+    setTypes(template.contentTypes);
+  }, [template.contentTypes]);
+
+  React.useEffect(() => {
+    if (!confirmDeactivate) return undefined;
+    const timer = setTimeout(() => setConfirmDeactivate(false), 6_000);
+    return () => clearTimeout(timer);
+  }, [confirmDeactivate]);
+
+  async function toggleType(key: string) {
+    const next = types.includes(key) ? types.filter((value) => value !== key) : [...types, key];
+    setTypes(next);
+    const result = await tags.run(template.id, next);
+    if (!result.ok) setTypes(template.contentTypes);
+  }
+
+  const busy = active.pending || tags.pending;
+  const unknownTypes = types.filter((key) => !pillars.some((pillar) => pillar.key === key));
+
+  return (
+    <div className="space-y-2 border-t border-border/60 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          Campaign use
+        </p>
+        <span className={template.isActive ? 'text-[10px] text-success-ink' : 'text-[10px] text-warning-ink'}>
+          {template.isActive ? 'Active' : 'Inactive'}
+        </span>
+      </div>
+
+      <p className="text-[11px] text-muted-foreground">
+        {template.campaignDays > 0
+          ? `Mapped to ${template.campaignDays} campaign day${template.campaignDays === 1 ? '' : 's'}.`
+          : 'Not mapped to any open campaign day.'}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        {template.isActive ? (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2 text-[11px]"
+            disabled={busy}
+            onClick={() => {
+              if (template.campaignDays > 0 && !confirmDeactivate) {
+                setConfirmDeactivate(true);
+                return;
+              }
+              setConfirmDeactivate(false);
+              void active.run(template.id, false);
+            }}
+          >
+            {active.pending && <Loader2 className="h-3 w-3 animate-spin" />}
+            {confirmDeactivate ? 'Deactivate anyway' : 'Deactivate'}
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2 text-[11px]"
+            disabled={busy}
+            onClick={() => void active.run(template.id, true)}
+          >
+            {active.pending && <Loader2 className="h-3 w-3 animate-spin" />}
+            Activate
+          </Button>
+        )}
+      </div>
+      {confirmDeactivate && (
+        <p className="text-[10px] text-warning-ink">
+          {template.campaignDays} campaign day(s) use it. They keep it and are flagged for a
+          replacement — nothing is changed automatically.
+        </p>
+      )}
+
+      <div className="space-y-1">
+        <p className="text-[10px] text-muted-foreground">
+          Suits: {types.length === 0 ? 'any content type' : 'only the ticked content types'}
+        </p>
+        <div className="flex flex-wrap gap-1">
+          {pillars.map((pillar) => {
+            const on = types.includes(pillar.key);
+            return (
+              <button
+                key={pillar.key}
+                type="button"
+                aria-pressed={on}
+                disabled={busy}
+                onClick={() => void toggleType(pillar.key)}
+                className={`rounded-full border px-2 py-0.5 text-[10px] transition-colors ${
+                  on ? 'border-primary bg-primary/15 text-foreground' : 'border-border text-muted-foreground hover:bg-accent'
+                }`}
+              >
+                {pillar.label}
+              </button>
+            );
+          })}
+          {unknownTypes.map((key) => (
+            <span key={key} className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+              {key} (not in strategy)
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {(active.error ?? tags.error) && (
+        <p role="alert" className="text-[10px] text-danger-ink">
+          {active.error ?? tags.error}
+        </p>
+      )}
+    </div>
   );
 }
 

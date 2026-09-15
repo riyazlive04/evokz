@@ -263,10 +263,12 @@ model CategoryTemplate {
   ///
   /// Retirement without deletion: deleting a template SetNulls every day pinned
   /// to it, which on a manually mapped 365-day campaign silently discards the
-  /// operator's mapping. Deactivating keeps existing assignments and history.
+  /// operator's mapping. Deactivating keeps existing assignments and history,
+  /// and the campaign calendar flags those days "Template inactive — action
+  /// required" instead of replacing anything.
   ///
-  /// Enforced only by the campaign domain (`src/lib/campaign/service.ts`). The
-  /// legacy rotation in `ai-pipeline.ts` does not read it yet.
+  /// Enforced only by the campaign domain (`src/lib/campaign/`). The legacy
+  /// rotation in `ai-pipeline.ts` does not read it yet.
   isActive     Boolean  @default(true)
   /// Content-type keys this template suits — pillar keys of the vertical's
   /// content strategy (src/lib/campaign/content-strategy.ts). Empty means "any"
@@ -645,6 +647,13 @@ model ContentCalendar {
   /// operator's choice is `posterTemplateId`, which wins when both are set.
   suggestedTemplateId   String?
   suggestedTemplate     CategoryTemplate?       @relation("SuggestedTemplate", fields: [suggestedTemplateId], references: [id], onDelete: SetNull)
+  /// When an operator last set this campaign day's selected template
+  /// (`posterTemplateId`, a MANUAL mapping). Null when there is none, or it
+  /// predates Phase 3. Who is not recorded: the console has one shared login.
+  templateSelectedAt    DateTime?
+  /// When the AUTO mapper last wrote `suggestedTemplateId`. Null when there is
+  /// no suggestion, or it predates Phase 3.
+  templateSuggestedAt   DateTime?
   /// The content generator's layout hint for this day, a key from
   /// `SUGGESTED_TEMPLATE_TYPES` (e.g. "tips-list", "quote"). A hint for the future
   /// template mapper, not a template: `suggestedTemplateId` stays untouched.

@@ -21,19 +21,28 @@ import {
   type CampaignDayContentPatch,
   type DayEditResult,
 } from '@/lib/campaign/service';
+import type { AutoMapOutcome, MappingSource } from '@/lib/campaign/template-mapping';
+import {
+  applyAutoMap,
+  assignManualTemplates,
+  changeTemplateMappingMode,
+  previewAutoMap,
+  setTemplateActive,
+  setTemplateContentTypes,
+  type ManualMappingResult,
+} from '@/lib/campaign/template-mapping-service';
 import { prisma } from '@/lib/prisma';
 
 /**
- * Campaign calendar actions (Phase 2: content only).
+ * Campaign calendar actions (Phase 2 content, Phase 3 template mapping).
  *
  * Thin wrappers over `src/lib/campaign`: parse the wire input, call one service,
  * map failures to operator copy. Behind the admin session like every other
  * action (`src/middleware.ts` gates `/admin/*`, which is where these POST).
  *
- * None of these renders a poster, maps a template, touches a poster version or
- * sends anything. The legacy calendar tools refuse campaign clients
- * (src/lib/calendar-scope.ts) — these are the campaign-specific actions that
- * explicitly target campaign days.
+ * None of these renders a poster, touches a poster version or sends anything.
+ * The legacy calendar tools refuse campaign clients (src/lib/calendar-scope.ts)
+ * — these are the campaign-specific actions that explicitly target campaign days.
  */
 
 const uuid = z.string().uuid();
@@ -186,5 +195,149 @@ export async function saveVerticalContentStrategyAction(
     return { ok: true, data: { pillars: parsed.strategy.pillars.length, usesDefault: false } };
   } catch (error) {
     return toFailure(error, 'Saving the content strategy');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Template mapping (Phase 3). Maps templates to days; never generates a poster.
+// ---------------------------------------------------------------------------
+
+const scopeSchema = z.enum(['fill', 'rebalance']);
+
+export interface AutoMapPreviewEntry {
+  dayNumber: number;
+  outcome: AutoMapOutcome;
+  currentTemplateId: string | null;
+  currentSource: MappingSource | null;
+  templateId: string | null;
+  conflict: { title: string; detail: string } | null;
+  replacementTemplateId: string | null;
+  unmappedReason: string | null;
+  repeatsPreviousDay: boolean;
+}
+
+export interface AutoMapPreview {
+  scope: 'fill' | 'rebalance';
+  switchesMode: boolean;
+  fingerprint: string;
+  counts: Record<AutoMapOutcome, number> & { conflicts: number; changes: number };
+  entries: AutoMapPreviewEntry[];
+}
+
+/** What Auto Map would do. Writes nothing. */
+export async function previewAutoMapAction(
+  campaignId: string,
+  scope: 'fill' | 'rebalance',
+): Promise<ActionResult<AutoMapPreview>> {
+  try {
+    const { plan } = await previewAutoMap(prisma, uuid.parse(campaignId), { scope: scopeSchema.parse(scope) });
+    return {
+      ok: true,
+      data: {
+        scope: plan.scope,
+        switchesMode: plan.switchesMode,
+        fingerprint: plan.fingerprint,
+        counts: plan.counts,
+        entries: plan.entries.map((entry) => ({
+          dayNumber: entry.dayNumber,
+          outcome: entry.outcome,
+          currentTemplateId: entry.currentTemplateId,
+          currentSource: entry.currentSource,
+          templateId: entry.templateId,
+          conflict: entry.conflict ? { title: entry.conflict.title, detail: entry.conflict.detail } : null,
+          replacementTemplateId: entry.replacementTemplateId,
+          unmappedReason: entry.unmappedReason?.detail ?? null,
+          repeatsPreviousDay: entry.repeatsPreviousDay,
+        })),
+      },
+    };
+  } catch (error) {
+    return toFailure(error, 'Previewing Auto Map');
+  }
+}
+
+/** Applies the previewed plan, refused if the campaign changed since the preview. */
+export async function applyAutoMapAction(
+  campaignId: string,
+  input: { scope: 'fill' | 'rebalance'; fingerprint: string },
+): Promise<ActionResult<{ daysWritten: number; revisionsBumped: number; switchedToAuto: boolean }>> {
+  try {
+    const result = await applyAutoMap(prisma, uuid.parse(campaignId), {
+      scope: scopeSchema.parse(input.scope),
+      fingerprint: z.string().min(1).max(64).parse(input.fingerprint),
+    });
+    revalidateAdmin();
+    return {
+      ok: true,
+      data: { daysWritten: result.daysWritten, revisionsBumped: result.revisionsBumped, switchedToAuto: result.switchedToAuto },
+    };
+  } catch (error) {
+    return toFailure(error, 'Applying Auto Map');
+  }
+}
+
+const dayNumberSchema = z.number().int().min(1).max(730);
+const templateIdSchema = uuid.nullable();
+
+const assignmentSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('days'), dayNumbers: z.array(dayNumberSchema).min(1).max(730), templateId: templateIdSchema }),
+  z.object({ kind: z.literal('range'), fromDay: dayNumberSchema, toDay: dayNumberSchema, templateId: templateIdSchema }),
+  z.object({ kind: z.literal('pattern'), fromDay: dayNumberSchema, toDay: dayNumberSchema, templateIds: z.array(uuid).min(1).max(50) }),
+]);
+
+/** Manual mapping: one day, a selection, a range or a repeating pattern. Clears with a null template. */
+export async function assignCampaignTemplatesAction(
+  campaignId: string,
+  assignment: z.input<typeof assignmentSchema>,
+  options: { skipManual?: boolean } = {},
+): Promise<ActionResult<ManualMappingResult>> {
+  try {
+    const result = await assignManualTemplates(prisma, uuid.parse(campaignId), assignmentSchema.parse(assignment), {
+      skipManual: z.boolean().optional().parse(options.skipManual),
+    });
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Mapping templates');
+  }
+}
+
+export async function changeTemplateMappingModeAction(
+  campaignId: string,
+  mode: 'AUTO' | 'MANUAL',
+): Promise<ActionResult<{ changed: boolean; daysAffected: number }>> {
+  try {
+    const result = await changeTemplateMappingMode(prisma, uuid.parse(campaignId), z.enum(['AUTO', 'MANUAL']).parse(mode));
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Changing the mapping mode');
+  }
+}
+
+/** Retires or restores a template for campaign mapping. Mapped days keep it and are flagged. */
+export async function setTemplateActiveAction(
+  templateId: string,
+  active: boolean,
+): Promise<ActionResult<{ active: boolean; campaignDaysAffected: number }>> {
+  try {
+    const result = await setTemplateActive(prisma, uuid.parse(templateId), z.boolean().parse(active));
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Changing the template status');
+  }
+}
+
+export async function setTemplateContentTypesAction(
+  templateId: string,
+  contentTypes: string[],
+): Promise<ActionResult<{ contentTypes: string[] }>> {
+  try {
+    const result = await setTemplateContentTypes(prisma, uuid.parse(templateId), z.array(z.string().max(40)).max(20).parse(contentTypes));
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Saving the template content types');
   }
 }

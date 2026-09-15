@@ -22,6 +22,7 @@ import {
   regenerateCampaignDayAction,
 } from '@/app/admin/campaigns/actions';
 import { CampaignDayEditor } from '@/components/campaign/CampaignDayEditor';
+import { MappingSourceBadge } from '@/components/campaign/CampaignTemplateMapping';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -45,8 +46,12 @@ export interface CampaignDayView {
   suggestedTemplateType: string | null;
   suggestedTemplateTypeLabel: string | null;
   contentRevision: number;
-  /** The selected template's label, else the suggested one's. */
+  /** The effective template's label (Phase 3 mapping), or null when unmapped. */
   templateLabel: string | null;
+  /** How the template was mapped. */
+  templateSource: 'AUTO' | 'MANUAL' | null;
+  /** The mapping problem needing action, e.g. "Template inactive — action required". */
+  templateIssue: string | null;
   /** Active poster: none, made from the current content, or made from older content. */
   poster: 'none' | 'current' | 'outdated';
 }
@@ -315,14 +320,21 @@ export function CampaignCalendar({
                     ))}
                   </ul>
                 )}
-                <p className="flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
                   {day.suggestedTemplateTypeLabel && <span>Layout hint: {day.suggestedTemplateTypeLabel}</span>}
                   <span>Template: {day.templateLabel ?? 'not assigned'}</span>
+                  <MappingSourceBadge source={day.templateSource} />
+                  {day.templateIssue && (
+                    <span className="flex items-center gap-1 text-warning-ink">
+                      <AlertTriangle className="h-3 w-3 shrink-0" />
+                      {day.templateIssue}
+                    </span>
+                  )}
                   <span>
                     Poster:{' '}
                     {day.poster === 'none' ? 'not generated' : day.poster === 'current' ? 'current' : <span className="text-warning-ink">outdated — needs regeneration</span>}
                   </span>
-                </p>
+                </div>
               </div>
 
               {!closed && (

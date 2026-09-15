@@ -254,12 +254,17 @@ export function templateAspectRatio(width: number | null, height: number | null)
   return `${Math.round(width) / divisor}:${Math.round(height) / divisor}`;
 }
 
-/** Template approval, from the existing review gates: an approved grid or plate. */
-export function isTemplateLayoutApproved(template: {
-  layoutApprovedAt: Date | null;
-  plateApprovedAt: Date | null;
-}): boolean {
-  return template.layoutApprovedAt !== null || template.plateApprovedAt !== null;
+/**
+ * Template approval, from the existing review gate the renderer enforces.
+ *
+ * Only `layoutApprovedAt` counts: `resolveDayLayout` refuses a pinned template
+ * without it (`pinned-unapproved`) even when its plate is approved, because a
+ * plate composites over an approved grid rather than replacing it. The campaign
+ * mapper additionally requires the spec to parse — see
+ * `template-mapping-service.ts`.
+ */
+export function isTemplateLayoutApproved(template: { layoutApprovedAt: Date | null }): boolean {
+  return template.layoutApprovedAt !== null;
 }
 
 // ---------------------------------------------------------------------------

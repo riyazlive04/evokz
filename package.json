@@ -24,6 +24,8 @@
     "check:calendar-scope": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-calendar-scope.ts",
     "check:campaign-content": "tsx --tsconfig scripts/tsconfig.json scripts/check-campaign-content.ts",
     "check:campaign-content-db": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-campaign-content-db.ts",
+    "check:campaign-mapping": "tsx --tsconfig scripts/tsconfig.json scripts/check-campaign-mapping.ts",
+    "check:campaign-mapping-db": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-campaign-mapping-db.ts",
     "measure": "tsx --tsconfig scripts/tsconfig.json scripts/measure-reference.ts",
     "sheet": "tsx --tsconfig scripts/tsconfig.json scripts/build-vertical-sheet.ts",
     "layout:apply": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/apply-authored-layout.ts",

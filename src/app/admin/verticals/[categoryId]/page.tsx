@@ -1,3 +1,4 @@
+import type { CampaignStatus } from '@prisma/client';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
@@ -89,12 +90,41 @@ export default async function VerticalDetailPage({
           plateDriveFileId: true,
           plateApprovedAt: true,
           paletteSource: true,
+          isActive: true,
+          contentTypes: true,
         },
       },
     },
   });
 
   if (!category) notFound();
+
+  // Campaign days using each template on this page, as the campaign calendar
+  // counts them: a manual selection, or an AUTO suggestion under AUTO mode, in
+  // a campaign that is still open.
+  const pageTemplateIds = category.templates.map((template) => template.id);
+  const openStatuses: CampaignStatus[] = ['DRAFT', 'ACTIVE', 'PAUSED'];
+  const [selectedCounts, suggestedCounts] = pageTemplateIds.length
+    ? await Promise.all([
+        prisma.contentCalendar.groupBy({
+          by: ['posterTemplateId'],
+          where: { posterTemplateId: { in: pageTemplateIds }, campaign: { status: { in: openStatuses } } },
+          _count: { _all: true },
+        }),
+        prisma.contentCalendar.groupBy({
+          by: ['suggestedTemplateId'],
+          where: {
+            suggestedTemplateId: { in: pageTemplateIds },
+            posterTemplateId: null,
+            campaign: { status: { in: openStatuses }, templateMappingMode: 'AUTO' },
+          },
+          _count: { _all: true },
+        }),
+      ])
+    : [[], []];
+  const campaignDaysFor = (id: string) =>
+    (selectedCounts.find((row) => row.posterTemplateId === id)?._count._all ?? 0) +
+    (suggestedCounts.find((row) => row.suggestedTemplateId === id)?._count._all ?? 0);
 
   const templates: VerticalTemplateRow[] = category.templates.map((template) => ({
     id: template.id,
@@ -152,6 +182,9 @@ export default async function VerticalDetailPage({
         usesTemplatePalette: template.paletteSource === 'template',
       };
     })(),
+    isActive: template.isActive,
+    contentTypes: template.contentTypes,
+    campaignDays: campaignDaysFor(template.id),
   }));
 
   const totalTemplates = category._count.templates;
@@ -252,6 +285,10 @@ export default async function VerticalDetailPage({
             totalCount={totalTemplates}
             standardLayoutName={parseLayoutSpec(category.defaultLayoutSpec)?.name ?? null}
             rereadableCount={rereadableCount}
+            pillars={resolveContentStrategy(category.contentStrategy).strategy.pillars.map((pillar) => ({
+              key: pillar.key,
+              label: pillar.label,
+            }))}
           />
 
           {pageCount > 1 && (
