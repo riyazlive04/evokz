@@ -13,10 +13,10 @@ import {
   canTransitionCampaign,
   canTransitionGeneration,
   changedContentFields,
+  contentStatusAfterManualEdit,
   effectiveTemplateId,
   GENERATION_CAMPAIGN_STATUSES,
   initialApprovalStatus,
-  isCampaignContentType,
   MAX_CAMPAIGN_DAYS,
   planCampaignSlots,
   shouldAutoActivate,
@@ -26,6 +26,11 @@ import {
   type CampaignDayContentField,
   type CampaignSlot,
 } from '@/lib/campaign/model';
+import {
+  isContentTypeKey,
+  pillarKeys,
+  resolveContentStrategy,
+} from '@/lib/campaign/content-strategy';
 import { getAppTimeZone, HH_MM_PATTERN, normalizeDeliveryDays } from '@/lib/time';
 
 /**
@@ -207,6 +212,7 @@ export async function createCampaign(
         caption: '',
         hashtags: '',
         imagePrompt: '',
+        contentStatus: 'NOT_GENERATED' as const,
         generationStatus: 'NOT_REQUESTED' as const,
       })),
     });
@@ -273,10 +279,12 @@ const optionalText = (max: number) =>
 const contentPatchSchema = z
   .object({
     theme: optionalText(200),
+    // Format here; membership of the campaign vertical's strategy is checked
+    // against the database in `updateCampaignDayContent`.
     contentType: z
       .string()
       .trim()
-      .refine(isCampaignContentType, 'is not a known content type')
+      .refine(isContentTypeKey, 'must be a content-type key')
       .nullable()
       .optional(),
     headline: optionalText(200),
@@ -311,11 +319,15 @@ export interface DayEditResult {
 }
 
 /**
- * Edits one campaign day's content. Touches exactly one row.
+ * Edits one campaign day's content. Touches exactly one row, and never calls a
+ * model.
  *
  * A change to any poster input bumps `contentRevision`, which makes every
  * existing version of this day outdated without modifying any of them. A
  * caption or hashtag change does not.
+ *
+ * A person's edit is the review: the day becomes READY (or NOT_GENERATED if it
+ * was edited back to empty) and its validation findings are cleared.
  *
  * @param options.expectedRevision Reject the edit if the day's revision has
  *   moved since the caller read it (an editor's stale form).
@@ -334,7 +346,7 @@ export async function updateCampaignDayContent(
       ...contentSelect,
       campaignId: true,
       contentRevision: true,
-      campaign: { select: { status: true } },
+      campaign: { select: { status: true, category: { select: { contentStrategy: true } } } },
     },
   });
   if (!day) throw new CampaignDomainError('not-found', 'Campaign day does not exist.');
@@ -353,12 +365,24 @@ export async function updateCampaignDayContent(
     return { changedFields, revisionBumped: false, contentRevision: day.contentRevision };
   }
 
+  if (changedFields.includes('contentType') && clean.contentType) {
+    const keys = pillarKeys(resolveContentStrategy(day.campaign.category.contentStrategy).strategy);
+    if (!keys.includes(clean.contentType)) {
+      throw new CampaignDomainError(
+        'invalid-input',
+        `contentType: "${clean.contentType}" is not a pillar of this vertical's content strategy.`,
+      );
+    }
+  }
+
   const revisionBumped = touchesPosterInputs(changedFields);
   const data: Prisma.ContentCalendarUpdateManyMutationInput = {};
   for (const field of changedFields) {
     Object.assign(data, { [field]: clean[field] });
   }
   if (revisionBumped) data.contentRevision = { increment: 1 };
+  data.contentStatus = contentStatusAfterManualEdit({ ...day, ...clean });
+  data.contentIssues = [];
 
   const updated = await db.contentCalendar.updateMany({
     where: { id: dayId, contentRevision: day.contentRevision },
@@ -373,6 +397,35 @@ export async function updateCampaignDayContent(
     revisionBumped,
     contentRevision: day.contentRevision + (revisionBumped ? 1 : 0),
   };
+}
+
+/**
+ * Accepts generated content as it is: NEEDS_REVIEW → READY, findings cleared.
+ * No content field changes, so the revision does not move.
+ */
+export async function markCampaignDayContentReviewed(db: CampaignDb, dayId: string): Promise<void> {
+  const day = await db.contentCalendar.findUnique({
+    where: { id: dayId },
+    select: { contentStatus: true, campaign: { select: { status: true } } },
+  });
+  if (!day) throw new CampaignDomainError('not-found', 'Campaign day does not exist.');
+  if (!day.campaign) {
+    throw new CampaignDomainError('not-a-campaign-day', 'This calendar row is not part of a campaign.');
+  }
+  if (!campaignAllowsChanges(day.campaign.status)) {
+    throw new CampaignDomainError('campaign-closed', `The campaign is ${day.campaign.status}.`);
+  }
+  if (day.contentStatus !== 'NEEDS_REVIEW') {
+    throw new CampaignDomainError('invalid-transition', 'Only a day that needs review can be marked reviewed.');
+  }
+
+  const updated = await db.contentCalendar.updateMany({
+    where: { id: dayId, contentStatus: 'NEEDS_REVIEW' },
+    data: { contentStatus: 'READY', contentIssues: [] },
+  });
+  if (updated.count === 0) {
+    throw new CampaignDomainError('conflict', 'This day was changed by someone else.');
+  }
 }
 
 export interface TemplateMappingResult {

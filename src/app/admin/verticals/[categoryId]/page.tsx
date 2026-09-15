@@ -1,9 +1,15 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { ArrowLeft, FolderOpen, Layers } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Layers, ListChecks } from 'lucide-react';
 
 import { PageHeader } from '@/components/admin/PageHeader';
+import { ContentStrategyEditor } from '@/components/campaign/ContentStrategyEditor';
+import {
+  DEFAULT_CONTENT_STRATEGY,
+  formatContentStrategyText,
+  resolveContentStrategy,
+} from '@/lib/campaign/content-strategy';
 import {
   VerticalTemplatePanel,
   type VerticalTemplateRow,
@@ -62,6 +68,7 @@ export default async function VerticalDetailPage({
       // Shown on the panel so an operator can see what a new upload will be
       // given, without having to upload one to find out.
       defaultLayoutSpec: true,
+      contentStrategy: true,
       _count: { select: { clients: true, templates: true } },
       templates: {
         orderBy: { createdAt: 'desc' },
@@ -199,6 +206,32 @@ export default async function VerticalDetailPage({
             : "No template in this vertical has an approved layout, so none of its clients can generate a poster at all — every render will fail until at least one is approved. On each card: Read layout, See this template rendered, then Approve layout."
         }
       />
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <ListChecks className="h-3.5 w-3.5 text-brand-to" />
+            Content strategy
+          </CardTitle>
+          <CardDescription className="text-[11px]">
+            The kinds of content AI campaign calendars for {category.name} clients are built from, and how
+            often each appears.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {(() => {
+            const { strategy, source } = resolveContentStrategy(category.contentStrategy);
+            return (
+              <ContentStrategyEditor
+                categoryId={category.id}
+                initialText={formatContentStrategyText(strategy)}
+                defaultText={formatContentStrategyText(DEFAULT_CONTENT_STRATEGY)}
+                usesDefault={source === 'default'}
+              />
+            );
+          })()}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader className="pb-3">

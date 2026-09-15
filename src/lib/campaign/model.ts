@@ -1,5 +1,6 @@
 import type {
   CampaignApprovalPolicy,
+  CampaignContentStatus,
   CampaignStatus,
   PosterApprovalStatus,
   PosterGenerationStatus,
@@ -29,29 +30,8 @@ import { addZonedDays, normalizeDeliveryDays, zonedWeekday } from '@/lib/time';
 // Catalogues and limits
 // ---------------------------------------------------------------------------
 
-/**
- * Content types a campaign day and a template can be tagged with.
- *
- * Stored as strings (`ContentCalendar.contentType`, `CategoryTemplate.contentTypes`)
- * because the list is expected to grow per vertical; this catalogue is what
- * keeps a typo out of the column.
- */
-export const CAMPAIGN_CONTENT_TYPES = {
-  promotional: 'Promotional offer',
-  educational: 'Educational / tips',
-  festival: 'Festival / occasion',
-  awareness: 'Awareness',
-  testimonial: 'Testimonial',
-  engagement: 'Engagement',
-  announcement: 'Announcement',
-  'behind-the-scenes': 'Behind the scenes',
-} as const;
-
-export type CampaignContentType = keyof typeof CAMPAIGN_CONTENT_TYPES;
-
-export function isCampaignContentType(value: string): value is CampaignContentType {
-  return Object.prototype.hasOwnProperty.call(CAMPAIGN_CONTENT_TYPES, value);
-}
+// Content types are pillar keys of the vertical's content strategy — see
+// src/lib/campaign/content-strategy.ts. No catalogue of them lives here.
 
 /** Two years of daily slots. A plan longer than this is a data error. */
 export const MAX_CAMPAIGN_DAYS = 730;
@@ -191,6 +171,23 @@ export function touchesPosterInputs(fields: readonly CampaignDayContentField[]):
 /** A campaign day has content once it has something to put on a poster. */
 export function hasPosterContent(content: CampaignDayContent): boolean {
   return Boolean(content.headline?.trim() || content.imagePrompt.trim());
+}
+
+/** Any content at all — the difference between an empty slot and a written one. */
+export function hasAnyContent(content: CampaignDayContent): boolean {
+  return (Object.keys(content) as CampaignDayContentField[]).some((field) => {
+    const value = content[field];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+}
+
+/**
+ * Content status after a person edits a day. Their edit is the review, so a
+ * written day becomes READY and any validation findings are dropped; a day
+ * edited back to nothing is an empty slot again.
+ */
+export function contentStatusAfterManualEdit(content: CampaignDayContent): CampaignContentStatus {
+  return hasAnyContent(content) ? 'READY' : 'NOT_GENERATED';
 }
 
 // ---------------------------------------------------------------------------

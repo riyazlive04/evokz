@@ -18,8 +18,8 @@ import {
   changedContentFields,
   effectiveTemplateId,
   evaluateDeliveryReadiness,
+  contentStatusAfterManualEdit,
   initialApprovalStatus,
-  isCampaignContentType,
   isVersionCurrent,
   planCampaignSlots,
   shouldAutoActivate,
@@ -104,7 +104,11 @@ const content: CampaignDayContent = {
   const changed = changedContentFields(content, { headline: content.headline, cta: undefined });
   t('an unchanged value and an absent field are not changes', changed.length === 0);
 }
-t('content type catalogue accepts known keys', isCampaignContentType('festival') && !isCampaignContentType('Festival'));
+t('a manual edit with content makes the day READY', contentStatusAfterManualEdit(content) === 'READY');
+t(
+  'a manual edit back to nothing makes the slot NOT_GENERATED',
+  contentStatusAfterManualEdit({ theme: null, contentType: null, headline: null, supportingText: null, cta: null, imagePrompt: '', backgroundPrompt: null, caption: ' ', hashtags: '' }) === 'NOT_GENERATED',
+);
 
 // ===========================================================================
 console.log('\n--- template mapping -----------------------------------------');

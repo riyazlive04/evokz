@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   CalendarClock,
+  CalendarRange,
   CheckCircle2,
   Clock,
   Eye,
@@ -27,6 +28,7 @@ import { QueueLedger, type QueueEntry } from '@/components/admin/QueueLedger';
 import { RetryFailedButton } from '@/components/admin/RetryFailedButton';
 import { SeedCalendarButton } from '@/components/admin/SeedCalendarButton';
 import { StatTile } from '@/components/admin/StatTile';
+import { CreateCampaignForm } from '@/components/campaign/CreateCampaignForm';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -36,6 +38,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { LEGACY_CALENDAR } from '@/lib/calendar-scope';
 import { optionalEnv } from '@/lib/env';
 import {
   describeImageSize,
@@ -112,6 +115,9 @@ export default async function ClientDetailPage({
     planOptions,
     categoryOptions,
     approvedTemplates,
+    campaigns,
+    campaignContent,
+    legacyDays,
   ] = await Promise.all([
     prisma.contentCalendar.groupBy({
       by: ['deliveryStatus'],
@@ -165,6 +171,19 @@ export default async function ClientDetailPage({
       orderBy: { label: 'asc' },
       select: { id: true, label: true },
     }),
+    prisma.campaign.findMany({
+      where: { clientId: client.id },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, name: true, status: true, startDate: true, endDate: true, durationDays: true },
+    }),
+    prisma.contentCalendar.groupBy({
+      by: ['campaignId', 'contentStatus'],
+      where: { clientId: client.id, campaignId: { not: null } },
+      _count: { _all: true },
+    }),
+    // A campaign cannot be created over existing legacy days (one calendar per
+    // client); counted so the card can say why before the operator tries.
+    prisma.contentCalendar.count({ where: { clientId: client.id, ...LEGACY_CALENDAR } }),
   ]);
 
   const statusCounts: Record<DeliveryStatus, number> = {
@@ -476,6 +495,67 @@ export default async function ClientDetailPage({
         </Card>
       </section>
 
+      {/* ---- Campaign calendars (content only) ---- */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <CalendarRange className="h-4 w-4 text-brand-to" />
+            Campaigns
+          </CardTitle>
+          <CardDescription>
+            AI content calendars: each day is an editable slot with a topic, headline, caption and photo brief.
+            Content only — no posters are generated and nothing is sent from here.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {campaigns.length > 0 && (
+            <ul className="divide-y divide-border rounded-lg border border-border">
+              {campaigns.map((campaign) => {
+                const count = (status: string) =>
+                  campaignContent.find((row) => row.campaignId === campaign.id && row.contentStatus === status)?._count
+                    ._all ?? 0;
+                return (
+                  <li key={campaign.id}>
+                    <Link
+                      href={`/admin/clients/${client.id}/campaigns/${campaign.id}`}
+                      className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-accent"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-foreground">{campaign.name}</span>
+                        <span className="block font-mono text-[11px] text-muted-foreground">
+                          {formatDisplayDate(campaign.startDate, timeZone)} → {formatDisplayDate(campaign.endDate, timeZone)} ·{' '}
+                          {campaign.durationDays} days
+                        </span>
+                      </span>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                        <span className="text-success-ink">{count('READY')} ready</span>
+                        {count('NEEDS_REVIEW') > 0 && (
+                          <span className="text-warning-ink">{count('NEEDS_REVIEW')} to review</span>
+                        )}
+                        <span className="text-muted-foreground">{count('NOT_GENERATED')} not generated</span>
+                        <Badge variant="slate">{campaign.status}</Badge>
+                      </div>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {legacyDays > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              This client has {legacyDays} legacy calendar day(s). A client holds one calendar at a time, so a campaign
+              cannot use those day numbers until the legacy calendar is cleared.
+            </p>
+          )}
+          <CreateCampaignForm
+            clientId={client.id}
+            defaultName={`${client.companyName} · ${client.plan.name}`}
+            defaultStartDate={toDateInputValue(tomorrowStart, timeZone)}
+            planDurationDays={totalDays}
+          />
+        </CardContent>
+      </Card>
+
       {/* ---- Operator-authored content ---- */}
       <Card>
         <CardHeader>
@@ -584,6 +664,11 @@ export default async function ClientDetailPage({
       />
     </>
   );
+}
+
+/** YYYY-MM-DD of an instant in the app timezone, for a date input. */
+function toDateInputValue(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
 
 function Fact({

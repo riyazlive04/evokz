@@ -2,7 +2,9 @@
 
 Branch: `feature/ai-poster-studio` · Route: `/admin/poster-studio` · Not deployed, not merged.
 
-Also on this branch: **Campaign automation, Phase 1 — data foundation** (§17). Schema, migration, domain rules and tests only; no UI, generation, queue or WhatsApp changes.
+Also on this branch:
+- **Campaign automation, Phase 1 — data foundation** (§17): schema, migration, domain rules and tests.
+- **Phase 2 — AI content calendar generation** (§18): content only. Includes the first campaign calendar UI at `/admin/clients/[clientId]/campaigns/[campaignId]`. No poster generation, template mapping, approval workflow or WhatsApp changes.
 
 ## 1. What it does
 
@@ -332,7 +334,7 @@ Integrity enforced by the database:
 | --- | --- |
 | campaign / date / sequence | `campaignId` (new), `scheduledDate`, `dayNumber`; addressable as unique `(campaignId, dayNumber)` |
 | topic | `theme` (reused) |
-| content type | `contentType` (new, key from `CAMPAIGN_CONTENT_TYPES`) |
+| content type | `contentType` (new; a pillar key of the vertical's content strategy — Phase 2, §18.2) |
 | headline / supporting text / CTA | `headline`, `supportingText`, `cta` (new) |
 | caption / hashtags / visual prompt | `caption`, `hashtags`, `imagePrompt`, `backgroundPrompt` (reused) |
 | suggested / selected template | `suggestedTemplateId` (new) / `posterTemplateId` (reused) |
@@ -421,7 +423,7 @@ What happens when:
 
 | File | Role |
 | --- | --- |
-| `src/lib/campaign/model.ts` | Pure rules: transition tables, poster-input fields, effective template, readiness, auto-activation, slot planning (single walk, identical dates to `nthDeliveryDate`), content-type catalogue |
+| `src/lib/campaign/model.ts` | Pure rules: transition tables, poster-input fields, effective template, readiness, auto-activation, slot planning (single walk, identical dates to `nthDeliveryDate`). The Phase 1 content-type catalogue was replaced in Phase 2 by vertical content strategies (§18.2) |
 | `src/lib/campaign/service.ts` | DB operations taking `prisma` or a transaction client: `createCampaign`, `changeCampaignStatus`, `findCampaignDay`, `updateCampaignDayContent`, `selectDayTemplate`, `suggestDayTemplate`, `transitionGenerationStatus`, `addPosterVersion`, `activatePosterVersion`, `reviewPosterVersion`. Racing writes are conditional updates that report `conflict`. No provider calls. |
 | `scripts/check-campaign-model.ts` | `npm run check:campaign`: 54 pure checks |
 | `scripts/check-campaign-db.ts` | `npm run check:campaign-db`: 89 checks against the dev DB inside one transaction that is always rolled back (table counts compared before and after). Refuses a non-local or non-dev `DATABASE_URL`. |
@@ -478,3 +480,162 @@ Not changed: `runDemoCreativeNow` (appends a new legacy row after the highest da
   - Table counts are compared before and after.
   - `fetch` is stubbed and provider keys are blanked. The suite asserts zero network attempts.
 - **Proof it catches the bug:** against the pre-fix code, 23 of the 39 checks fail.
+
+## 18. Campaign automation — Phase 2: AI content calendar generation
+
+**Status: content planning only.** AI writes each campaign day's *content* into its existing slot.
+
+**NOT IMPLEMENTED** (later phases):
+- Poster generation of any kind (no gpt-image-2, no fal.ai, no uploads).
+- Rolling poster generation.
+- Template mapping and drag-and-drop.
+- Approval workflow.
+- Delivery queue and WhatsApp / Evolution changes.
+- A campaign dashboard beyond the calendar page.
+
+The f5053c4 protections are unchanged: legacy seed, import and upload still refuse campaign clients, and the pipeline and sweep still ignore campaign days.
+
+### 18.1 Audit findings
+
+- **Reused, not duplicated:**
+  - Topic is `ContentCalendar.theme`; `caption`, `hashtags` and `imagePrompt` are existing columns.
+  - `contentType`, `headline`, `supportingText`, `cta` and `contentRevision` come from Phase 1.
+  - Client, vertical and plan are reached through `Campaign`.
+- **AI:** `generateStructured` (strict JSON schema, retries, `UsageEvent` recording) and `buildImagePromptRules` are reused. Spend is recorded under the existing `calendar` operation.
+- **Vertical:** `Category` had no content strategy, and Phase 1's content-type catalogue was hardcoded. Both are replaced by §18.2.
+- **Language:** the application has no language setting, so content is written in English.
+- **UI:** no campaign UI existed, not even campaign creation. §18.6 adds both.
+
+### 18.2 Content strategy (per vertical)
+
+`Category.contentStrategy` (JSON) holds weighted **pillars**, each `{ key, label, weight 1–20, guidance, promotional }`.
+
+- A vertical without one uses `DEFAULT_CONTENT_STRATEGY`, which is industry-neutral: educational, practical tips, myth vs fact, common questions, awareness, service spotlight, engagement, trust & values, seasonal, promotional.
+- No industry's categories exist in code. A Dental vertical defines its own pillars, for example "Preventive care".
+- **Editing:** use the vertical page's *Content strategy* card. The text format is `Label | weight | guidance` with an optional `| promotional`. The key is the label's slug, so the text round-trips exactly. Saving empty text restores the default.
+- **Balance is deterministic** (`planContentTypes`): smooth weighted round-robin over the whole campaign.
+  - Each pillar gets its weighted share of days, within one day.
+  - No type repeats on consecutive days, and promotional days are never back to back.
+  - Day N always gets the same type, whether it is generated alone, in a range or in a full run.
+- `ContentCalendar.contentType` must be a pillar key. The model's schema is an enum of the vertical's keys, and manual edits are validated against the same strategy.
+
+### 18.3 Data model — migration `20260915220000_campaign_content_generation`
+
+Additive, with one scoped backfill.
+
+| Change | Purpose |
+| --- | --- |
+| Enum `CampaignContentStatus` (`NOT_GENERATED`, `READY`, `NEEDS_REVIEW`) | Content state of a campaign day, independent of posters |
+| `ContentCalendar.contentStatus` (nullable) | Null on legacy rows; campaign slots start `NOT_GENERATED` |
+| `ContentCalendar.contentIssues text[]` | Deterministic validation findings behind `NEEDS_REVIEW` |
+| `ContentCalendar.suggestedTemplateType` (nullable) | The generator's layout hint (`SUGGESTED_TEMPLATE_TYPES`, e.g. `tips-list`), for the future template mapper. Not a template id; `suggestedTemplateId` is untouched |
+| `Category.contentStrategy` (nullable JSONB) | §18.2 |
+| `UPDATE … SET contentStatus = 'NOT_GENERATED' WHERE campaignId IS NOT NULL` | Existing campaign slots are empty by definition; legacy rows are not touched |
+
+The planned date is **not** asked of the model. Each day's date is its slot's `scheduledDate`.
+
+### 18.4 Generation service (`src/lib/campaign/content-generation.ts`)
+
+- **Context sent:**
+  - Company name, vertical, plan, duration, start date, delivery weekdays.
+  - Brand tagline and brand voice (`brandGuideline.typography.vibeClassification`).
+  - The strategy pillars with guidance.
+  - Each requested day's number, date and planned content type.
+  - History: every other day's topic, and the nearest 40 headlines and 12 CTAs.
+- **Never sent:** Drive ids, logo URLs, WhatsApp number, website or any secret. The brief's `ContentBrief` type has no such fields, and both test suites assert that nothing private appears in the requests.
+- **Structured output:** strict JSON schema with every field required, and content type and template type as enums. The output is re-validated with zod before anything is written.
+- **Chunked:** at most **30 days per request**, run sequentially so later chunks reuse the cached system prompt and see what earlier chunks wrote.
+  - 365 days take 13 requests.
+  - A response cut off at the token cap (`LlmError` `truncated`) splits the chunk in half automatically.
+  - Any other failure stops the run at that chunk. Earlier chunks stay saved, and the report names the day to resume from.
+- **Idempotent:**
+  - `missing` mode (the default) writes only `NOT_GENERATED` slots, so repeating a request makes no model call and changes nothing.
+  - Slots are unique per `(campaignId, dayNumber)` and only ever updated, so no duplicate day can be created.
+  - Replacing content requires `overwrite` mode explicitly.
+- **Deterministic validation** (`validateGeneratedChunk`):
+  - *Refused:* entries that fail the schema, day numbers that were not requested, and duplicate day numbers (the first wins).
+  - *Omitted days* are reported and stay empty, ready to retry.
+  - *Accepted but NEEDS_REVIEW:* an exact duplicate topic or headline anywhere in the campaign (case, punctuation and spacing ignored), a content type other than the planned one, the same CTA as the previous day, or an over-long headline or CTA.
+- **Concurrent edits:** each write is conditional on the day's `updatedAt` and `contentRevision`. An operator edit made while the model was writing is kept and reported as `changedMeanwhile`.
+- **What a content write changes:** `theme`, `contentType`, `headline`, `supportingText`, `cta`, `caption`, `hashtags`, `imagePrompt`, `suggestedTemplateType`, `contentStatus`, `contentIssues`, and `contentRevision + 1`.
+  - Never changed: date, day number, template columns, poster versions, the active pointer, generation status, delivery columns, approval.
+
+### 18.5 Partial generation and regeneration — chosen behaviour
+
+| Operation | Behaviour |
+| --- | --- |
+| Generate all / missing | Empty slots of the range, 30 per request. Written days are skipped. |
+| Generate a range, e.g. days 91–120 | The same, limited to the range. Asking again for a written range makes no request. |
+| Regenerate a range, e.g. days 101–130 | `overwrite` mode, behind a confirmation in the UI. Replaces content in the range only. A day's existing content type is kept when it is a valid pillar. Days outside the range are untouched. **Poster versions are never deleted or changed, and the active poster stays active.** Because `contentRevision` moves, each existing poster becomes *outdated* (derived: version revision < day revision). The report and the UI flag those days as needing poster regeneration. Continuation (`nextFromDay`) moves past processed chunks, so no day is rewritten twice in one run. |
+| Regenerate one day (`regenerateCampaignDayContent`) | One request for exactly that day. Same date, day number, template mapping and poster versions. New content, `contentRevision + 1`. Other days unaffected; nothing generated or sent. |
+
+### 18.6 Manual editing, review and UI
+
+- **Manual edit** (`updateCampaignDayContent`, Phase 1 extended):
+  - Changes one row and makes no model call.
+  - Refused when the day changed since it was loaded.
+  - Content type must be a pillar of the vertical's strategy.
+  - The edit counts as the review: status becomes `READY` (or `NOT_GENERATED` if edited back to empty) and findings are cleared.
+  - Poster inputs bump the revision; caption and hashtags do not.
+- **Mark reviewed** (`markCampaignDayContentReviewed`): `NEEDS_REVIEW` → `READY` with no content change.
+- **Client page → Campaigns card:** lists the client's campaigns with ready / to review / not generated counts, and has a *New campaign* form (name, first day, content days, Auto/Manual mapping) that creates a DRAFT with empty slots. A client with legacy calendar days is told why a campaign cannot use those day numbers.
+- **Calendar page** (`/admin/clients/[clientId]/campaigns/[campaignId]`):
+  - *Summary:* stat tiles for content ready, needs review, not generated and posters outdated.
+  - *Range and generation:* select with inputs, a click or shift-click. *Generate missing (N)*; *Regenerate range* with confirmation and a count of posters that will be marked outdated. Runs one request per chunk from the browser, with progress, *Stop after this request*, and a clear error on a failed chunk.
+  - *Day list:* filters by status; per day the status (✓ Content ready / ✏ Needs review / ○ Not generated), content type, topic, headline, findings, layout hint, template and poster state (not generated / current / outdated).
+  - *Per-day actions:* *Edit* (dialog), *Regenerate* (confirmation) and *Mark reviewed*.
+  - Read-only when the campaign is COMPLETED or CANCELLED.
+- **Vertical page → Content strategy card:** §18.2.
+
+### 18.7 Code and tests
+
+| File | Role |
+| --- | --- |
+| `src/lib/campaign/content-strategy.ts` | Strategy type, default, parsing, editor text format, `planContentTypes`, `SUGGESTED_TEMPLATE_TYPES` |
+| `src/lib/campaign/content-plan.ts` | Pure: target selection, chunking, history, prompts, schema, `validateGeneratedChunk` |
+| `src/lib/campaign/content-generation.ts` | `generateCampaignContent`, `regenerateCampaignDayContent`; injectable generator (default `generateStructured`) |
+| `src/lib/campaign/service.ts` | Slots start `NOT_GENERATED`; manual edits validate against the strategy and set status; `markCampaignDayContentReviewed` |
+| `src/app/admin/campaigns/actions.ts` | Create campaign, generate one chunk, regenerate day, edit day, mark reviewed, save strategy |
+| `src/components/campaign/*` | `CampaignCalendar`, `CampaignDayEditor`, `CreateCampaignForm`, `ContentStrategyEditor` |
+
+**Automated tests** (`npm run …`):
+
+| Suite | Checks | Covers |
+| --- | --- | --- |
+| `check:campaign-content` | 57, pure | Strategy parsing, round trip, default neutrality; balanced deterministic assignment; targets and 13-chunk plan for 365 days; validation; schema enums; prompt content |
+| `check:campaign-content-db` | 65 | Dev DB, fake generator, one rolled-back transaction, row counts compared, 0 network attempts — see below |
+
+The `check:campaign-content-db` suite covers:
+- Chunked generation and prompt privacy.
+- An idempotent retry: no request, no overwrite, no duplicates.
+- Range 91–120.
+- A failing chunk, then resume from exactly that chunk.
+- An omitted day, filled on the next run.
+- Duplicate headline → NEEDS_REVIEW.
+- Range regeneration keeping dates, templates and poster versions, and marking the poster outdated.
+- Overwrite continuation without double writes.
+- Day 127 regeneration: neighbours, versions, usage and delivery fields unchanged.
+- Manual edit, strategy validation and mark reviewed.
+- An operator edit during generation is kept.
+- Truncation split.
+- A cancelled campaign and a bad range are refused before any request.
+- Legacy rows untouched.
+
+Phase 1 and f5053c4 suites still pass: `check:campaign` 55, `check:campaign-db` 89, `check:calendar-scope` 39.
+
+**UI check (local, not committed; `.studio-checks/campaign-ui/`):**
+- *Setup:* a temporary git worktree dev server (so the operator's running `next dev` was not disturbed) with OpenAI pointed at a local chat-completions mock — no spend. Playwright drove the real UI.
+- *Flows verified:* create campaign → Generate missing (45 days in 2 requests, nothing private in requests) → manual edit (no request) → regenerate day → mark reviewed → regenerate range 1–10 → failing chunk reported, then resumed → strategy editor save.
+- *Browser:* 0 browser errors (baseline page also 0); no horizontal overflow at 390 px.
+- *Cleanup:* fixtures and their usage rows removed; the dev DB matches its prior contents.
+
+### 18.8 Known limitations and concerns
+
+- **Content language** is English only (no language setting exists).
+- **Seasonal references** rely on the model and the date; no holiday calendar is supplied, so nothing checks a festival's date.
+- **Duplicate detection** is exact after normalisation. Paraphrased repeats are steered by the prompt history, not detected.
+- **A long run is browser-driven.** Closing the tab stops after the current request; everything written is kept and *Generate missing* resumes. There is no server-side background job.
+- **Concurrent runs** on the same range can both pay for a request; the second one's writes are skipped by the conditional update.
+- **Changing a vertical's strategy** does not rewrite existing days. Days keep their old content type, shown as "(not in strategy)" in the editor, and later generation plans with the new pillars.
+- **Legacy views:** the client page's legacy stats and ledgers still count and list campaign days (§17.11 item 7).
+- **Colour lint:** `npm run lint:colors` reports colour classes in `src/components/studio/poster-studio-workspace.tsx` that were already there at f5053c4. No new file triggers it, and Poster Studio was not modified.

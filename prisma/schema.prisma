@@ -92,6 +92,16 @@ model Category {
   /// vertical on extraction, which is still correct for a library of genuinely
   /// different references somebody else drew.
   defaultLayoutSpec Json?
+
+  /// This vertical's content strategy for AI campaign calendars, as a
+  /// `ContentStrategy` (src/lib/campaign/content-strategy.ts): weighted content
+  /// pillars, each a key, a label and guidance for the model.
+  ///
+  /// Owned by the vertical so no industry's categories are hardcoded in the
+  /// application. Null — every existing row — uses the industry-neutral default
+  /// strategy. Free-form Json for the same reason as `defaultLayoutSpec`: an
+  /// unreadable value degrades to the default rather than breaking generation.
+  contentStrategy Json?
 }
 
 /// One operator-uploaded reference poster for a vertical.
@@ -258,9 +268,9 @@ model CategoryTemplate {
   /// Enforced only by the campaign domain (`src/lib/campaign/service.ts`). The
   /// legacy rotation in `ai-pipeline.ts` does not read it yet.
   isActive     Boolean  @default(true)
-  /// Content-type keys this template suits, from `CAMPAIGN_CONTENT_TYPES`
-  /// (src/lib/campaign/model.ts). Empty means "any" — every existing row.
-  /// Strings rather than an enum, like `imageSizePreset`: the catalogue grows.
+  /// Content-type keys this template suits — pillar keys of the vertical's
+  /// content strategy (src/lib/campaign/content-strategy.ts). Empty means "any"
+  /// — every existing row. Strings rather than an enum: each vertical owns its keys.
   contentTypes String[] @default([])
 
   /// Days pinned to this template: by name in an imported sheet, or as a
@@ -429,6 +439,13 @@ enum TemplateMappingMode {
 enum CampaignApprovalPolicy {
   MANUAL_REVIEW
   AUTO_APPROVE
+}
+
+/// Content state of a campaign day — independent of any poster.
+enum CampaignContentStatus {
+  NOT_GENERATED // An empty slot: no content written yet
+  READY // Content written (by the generator without findings, or by a person)
+  NEEDS_REVIEW // Generated content that deterministic validation flagged
 }
 
 /// A campaign day's last poster generation attempt.
@@ -619,7 +636,7 @@ model ContentCalendar {
   /// a row whose campaign is someone else's.
   campaignId            String?
   campaign              Campaign?               @relation(fields: [campaignId, clientId], references: [id, clientId], onDelete: Cascade)
-  /// Key from `CAMPAIGN_CONTENT_TYPES`, e.g. "festival", "educational".
+  /// Pillar key from the campaign vertical's content strategy, e.g. "educational".
   contentType           String?
   headline              String?                 @db.Text
   supportingText        String?                 @db.Text
@@ -628,6 +645,16 @@ model ContentCalendar {
   /// operator's choice is `posterTemplateId`, which wins when both are set.
   suggestedTemplateId   String?
   suggestedTemplate     CategoryTemplate?       @relation("SuggestedTemplate", fields: [suggestedTemplateId], references: [id], onDelete: SetNull)
+  /// The content generator's layout hint for this day, a key from
+  /// `SUGGESTED_TEMPLATE_TYPES` (e.g. "tips-list", "quote"). A hint for the future
+  /// template mapper, not a template: `suggestedTemplateId` stays untouched.
+  suggestedTemplateType String?
+  /// Whether this slot has content, and whether it needs a human look.
+  /// Null on legacy rows. See `CampaignContentStatus`.
+  contentStatus         CampaignContentStatus?
+  /// Deterministic validation findings behind NEEDS_REVIEW, e.g. "Headline
+  /// repeats day 12". Operator-readable sentences; cleared by a manual edit.
+  contentIssues         String[]                @default([])
   /// Counts changes to this day's poster inputs (topic, content type, headline,
   /// supporting text, CTA, prompts, effective template). A poster version made
   /// from an older revision is stale. Caption and hashtags travel with the
