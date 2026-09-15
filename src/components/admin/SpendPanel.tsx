@@ -131,7 +131,9 @@ export function SpendPanel({
                 hint={
                   provider === UsageProvider.FAL && report.byoImageCount > 0
                     ? `${describeUnits(provider, totals)} · ${report.byoImageCount.toLocaleString('en-IN')} on your own key`
-                    : describeUnits(provider, totals)
+                    : provider === UsageProvider.OPENAI && report.unpricedStudioImageCount > 0
+                      ? `${describeUnits(provider, totals)} · ${report.unpricedStudioImageCount.toLocaleString('en-IN')} studio image${report.unpricedStudioImageCount === 1 ? '' : 's'} not priced`
+                      : describeUnits(provider, totals)
                 }
               />
             ))
@@ -545,7 +547,9 @@ function describeUnits(
     case UsageProvider.EVOLUTION:
       return `${totals.messageCount.toLocaleString('en-IN')} message${totals.messageCount === 1 ? '' : 's'}`;
     case UsageProvider.OPENAI:
-      return `${formatTokens(totals.inputTokens + totals.outputTokens)} tokens`;
+      return totals.imageCount > 0
+        ? `${formatTokens(totals.inputTokens + totals.outputTokens)} tokens · ${totals.imageCount.toLocaleString('en-IN')} image${totals.imageCount === 1 ? '' : 's'}`
+        : `${formatTokens(totals.inputTokens + totals.outputTokens)} tokens`;
   }
 }
 
@@ -560,6 +564,14 @@ function RateCardNote({ report }: { report: CostReport }) {
         ${rates.openAiOutputPerMTok} out per 1M tokens · fal.ai ${rates.falPerImage}/image ·
         WhatsApp ${rates.whatsAppPerMessage}/message · ₹{rates.usdInr} per $1
       </p>
+      <p className="font-mono">
+        OpenAI images{' '}
+        {rates.openAiImageTextInputPerMTok > 0 &&
+        rates.openAiImageImageInputPerMTok > 0 &&
+        rates.openAiImageOutputPerMTok > 0
+          ? `$${rates.openAiImageTextInputPerMTok} text in · $${rates.openAiImageImageInputPerMTok} image in · $${rates.openAiImageOutputPerMTok} out per 1M tokens`
+          : 'not priced — PRICE_OPENAI_IMAGE_* unset'}
+      </p>
       <p>
         Set from <code>PRICE_*</code> and <code>USD_INR_RATE</code>. These are defaults, not
         quotes — check them against your provider invoices, because every figure above is
@@ -573,6 +585,16 @@ function RateCardNote({ report }: { report: CostReport }) {
           {report.byoImageCount === 1 ? '' : 's'} in this period were paid for with your own
           fal.ai key. They are counted but not costed — that invoice arrives from fal.ai
           directly, so every ₹ above is money Evokz pays.
+        </p>
+      )}
+      {report.unpricedStudioImageCount > 0 && (
+        <p>
+          {report.unpricedStudioImageCount.toLocaleString('en-IN')} AI Poster Studio image
+          {report.unpricedStudioImageCount === 1 ? '' : 's'} in this period{' '}
+          {report.unpricedStudioImageCount === 1 ? 'was' : 'were'} recorded without a price, so
+          the totals above understate OpenAI spend. Their token counts are exact; set{' '}
+          <code>PRICE_OPENAI_IMAGE_*</code> from OpenAI&apos;s current image pricing, and reconcile
+          against the OpenAI billing dashboard.
         </p>
       )}
     </div>

@@ -10,7 +10,10 @@ services:
       POSTGRES_PASSWORD: evokz_dev_password
       POSTGRES_DB: evokz_ai_dev
     ports:
-      - "5433:5432"
+      # 5434, not 5433: a native Windows PostgreSQL 18 service on the development
+      # machine already listens on 5433 and shadows Docker's mapping, so
+      # localhost:5433 reaches that server instead of this container.
+      - "5434:5432"
     volumes:
       - evokz_ai_dev_pgdata:/var/lib/postgresql/data
     healthcheck:

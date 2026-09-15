@@ -3,6 +3,7 @@ import { DeliveryStatus, UsageKeySource, UsageProvider } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getRateCard, microsToInr, type RateCard } from '@/lib/pricing';
 import { getAppTimeZone, startOfZonedDay, zonedDayRange } from '@/lib/time';
+import { STUDIO_IMAGE_OPERATION } from '@/lib/usage';
 
 /**
  * Spend aggregation for the dashboard.
@@ -24,7 +25,7 @@ export const RANGE_LABELS: Record<RangeKey, string> = {
 };
 
 export const PROVIDER_LABELS: Record<UsageProvider, string> = {
-  [UsageProvider.OPENAI]: 'OpenAI · copy',
+  [UsageProvider.OPENAI]: 'OpenAI · copy & studio',
   [UsageProvider.FAL]: 'fal.ai · images',
   [UsageProvider.EVOLUTION]: 'WhatsApp · delivery',
 };
@@ -134,6 +135,12 @@ export interface CostReport {
    */
   byoImageCount: number;
   byoEvents: number;
+  /**
+   * AI Poster Studio images in range recorded with no price, because the
+   * image-token rates are not configured. Their spend is real and missing from
+   * every total above, so the panel must say so rather than let ₹0 read as free.
+   */
+  unpricedStudioImageCount: number;
   clientOptions: Array<{ id: string; companyName: string; isDemo: boolean }>;
 }
 
@@ -220,6 +227,7 @@ export async function loadCostReport(
     clientRecords,
     firstEvent,
     backfilledCount,
+    unpricedStudio,
   ] = await Promise.all([
     // Grouped by key source as well, so BYO spend can be dropped from the money
     // while its unit counts stay. `provider` is NOT NULL, so these rows are an
@@ -272,6 +280,19 @@ export async function loadCostReport(
     }),
     prisma.usageEvent.findFirst({ orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
     prisma.usageEvent.count({ where: { ...where, backfilled: true } }),
+    // Zero money on a studio row means "not priced" — see `recordOpenAiImageUsage`.
+    // Skipped when the view is filtered to another provider, where the answer is 0.
+    filters.provider && filters.provider !== UsageProvider.OPENAI
+      ? Promise.resolve({ _sum: { imageCount: 0 } })
+      : prisma.usageEvent.aggregate({
+          where: {
+            ...where,
+            provider: UsageProvider.OPENAI,
+            operation: STUDIO_IMAGE_OPERATION,
+            costUsdMicros: 0,
+          },
+          _sum: { imageCount: true },
+        }),
   ]);
 
   // Both group sets now carry two rows per key where they used to carry one, so
@@ -393,6 +414,7 @@ export async function loadCostReport(
     hasBackfilled: backfilledCount > 0,
     byoImageCount,
     byoEvents,
+    unpricedStudioImageCount: unpricedStudio._sum.imageCount ?? 0,
     clientOptions: clientRecords.map((client) => ({
       id: client.id,
       companyName: client.companyName,

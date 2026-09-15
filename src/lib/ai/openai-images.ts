@@ -1,234 +1,299 @@
 import OpenAI from 'openai';
-import { type Uploadable } from 'openai/uploads';
+import type { ImagesResponse } from 'openai/resources/images';
+
 import { optionalEnv } from '@/lib/env';
-import { prisma } from '@/lib/prisma';
-import { UsageKeySource, UsageProvider } from '@prisma/client';
+import { StudioError } from '@/lib/poster-studio/errors';
+import type { ImageTokenUsage } from '@/lib/pricing';
 
-export type PosterStudioAspectRatio = '1024x1024' | '1024x1792' | '1792x1024';
+/**
+ * OpenAI image access for the AI Poster Studio.
+ *
+ * One entry point, `renderStudioImage`, which picks the endpoint from whether an
+ * input image is supplied:
+ *
+ *   no image  -> `images.generate`
+ *   image     -> `images.edit`, with the image attached
+ *
+ * The edit endpoint is how *every* image-guided request reaches the model — an
+ * edit, a variation, and a generate that carries a style reference. The first
+ * version described a reference with a gpt-4o vision call and then sent only that
+ * text, so the image model never saw the reference at all.
+ *
+ * Returns raw bytes. Storage is the caller's job (`src/lib/poster-studio/storage.ts`);
+ * nothing here writes to Drive or the database.
+ */
 
-export interface ImageGenerationOptions {
-  prompt: string;
-  size?: PosterStudioAspectRatio;
-  quality?: 'standard' | 'low' | 'medium' | 'high' | 'auto';
-  model?: string;
-  clientId?: string | null;
+/**
+ * Pinned rather than read from the environment: the output sizes in
+ * `STUDIO_ASPECT_RATIOS` are gpt-image-2's flexible sizes, which `gpt-image-1`
+ * and `gpt-image-1.5` reject. Changing the model means changing those sizes.
+ */
+export const STUDIO_IMAGE_MODEL = 'gpt-image-2';
+
+const QUALITIES = ['low', 'medium', 'high', 'auto'] as const;
+export type StudioImageQuality = (typeof QUALITIES)[number];
+
+/**
+ * Render quality, from `POSTER_STUDIO_IMAGE_QUALITY`.
+ *
+ * Defaults to `low` — the cheapest setting — deliberately: output tokens, and so
+ * cost, scale with quality, and the API's own default of `auto` is free to pick
+ * `high`. Raise it once real-API testing has shown what each setting costs.
+ */
+export function getStudioImageQuality(): StudioImageQuality {
+  const raw = optionalEnv('POSTER_STUDIO_IMAGE_QUALITY', 'low').toLowerCase();
+  return (QUALITIES as readonly string[]).includes(raw) ? (raw as StudioImageQuality) : 'low';
 }
 
-export interface ImageEditOptions {
+/**
+ * Per-request ceiling. Image generation at high quality and large sizes can take
+ * well over a minute; the SDK default of ten minutes would leave an operator
+ * watching a spinner long after anything useful could come back.
+ */
+const REQUEST_TIMEOUT_MS = 5 * 60_000;
+
+export interface StudioImageInput {
+  bytes: Buffer;
+  mimeType: string;
+}
+
+export interface StudioImageRequest {
   prompt: string;
-  imageBuffer?: Buffer;
-  imageDataUri?: string;
-  size?: PosterStudioAspectRatio;
-  quality?: 'standard' | 'low' | 'medium' | 'high' | 'auto';
-  model?: string;
-  clientId?: string | null;
+  /** Exact `WIDTHxHEIGHT` from `STUDIO_ASPECT_RATIOS`. */
+  size: string;
+  /** When present the request goes through `images.edit` with this image attached. */
+  image?: StudioImageInput | null;
 }
 
 export interface StudioImageResult {
-  imageUrl: string;
-  revisedPrompt?: string;
+  bytes: Buffer;
+  mimeType: string;
   model: string;
-  size: PosterStudioAspectRatio;
+  quality: StudioImageQuality;
+  /** Null when the response carried no usage block. */
+  usage: ImageTokenUsage | null;
 }
-
-const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
 
 let cachedClient: OpenAI | null = null;
 
-function getOpenAIClient(): OpenAI {
+function getClient(): OpenAI {
   if (cachedClient) return cachedClient;
+
   const apiKey = optionalEnv('OPENAI_API_KEY', '');
-  if (!apiKey || apiKey.trim() === '') {
-    throw new Error(
-      'OPENAI_API_KEY is missing. Please configure OPENAI_API_KEY in your environment variables to enable live AI poster generation.',
+  if (!apiKey) {
+    throw new StudioError(
+      'config',
+      'OPENAI_API_KEY is not set on the server, so the studio cannot reach OpenAI. Add it to the environment and restart the app.',
     );
   }
-  cachedClient = new OpenAI({ apiKey });
+
+  cachedClient = new OpenAI({
+    apiKey,
+    timeout: REQUEST_TIMEOUT_MS,
+    // No automatic retries. A retried image request doubles the wait invisibly,
+    // and a request that timed out client-side may still have been generated
+    // and billed. The operator can press the button again and see that they did.
+    maxRetries: 0,
+  });
   return cachedClient;
 }
 
-/**
- * Record OpenAI image usage into the UsageEvent ledger.
- * Does not invent fake pricing; records actual tokens/images spent.
- */
-async function recordStudioImageUsage(
-  model: string,
-  usage?: { input_tokens?: number; output_tokens?: number; total_tokens?: number },
-  clientId?: string | null,
-): Promise<void> {
-  try {
-    await prisma.usageEvent.create({
-      data: {
-        clientId: clientId ?? null,
-        provider: UsageProvider.OPENAI,
-        operation: 'image',
-        model,
-        imageCount: 1,
-        inputTokens: usage?.input_tokens ?? 0,
-        outputTokens: usage?.output_tokens ?? 0,
-        costUsdMicros: 0, // Provider billing reconciliation comes from OpenAI account dashboard
-        keySource: UsageKeySource.PLATFORM,
-      },
-    });
-  } catch (err) {
-    console.error('[studio:usage] Failed to record image spend ledger entry:', err);
-  }
-}
-
-/**
- * Helper to convert a Data URI or Buffer to an OpenAI Uploadable File object.
- */
-async function prepareUploadableImage(imageDataUri?: string, imageBuffer?: Buffer): Promise<Uploadable> {
-  if (imageBuffer) {
-    return await OpenAI.toFile(imageBuffer, 'reference.png', { type: 'image/png' });
-  }
-
-  if (imageDataUri) {
-    const matches = imageDataUri.match(/^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$/);
-    if (!matches || !matches[2]) {
-      throw new Error('Invalid image reference format. Expected a valid image Data URI.');
-    }
-    const mimeType = matches[1] || 'image/png';
-    const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
-    if (!allowedMimeTypes.includes(mimeType.toLowerCase())) {
-      throw new Error(`Unsupported image format: ${mimeType}. Please upload a PNG, JPEG, or WebP image.`);
-    }
-
-    const buffer = Buffer.from(matches[2], 'base64');
-    if (buffer.length > 10 * 1024 * 1024) {
-      throw new Error('Reference image file size exceeds the 10 MB limit.');
-    }
-
-    const ext = mimeType.includes('jpeg') || mimeType.includes('jpg') ? 'jpg' : mimeType.includes('webp') ? 'webp' : 'png';
-    return await OpenAI.toFile(buffer, `reference.${ext}`, { type: mimeType });
-  }
-
-  throw new Error('No reference image content provided.');
-}
-
-/**
- * Generate a new poster image via OpenAI GPT-Image-2 API (Text-to-Image).
- */
-export async function generateStudioImage(options: ImageGenerationOptions): Promise<StudioImageResult> {
-  const model = options.model ?? DEFAULT_IMAGE_MODEL;
-  const size = options.size ?? '1024x1792';
+export async function renderStudioImage(request: StudioImageRequest): Promise<StudioImageResult> {
+  const client = getClient();
+  const quality = getStudioImageQuality();
 
   try {
-    const client = getOpenAIClient();
+    const response: ImagesResponse = request.image
+      ? await client.images.edit({
+          model: STUDIO_IMAGE_MODEL,
+          image: await OpenAI.toFile(
+            request.image.bytes,
+            `input.${extensionFor(request.image.mimeType)}`,
+            { type: request.image.mimeType },
+          ),
+          prompt: request.prompt,
+          n: 1,
+          size: request.size,
+          quality,
+          output_format: 'png',
+        })
+      : await client.images.generate({
+          model: STUDIO_IMAGE_MODEL,
+          prompt: request.prompt,
+          n: 1,
+          size: request.size,
+          quality,
+          output_format: 'png',
+        });
 
-    const response = await client.images.generate({
-      model,
-      prompt: options.prompt,
-      n: 1,
-      size,
-    });
-
-    const imageItem = response.data?.[0];
-    if (!imageItem) {
-      throw new Error('OpenAI Image API returned an empty response.');
+    // GPT image models always answer in base64; there is no URL form to fall
+    // back to.
+    const encoded = response.data?.[0]?.b64_json;
+    if (!encoded) {
+      throw new StudioError(
+        'provider',
+        'OpenAI answered without an image. Nothing was saved — try again.',
+      );
     }
-
-    const imageUrl = imageItem.b64_json
-      ? `data:image/png;base64,${imageItem.b64_json}`
-      : imageItem.url;
-
-    if (!imageUrl) {
-      throw new Error('OpenAI Image API returned no image URL or Base64 payload.');
-    }
-
-    await recordStudioImageUsage(model, response.usage, options.clientId);
 
     return {
-      imageUrl,
-      revisedPrompt: imageItem.revised_prompt ?? options.prompt,
-      model,
-      size,
+      bytes: Buffer.from(encoded, 'base64'),
+      mimeType: `image/${response.output_format ?? 'png'}`,
+      model: STUDIO_IMAGE_MODEL,
+      quality,
+      usage: toTokenUsage(response.usage),
     };
-  } catch (error: any) {
-    console.error('[studio:openai-images] Image generation error:', error);
-    throw formatOperatorError(error);
+  } catch (error) {
+    throw toStudioError(error);
   }
 }
 
-/**
- * Edit or generate variations of an existing poster/image using OpenAI GPT-Image-2 API (Image-to-Image / Edit).
- */
-export async function editStudioImage(options: ImageEditOptions): Promise<StudioImageResult> {
-  const model = options.model ?? DEFAULT_IMAGE_MODEL;
-  const size = options.size ?? '1024x1792';
+function extensionFor(mimeType: string): string {
+  if (mimeType === 'image/jpeg') return 'jpg';
+  if (mimeType === 'image/webp') return 'webp';
+  return 'png';
+}
 
-  // If no reference image is supplied, fall back cleanly to text-to-image generation
-  if (!options.imageDataUri && !options.imageBuffer) {
-    return await generateStudioImage({
-      prompt: options.prompt,
-      size,
-      model,
-      clientId: options.clientId,
-    });
-  }
-
-  try {
-    const client = getOpenAIClient();
-    const uploadableFile = await prepareUploadableImage(options.imageDataUri, options.imageBuffer);
-
-    const response = await client.images.edit({
-      model,
-      image: uploadableFile,
-      prompt: options.prompt,
-      n: 1,
-      size,
-    });
-
-    const imageItem = response.data?.[0];
-    if (!imageItem) {
-      throw new Error('OpenAI Image Edit API returned an empty response.');
-    }
-
-    const imageUrl = imageItem.b64_json
-      ? `data:image/png;base64,${imageItem.b64_json}`
-      : imageItem.url;
-
-    if (!imageUrl) {
-      throw new Error('OpenAI Image Edit API returned no image payload.');
-    }
-
-    await recordStudioImageUsage(model, response.usage, options.clientId);
-
-    return {
-      imageUrl,
-      revisedPrompt: imageItem.revised_prompt ?? options.prompt,
-      model,
-      size,
-    };
-  } catch (error: any) {
-    console.error('[studio:openai-images] Image edit error:', error);
-    throw formatOperatorError(error);
-  }
+function toTokenUsage(usage: ImagesResponse['usage']): ImageTokenUsage | null {
+  if (!usage) return null;
+  const imageInputTokens = usage.input_tokens_details?.image_tokens ?? 0;
+  const textInputTokens =
+    usage.input_tokens_details?.text_tokens ?? Math.max(usage.input_tokens - imageInputTokens, 0);
+  return {
+    textInputTokens,
+    imageInputTokens,
+    outputTokens: usage.output_tokens ?? 0,
+  };
 }
 
 /**
- * Format provider and network errors into clean, operator-safe messages.
+ * Maps a provider failure to operator copy.
+ *
+ * The raw provider message is logged, never returned: it can name internal
+ * parameters, and it is not written for an operator. Checked against the SDK's
+ * typed error classes — `APIConnectionTimeoutError` before `APIConnectionError`,
+ * which it extends, and both before `APIError`, which they extend.
  */
-function formatOperatorError(error: any): Error {
-  if (error instanceof Error && error.message.includes('OPENAI_API_KEY is missing')) {
-    return error;
+function toStudioError(error: unknown): StudioError {
+  if (error instanceof StudioError) return error;
+
+  if (error instanceof OpenAI.APIConnectionTimeoutError) {
+    return new StudioError(
+      'timeout',
+      'OpenAI did not return the image within 5 minutes. Nothing was saved. Try again; if it keeps happening, try a smaller format.',
+      { cause: error },
+    );
   }
 
-  const status = error?.status ?? error?.statusCode;
-  const message = error?.message || 'Unknown provider error';
-
-  if (status === 401 || message.includes('API key') || message.includes('unauthorized')) {
-    return new Error('OPENAI_API_KEY was rejected. Please verify your OpenAI API key in environment variables.');
-  }
-  if (status === 429 || message.includes('rate limit') || message.includes('quota')) {
-    return new Error('OpenAI rate limit or billing quota exceeded. Please verify your OpenAI account plan and billing.');
-  }
-  if (error?.code === 'content_policy_violation' || message.includes('safety') || message.includes('policy')) {
-    return new Error('The poster request was declined by OpenAI safety policies. Please refine your prompt description.');
-  }
-  if (status >= 500) {
-    return new Error('OpenAI API service is temporarily unavailable. Please try again in a few moments.');
+  if (error instanceof OpenAI.APIConnectionError) {
+    return new StudioError(
+      'network',
+      'The server could not reach the OpenAI API. Check its network connection and try again.',
+      { cause: error },
+    );
   }
 
-  return new Error(`Poster generation error: ${message}`);
+  if (error instanceof OpenAI.APIError) {
+    console.error('[studio:openai] image request failed', {
+      status: error.status,
+      code: error.code,
+      type: error.type,
+      param: error.param,
+      requestId: error.requestID,
+      message: error.message,
+    });
+
+    const code = error.code ?? '';
+    const param = error.param ?? '';
+
+    if (
+      code === 'moderation_blocked' ||
+      code === 'content_policy_violation' ||
+      (error.status === 400 && /safety system|moderation/i.test(error.message))
+    ) {
+      return new StudioError(
+        'moderation',
+        'OpenAI declined this request under its safety policy. Rephrase the prompt, or use a different input image.',
+        { cause: error },
+      );
+    }
+
+    switch (error.status) {
+      case 401:
+        return new StudioError(
+          'auth',
+          'OpenAI rejected the API key configured on the server. Check OPENAI_API_KEY.',
+          { cause: error },
+        );
+      case 403:
+        return new StudioError(
+          'access',
+          `This OpenAI API key or organisation is not allowed to use ${STUDIO_IMAGE_MODEL}. GPT image models can require organisation verification in the OpenAI dashboard.`,
+          { cause: error },
+        );
+      case 404:
+        return new StudioError(
+          'model',
+          `OpenAI could not find ${STUDIO_IMAGE_MODEL} or its image endpoint for this API key. Confirm the model is available to your organisation.`,
+          { cause: error },
+        );
+      case 413:
+        return new StudioError(
+          'image-too-large',
+          'OpenAI refused the input image as too large. Use a smaller file.',
+          { cause: error },
+        );
+      case 429:
+        return code === 'insufficient_quota'
+          ? new StudioError(
+              'quota',
+              'The OpenAI account is out of credit or over its billing limit. Check billing in the OpenAI dashboard.',
+              { cause: error },
+            )
+          : new StudioError(
+              'rate-limit',
+              'OpenAI is rate-limiting requests from this account. Wait a minute and try again.',
+              { cause: error },
+            );
+      default:
+        break;
+    }
+
+    if (error.status === 400 || error.status === 422) {
+      if (param.startsWith('image') || /image/i.test(code)) {
+        return new StudioError(
+          'invalid-image',
+          'OpenAI could not use the input image. Try a different PNG, JPEG or WebP file.',
+          { cause: error },
+        );
+      }
+      if (param === 'size' || /size/i.test(code)) {
+        return new StudioError(
+          'bad-request',
+          `OpenAI rejected the requested output size for ${STUDIO_IMAGE_MODEL}. Try a different format.`,
+          { cause: error },
+        );
+      }
+      return new StudioError(
+        'bad-request',
+        'OpenAI rejected the request. The details are in the server log.',
+        { cause: error },
+      );
+    }
+
+    if (typeof error.status === 'number' && error.status >= 500) {
+      return new StudioError(
+        'provider',
+        'OpenAI had a server error. Nothing was saved — try again shortly.',
+        { cause: error },
+      );
+    }
+  }
+
+  console.error('[studio:openai] unexpected image failure', error);
+  return new StudioError(
+    'provider',
+    'The image request failed unexpectedly. The details are in the server log.',
+    { cause: error },
+  );
 }

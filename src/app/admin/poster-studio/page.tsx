@@ -3,27 +3,42 @@ import { Sparkles } from 'lucide-react';
 
 import { PageHeader } from '@/components/admin/PageHeader';
 import { PosterStudioWorkspace } from '@/components/studio/poster-studio-workspace';
+import { getStudioImageQuality, STUDIO_IMAGE_MODEL } from '@/lib/ai/openai-images';
+import {
+  loadStudioHistory,
+  toStudioDatabaseError,
+  type StudioHistoryItem,
+} from '@/lib/poster-studio/history';
 import { prisma } from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
 
 export default async function PosterStudioPage() {
-  let clients: Array<{ id: string; companyName: string }> = [];
-  let history: any[] = [];
-
-  try {
-    clients = await prisma.client.findMany({
+  // Settled separately so a missing studio table still leaves the client list
+  // usable, and either failure is shown rather than rendered as an empty state.
+  const [clientsResult, historyResult] = await Promise.allSettled([
+    prisma.client.findMany({
       where: { isActive: true },
       select: { id: true, companyName: true },
       orderBy: { companyName: 'asc' },
-    });
+    }),
+    loadStudioHistory(),
+  ]);
 
-    history = await prisma.posterStudioGeneration.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: 24,
-    });
-  } catch (error) {
-    console.warn('[poster-studio-page] Database query fallback:', error);
+  const loadErrors: string[] = [];
+
+  const clients = clientsResult.status === 'fulfilled' ? clientsResult.value : [];
+  if (clientsResult.status === 'rejected') {
+    const failure = toStudioDatabaseError(clientsResult.reason, 'Loading clients');
+    console.error('[poster-studio-page]', failure.message, clientsResult.reason);
+    loadErrors.push(failure.message);
+  }
+
+  const history: StudioHistoryItem[] = historyResult.status === 'fulfilled' ? historyResult.value : [];
+  if (historyResult.status === 'rejected') {
+    const failure = toStudioDatabaseError(historyResult.reason, 'Loading history');
+    console.error('[poster-studio-page]', failure.message, historyResult.reason);
+    loadErrors.push(failure.message);
   }
 
   return (
@@ -32,9 +47,15 @@ export default async function PosterStudioPage() {
         icon={Sparkles}
         eyebrow="AI Studio"
         title="AI Poster Studio"
-        description="Design studio-grade marketing posters, reference-guided layouts, and natural language edits."
+        description="Generate marketing posters, guide them with a reference image, and make targeted edits or variations of existing designs."
       />
-      <PosterStudioWorkspace initialClients={clients} initialHistory={history} />
+      <PosterStudioWorkspace
+        clients={clients}
+        initialHistory={history}
+        loadErrors={loadErrors}
+        model={STUDIO_IMAGE_MODEL}
+        quality={getStudioImageQuality()}
+      />
     </div>
   );
 }

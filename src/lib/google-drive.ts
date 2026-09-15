@@ -2,7 +2,7 @@ import { Readable } from 'node:stream';
 
 import { google, type drive_v3 } from 'googleapis';
 
-import { normalizePrivateKey, requireEnv } from '@/lib/env';
+import { normalizePrivateKey, optionalEnv, requireEnv } from '@/lib/env';
 
 /**
  * Google Drive access through the single central service account.
@@ -118,6 +118,45 @@ export async function ensureVerticalTemplateFolder(
 
   verticalFolderCache.set(categoryName, pending);
   pending.catch(() => verticalFolderCache.delete(categoryName));
+
+  return pending;
+}
+
+/**
+ * Folder holding AI Poster Studio images for one scope: a client's company name,
+ * or "Generic" for studio work with no client selected.
+ *
+ * Laid out as `<root>/<scope>`, where the root is `POSTER_STUDIO_DRIVE_FOLDER_ID`
+ * when set and otherwise a "Poster Studio" folder under the vault node — nested
+ * for the same reason as "Vertical Templates": the vault's top level is a list of
+ * tenants. Deliberately *not* inside each client's own folder: those hold the
+ * posters that are delivered, and studio drafts mixed in would be mistaken for
+ * them.
+ *
+ * The override exists so a development machine holding real Drive credentials
+ * can point the studio at a scratch folder instead of the shared vault.
+ *
+ * Memoised per process with the same promise-caching and eviction-on-failure as
+ * `ensureVerticalTemplateFolder`.
+ */
+const posterStudioFolderCache = new Map<string, Promise<string>>();
+
+export async function ensurePosterStudioFolder(scopeName: string): Promise<string> {
+  const override = optionalEnv('POSTER_STUDIO_DRIVE_FOLDER_ID', '');
+  const scope = scopeName.trim() || 'Generic';
+  const cacheKey = JSON.stringify([override, scope]);
+
+  const cached = posterStudioFolderCache.get(cacheKey);
+  if (cached) return cached;
+
+  const pending = (async () => {
+    const root =
+      override || (await ensureFolder('Poster Studio', requireEnv('GOOGLE_DRIVE_PARENT_FOLDER_ID')));
+    return ensureFolder(scope, root);
+  })();
+
+  posterStudioFolderCache.set(cacheKey, pending);
+  pending.catch(() => posterStudioFolderCache.delete(cacheKey));
 
   return pending;
 }

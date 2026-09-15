@@ -361,14 +361,15 @@ model Client {
   // "+91 98765 43210" renders with its spacing. Falls back to whatsappNumber.
   displayPhone            String?
 
-  planId       String
-  plan         Plan              @relation(fields: [planId], references: [id], onDelete: Restrict)
-  categoryId   String
-  category     Category          @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  calendarDays ContentCalendar[]
-  usageEvents  UsageEvent[]
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  planId        String
+  plan          Plan                     @relation(fields: [planId], references: [id], onDelete: Restrict)
+  categoryId    String
+  category      Category                 @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  calendarDays  ContentCalendar[]
+  usageEvents   UsageEvent[]
+  studioPosters PosterStudioGeneration[]
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
 
   // Drives the per-minute dispatch sweep: (cronTime IN window) AND isActive.
   @@index([cronTime, isActive])
@@ -560,20 +561,73 @@ model AppSetting {
   updatedAt DateTime @updatedAt
 }
 
-/// History of poster creations, variations, and edits created in the AI Poster Studio.
+/// What an AI Poster Studio request asked the image model to do.
+enum PosterStudioMode {
+  GENERATE // A new poster from a brief, optionally guided by a reference image
+  EDIT // A targeted change to an existing image
+  VARIATION // A new design derived from an existing image
+}
+
+/// One image produced in the AI Poster Studio (/admin/poster-studio).
+///
+/// **No image bytes live in this table.** Both the output and the input image
+/// are unpublished Google Drive files; this row holds their ids, and
+/// `/api/poster-studio/[generationId]/image` serves them to an operator who is
+/// already through the admin session. The first version stored multi-megabyte
+/// base64 data URIs in a text column, which made every history load ship tens of
+/// megabytes of RSC payload.
+///
+/// Rows are immutable once written: an edit or a variation is a new row pointing
+/// at its parent, never an update — which is what lets the image route cache
+/// responses as immutable.
 model PosterStudioGeneration {
-  id                 String   @id @default(uuid())
-  prompt             String   @db.Text
-  mode               String   @default("generate") // generate | edit | variation
-  aspectRatio        String   @default("1024x1792") // 1024x1024 | 1024x1792 | 1792x1024
-  referenceUrl       String?  @db.Text
-  imageUrl           String   @db.Text
-  revisedPrompt      String?  @db.Text
+  id   String           @id @default(uuid())
+  mode PosterStudioMode
+
+  /// What the operator typed: the brief (GENERATE), the change (EDIT) or the
+  /// direction (VARIATION).
+  prompt     String @db.Text
+  /// The complete prompt sent to the image model, brand and format guidance
+  /// included. GPT image models return no revised prompt, so this is the only
+  /// prompt there is to inspect.
+  sentPrompt String @db.Text
+
+  /// Aspect ratio key from src/lib/poster-studio/limits.ts: "9:16" | "1:1" | "16:9".
+  aspectRatio String
+  /// Exact WIDTHxHEIGHT requested from the model, e.g. "1152x2048".
+  size        String
+  model       String
+  quality     String
+  /// The operator asked for artwork with no lettering. Nothing is composited.
+  textFree    Boolean @default(false)
+
+  imageDriveFileId String
+  imageMimeType    String
+  /// Measured from the returned bytes, not copied from the request.
+  width            Int?
+  height           Int?
+
+  /// The input image actually sent to the model, when there was one: an
+  /// operator upload, or another generation's output. Shared, not copied, when
+  /// it is another row's file — deletion only trashes a Drive file once no row
+  /// references it.
+  referenceDriveFileId String?
+  referenceMimeType    String?
+
+  /// Set only for EDIT and VARIATION made from a history item. A GENERATE that
+  /// borrowed a history image as a style reference is not its child.
   parentGenerationId String?
-  clientId           String?
-  createdAt          DateTime @default(now())
+  // SetNull: deleting a parent must not delete the edits made from it.
+  parent             PosterStudioGeneration?  @relation("PosterStudioLineage", fields: [parentGenerationId], references: [id], onDelete: SetNull)
+  children           PosterStudioGeneration[] @relation("PosterStudioLineage")
+
+  clientId String?
+  // SetNull, matching UsageEvent: a removed client's drafts stay reviewable.
+  client   Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
 
   @@index([createdAt])
-  @@index([clientId])
+  @@index([clientId, createdAt])
 }
 

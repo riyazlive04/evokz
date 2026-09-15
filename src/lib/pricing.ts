@@ -23,6 +23,21 @@ export interface RateCard {
   openAiCachedInputPerMTok: number;
   /** USD per million OpenAI output tokens. */
   openAiOutputPerMTok: number;
+  /**
+   * USD per million tokens for the GPT image models used by the Poster Studio:
+   * text input, image input, and image output, which OpenAI bills at three
+   * different rates.
+   *
+   * **No defaults, unlike every rate above.** An unset rate reads as 0 and means
+   * "not priced", not "free": `priceOpenAiImageCall` returns null unless all three
+   * are set, the row is recorded with its token counts and zero money, and the
+   * cost report counts those rows as unpriced instead of adding them up silently.
+   * A guessed default here would put an invented figure on the ledger the budget
+   * alerts read.
+   */
+  openAiImageTextInputPerMTok: number;
+  openAiImageImageInputPerMTok: number;
+  openAiImageOutputPerMTok: number;
   /** USD per generated image. */
   falPerImage: number;
   /**
@@ -45,6 +60,9 @@ export function getRateCard(): RateCard {
     openAiInputPerMTok: floatEnv('PRICE_OPENAI_INPUT_PER_MTOK', 0.15),
     openAiCachedInputPerMTok: floatEnv('PRICE_OPENAI_CACHED_INPUT_PER_MTOK', 0.075),
     openAiOutputPerMTok: floatEnv('PRICE_OPENAI_OUTPUT_PER_MTOK', 0.6),
+    openAiImageTextInputPerMTok: floatEnv('PRICE_OPENAI_IMAGE_TEXT_INPUT_PER_MTOK', 0),
+    openAiImageImageInputPerMTok: floatEnv('PRICE_OPENAI_IMAGE_IMAGE_INPUT_PER_MTOK', 0),
+    openAiImageOutputPerMTok: floatEnv('PRICE_OPENAI_IMAGE_OUTPUT_PER_MTOK', 0),
     falPerImage: floatEnv('PRICE_FAL_PER_IMAGE', 0.003),
     falPerCutout: floatEnv('PRICE_FAL_PER_CUTOUT', 0.0004),
     whatsAppPerMessage: floatEnv('PRICE_WHATSAPP_PER_MESSAGE', 0),
@@ -74,6 +92,43 @@ export function priceOpenAiCall(usage: TokenUsage, rates = getRateCard()): numbe
     (uncached / 1_000_000) * rates.openAiInputPerMTok +
     (cached / 1_000_000) * rates.openAiCachedInputPerMTok +
     (Math.max(usage.outputTokens, 0) / 1_000_000) * rates.openAiOutputPerMTok;
+
+  return toMicros(usd);
+}
+
+/** Token usage an OpenAI image call reports, split the way it is billed. */
+export interface ImageTokenUsage {
+  textInputTokens: number;
+  imageInputTokens: number;
+  outputTokens: number;
+}
+
+/** True once every image-token rate has been configured. */
+export function isOpenAiImagePricingConfigured(rates = getRateCard()): boolean {
+  return (
+    rates.openAiImageTextInputPerMTok > 0 &&
+    rates.openAiImageImageInputPerMTok > 0 &&
+    rates.openAiImageOutputPerMTok > 0
+  );
+}
+
+/**
+ * Prices one GPT image call, or returns null when it cannot be priced honestly:
+ * the rates are not configured, or the response carried no usage block.
+ *
+ * All three rates or none. Pricing a call with only some of them set would
+ * record a figure that looks exact and is not.
+ */
+export function priceOpenAiImageCall(
+  usage: ImageTokenUsage | null,
+  rates = getRateCard(),
+): number | null {
+  if (!usage || !isOpenAiImagePricingConfigured(rates)) return null;
+
+  const usd =
+    (Math.max(usage.textInputTokens, 0) / 1_000_000) * rates.openAiImageTextInputPerMTok +
+    (Math.max(usage.imageInputTokens, 0) / 1_000_000) * rates.openAiImageImageInputPerMTok +
+    (Math.max(usage.outputTokens, 0) / 1_000_000) * rates.openAiImageOutputPerMTok;
 
   return toMicros(usd);
 }

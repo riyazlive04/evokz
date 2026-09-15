@@ -6,6 +6,8 @@ import {
   priceImages,
   priceMessages,
   priceOpenAiCall,
+  priceOpenAiImageCall,
+  type ImageTokenUsage,
   type TokenUsage,
 } from '@/lib/pricing';
 
@@ -55,7 +57,15 @@ export type UsageOperation =
   // vertical still accruing `plate-regions` is one whose templates were read
   // before the split, which is worth being able to see.
   | 'plate-labels'
+  // One image from the AI Poster Studio (gpt-image-2 generate or edit). Its own
+  // operation, not `image`: that one is fal.ai's per-image render on the delivery
+  // pipeline, and the cost report counts studio rows separately because they may
+  // be unpriced — see `recordOpenAiImageUsage`.
+  | 'studio-image'
   | 'whatsapp';
+
+/** Operation string for studio images, exported for the cost report's unpriced count. */
+export const STUDIO_IMAGE_OPERATION: UsageOperation = 'studio-image';
 
 async function record(data: {
   provider: UsageProvider;
@@ -171,6 +181,53 @@ export async function recordCutoutUsage(
     imageCount: count,
     costUsdMicros: priceCutouts(count),
     keySource,
+  });
+}
+
+/**
+ * One GPT image call from the AI Poster Studio.
+ *
+ * Recorded on every successful response, before the image is stored anywhere —
+ * the money is spent at that point whether or not Drive or the database then
+ * accept the result.
+ *
+ * **Zero money here means "not priced", not "free".** OpenAI's image response
+ * carries token counts but no price, and the image-token rates have no defaults
+ * (see `RateCard.openAiImageTextInputPerMTok`). Until they are configured the row
+ * keeps its exact token and image counts with `costUsdMicros` 0, and
+ * `loadCostReport` reports how many studio images in range are unpriced so the
+ * panel can say its total is incomplete. `costUsdMicros` is NOT NULL on a table
+ * that predates the studio, so null is not available without altering it.
+ *
+ * `inputTokens` is text and image input together, matching the column's meaning
+ * everywhere else; the text/image split is only needed for pricing.
+ *
+ * PLATFORM always: the studio only ever calls with the environment's key.
+ */
+export async function recordOpenAiImageUsage(
+  usage: ImageTokenUsage | null,
+  model: string,
+  context: UsageContext,
+  count = 1,
+): Promise<void> {
+  const priced = priceOpenAiImageCall(usage);
+
+  if (priced === null) {
+    console.warn(
+      `[ace:usage] ${model} studio image recorded unpriced — set PRICE_OPENAI_IMAGE_* to cost it, and reconcile against OpenAI billing.`,
+    );
+  }
+
+  await record({
+    provider: UsageProvider.OPENAI,
+    operation: STUDIO_IMAGE_OPERATION,
+    context,
+    model,
+    inputTokens: usage ? usage.textInputTokens + usage.imageInputTokens : 0,
+    outputTokens: usage?.outputTokens ?? 0,
+    imageCount: count,
+    costUsdMicros: priced ?? 0,
+    keySource: UsageKeySource.PLATFORM,
   });
 }
 

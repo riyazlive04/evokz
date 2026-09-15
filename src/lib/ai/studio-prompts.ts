@@ -1,131 +1,139 @@
-import { generateStructured } from '@/lib/ai/openai';
-
-export interface StudioPromptInput {
-  userPrompt: string;
-  editInstruction?: string;
-  referenceAnalysis?: ReferenceAnalysisResult | null;
-  aspectRatio: '1024x1024' | '1024x1792' | '1792x1024';
-  brandTokens?: {
-    companyName?: string;
-    tagline?: string;
-    primaryColor?: string;
-    secondaryColor?: string;
-    accentColor?: string;
-    industry?: string;
-  } | null;
-  hybridVectorOverlay?: boolean;
-}
-
-export interface ReferenceAnalysisResult {
-  composition: string;
-  colorPalette: string;
-  typographyStyle: string;
-  imagerySubject: string;
-  layoutHierarchy: string;
-  keyDesignElements: string;
-}
+import { STUDIO_ASPECT_RATIOS, type StudioAspectRatio } from '@/lib/poster-studio/limits';
 
 /**
- * Analyzes an uploaded reference poster image using Vision to extract key visual, layout, and style rules.
+ * Prompt construction for the AI Poster Studio.
+ *
+ * Pure functions: no model calls, no I/O. Three builders, because the three
+ * modes ask the image model for different things and a shared template pushed
+ * all of them towards the same one — a full redraw:
+ *
+ *   GENERATE   brief + format + brand + text rules (+ how to treat a reference)
+ *   EDIT       the change, and an instruction to leave everything else alone
+ *   VARIATION  the direction, plus what identity must survive it
+ *
+ * There is no vision pre-pass. The first version described an attached image
+ * with gpt-4o and pasted the description in here — for an edit, that meant
+ * describing the very image being sent alongside it, and on failure a hardcoded
+ * "architectural photography" description was substituted as though it were
+ * real. The image model reads the attached image directly.
  */
-export async function analyzeReferencePoster(imageDataUri: string): Promise<ReferenceAnalysisResult> {
-  const systemPrompt = `You are an expert graphic designer and visual analyst. 
-Analyze the provided reference poster image and extract its core layout, color palette, visual composition, typography hierarchy, and key design elements.
-Return a structured JSON object describing these characteristics to guide subsequent AI poster generation.`;
 
-  const userPrompt = `Extract the visual design rules from this reference poster.`;
-
-  const schema = {
-    type: 'object',
-    properties: {
-      composition: { type: 'string', description: 'Layout structure, e.g. diagonal split, top photo band, centered hero, bottom bar' },
-      colorPalette: { type: 'string', description: 'Dominant and accent colors, e.g. deep navy ground with gold accent' },
-      typographyStyle: { type: 'string', description: 'Headline weight, casing, placement, alignment' },
-      imagerySubject: { type: 'string', description: 'Primary subject matter in the photograph or illustration' },
-      layoutHierarchy: { type: 'string', description: 'Visual reading order and spacing' },
-      keyDesignElements: { type: 'string', description: 'Notable shapes, badges, borders, gradients, or decorative lines' },
-    },
-    required: ['composition', 'colorPalette', 'typographyStyle', 'imagerySubject', 'layoutHierarchy', 'keyDesignElements'],
-    additionalProperties: false,
-  };
-
-  try {
-    const analysis = await generateStructured<ReferenceAnalysisResult>({
-      label: 'studio-reference-analysis',
-      systemPrompt,
-      userPrompt,
-      imageDataUri,
-      schema,
-      schemaName: 'ReferencePosterAnalysis',
-      model: 'gpt-4o', // vision analysis
-    });
-
-    return analysis;
-  } catch (error) {
-    console.warn('[studio-prompts] Vision reference analysis fallback:', error);
-    return {
-      composition: 'Professional balanced marketing poster composition',
-      colorPalette: 'High contrast brand colors',
-      typographyStyle: 'Bold modern sans-serif typography hierarchy',
-      imagerySubject: 'High quality professional architectural or commercial photography',
-      layoutHierarchy: 'Clear visual flow with headline top and contact bar bottom',
-      keyDesignElements: 'Clean geometrical framing and subtle gradients',
-    };
-  }
+/** Brand facts resolved from a stored client. Absent fields are omitted, never guessed. */
+export interface StudioBrandContext {
+  companyName: string;
+  industry: string | null;
+  tagline: string | null;
+  colors: Array<{ hex: string; role: string }>;
+  typography: { headingFont: string; bodyFont: string; vibe: string | null } | null;
+  layoutDirectives: string[];
 }
 
-/**
- * Builds the comprehensive DALL-E 3 image generation prompt.
- */
-export function buildStudioImagePrompt(input: StudioPromptInput): string {
-  const parts: string[] = [];
+interface CommonInput {
+  aspectRatio: StudioAspectRatio;
+  /** Ask for artwork with no lettering. Nothing is composited afterwards by the studio. */
+  textFree: boolean;
+}
 
-  // Core Request
-  parts.push(`PROMPT: ${input.userPrompt.trim()}`);
+export interface GeneratePromptInput extends CommonInput {
+  brief: string;
+  brand: StudioBrandContext | null;
+  /** True when a style reference image is attached to the request. */
+  hasReference: boolean;
+}
 
-  // Edit instructions (if in edit mode)
-  if (input.editInstruction && input.editInstruction.trim()) {
-    parts.push(`MODIFICATION INSTRUCTION: ${input.editInstruction.trim()}. Apply these specific updates while retaining overall aesthetic consistency.`);
+export interface EditPromptInput extends CommonInput {
+  instruction: string;
+}
+
+export interface VariationPromptInput extends CommonInput {
+  direction: string;
+  brand: StudioBrandContext | null;
+}
+
+export function buildGeneratePrompt(input: GeneratePromptInput): string {
+  const sections = [
+    'Design a finished, professional marketing poster.',
+    `Brief:\n${input.brief.trim()}`,
+    formatSection(input.aspectRatio),
+  ];
+
+  if (input.hasReference) {
+    sections.push(
+      [
+        'Reference image:',
+        'The attached image is a style and layout reference only. Follow its composition, visual hierarchy, colour treatment and typographic feel.',
+        'Do not copy its wording, logos, people, products or brand marks, and do not reproduce it — design a new poster for the brief above.',
+      ].join('\n'),
+    );
   }
 
-  // Reference Poster Guidance
-  if (input.referenceAnalysis) {
-    const ref = input.referenceAnalysis;
-    parts.push(`VISUAL REFERENCE GUIDANCE:
-- Composition: ${ref.composition}
-- Color Direction: ${ref.colorPalette}
-- Imagery Style: ${ref.imagerySubject}
-- Decorative Elements: ${ref.keyDesignElements}`);
+  if (input.brand) sections.push(brandSection(input.brand, 'apply'));
+  sections.push(textSection(input.textFree));
+
+  return sections.join('\n\n');
+}
+
+export function buildEditPrompt(input: EditPromptInput): string {
+  return [
+    'Edit the attached image. Make only this change:',
+    input.instruction.trim(),
+    'Keep everything else as it is — composition, subject, colours, lighting, typography and all existing text, spelled exactly as it appears — unless the change above requires otherwise. Do not redraw or restyle the rest of the image.',
+    `Output frame: ${STUDIO_ASPECT_RATIOS[input.aspectRatio].orientation}. If the attached image has a different shape, extend or crop its background naturally; never stretch or distort it.`,
+    input.textFree ? 'Do not add any new text, letters, numbers or logos.' : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join('\n\n');
+}
+
+export function buildVariationPrompt(input: VariationPromptInput): string {
+  const sections = [
+    'Create a new variation of the attached poster.',
+    `Direction:\n${input.direction.trim()}`,
+    'Keep its visual identity: the same brand, colour palette, typographic style, mood and level of polish. Keep its brand name and existing wording exactly as written unless the direction says to change them. Change the layout, composition, imagery or styling as the direction describes, so the result is a distinct design rather than a copy.',
+    formatSection(input.aspectRatio),
+  ];
+
+  if (input.brand) sections.push(brandSection(input.brand, 'preserve'));
+  if (input.textFree) sections.push(textSection(true));
+
+  return sections.join('\n\n');
+}
+
+function formatSection(aspectRatio: StudioAspectRatio): string {
+  const format = STUDIO_ASPECT_RATIOS[aspectRatio];
+  return `Format: ${format.orientation} poster. Compose for this frame and keep important content clear of the edges.`;
+}
+
+function brandSection(brand: StudioBrandContext, intent: 'apply' | 'preserve'): string {
+  const lines = [
+    intent === 'apply'
+      ? 'Brand guidelines — design within these:'
+      : 'Brand guidelines — the variation must stay consistent with these:',
+    `- Brand name: ${brand.companyName} (spell it exactly like this wherever it appears)`,
+  ];
+
+  if (brand.industry) lines.push(`- Industry: ${brand.industry}`);
+  if (brand.tagline) {
+    lines.push(`- Tagline: "${brand.tagline}" (use it verbatim, and only if the design includes a tagline)`);
+  }
+  if (brand.colors.length > 0) {
+    lines.push(`- Colours: ${brand.colors.map((color) => `${color.role} ${color.hex}`).join(', ')}`);
+  }
+  if (brand.typography) {
+    const { headingFont, bodyFont, vibe } = brand.typography;
+    lines.push(`- Typography: headings in the style of ${headingFont}, body text in the style of ${bodyFont}`);
+    if (vibe) lines.push(`- Overall feel: ${vibe}`);
+  }
+  if (brand.layoutDirectives.length > 0) {
+    lines.push('- Layout rules:');
+    for (const directive of brand.layoutDirectives) lines.push(`  - ${directive}`);
   }
 
-  // Brand Rules
-  if (input.brandTokens) {
-    const b = input.brandTokens;
-    const brandParts: string[] = [];
-    if (b.companyName) brandParts.push(`Brand Name: ${b.companyName}`);
-    if (b.industry) brandParts.push(`Industry: ${b.industry}`);
-    if (b.primaryColor) brandParts.push(`Primary Color Accent: ${b.primaryColor}`);
-    if (b.accentColor) brandParts.push(`Highlight Accent: ${b.accentColor}`);
-    if (brandParts.length > 0) {
-      parts.push(`BRAND DIRECTION: ${brandParts.join(', ')}.`);
-    }
-  }
+  return lines.join('\n');
+}
 
-  // Dimension & Aspect Ratio Specs
-  if (input.aspectRatio === '1024x1792') {
-    parts.push('FORMAT: Vertical 9:16 social media story/status poster layout.');
-  } else if (input.aspectRatio === '1792x1024') {
-    parts.push('FORMAT: Horizontal 16:9 banner poster layout.');
-  } else {
-    parts.push('FORMAT: Square 1:1 Instagram post layout.');
-  }
-
-  // Hybrid Vector Note
-  if (input.hybridVectorOverlay) {
-    parts.push('COMPOSITION NOTE: Leave clean dark/light photographic space for composited vector headlines and logo lockup overlay. Background photography carries no written text.');
-  } else {
-    parts.push('DESIGN QUALITY: Professional commercial design, elegant contrast, studio lighting, crisp typography hierarchy, premium aesthetic suitable for high-end marketing campaigns.');
-  }
-
-  return parts.join('\n\n');
+function textSection(textFree: boolean): string {
+  return textFree
+    ? 'Text: none. Do not render any letters, words, numbers, logos or watermarks. Leave clear, uncluttered space where a headline and a logo can be added later.'
+    : 'Text: render any wording from the brief exactly as written, correctly spelled and clearly legible. Do not add extra text, placeholder copy, or invented phone numbers, addresses or web addresses.';
 }
