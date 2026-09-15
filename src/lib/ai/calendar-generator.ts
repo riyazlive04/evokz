@@ -7,6 +7,7 @@ import {
   POSTER_SCHEMA,
 } from '@/lib/ai/poster-prompt';
 import { normalizeHashtags } from '@/lib/calendar-parse';
+import { campaignCalendarRefusal, countCampaignDays } from '@/lib/calendar-scope';
 import { intEnv } from '@/lib/env';
 import { prisma } from '@/lib/prisma';
 import { getAppTimeZone, nthDeliveryDate } from '@/lib/time';
@@ -139,6 +140,13 @@ export async function generateContentCalendar(
   const totalDays = client.plan.durationDays;
   if (totalDays < 1) {
     throw new Error(`Plan "${client.plan.name}" has an invalid durationDays`);
+  }
+
+  // Before any LLM call: gap-filling a campaign calendar would interleave legacy
+  // days into the campaign's numbering. See src/lib/calendar-scope.ts.
+  const campaignDays = await countCampaignDays(clientId);
+  if (campaignDays > 0) {
+    throw new Error(campaignCalendarRefusal(client.companyName, campaignDays));
   }
 
   const existing = await prisma.contentCalendar.findMany({

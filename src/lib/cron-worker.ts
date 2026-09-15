@@ -1,6 +1,7 @@
 import { DeliveryStatus } from '@prisma/client';
 
 import { describeError, runCreativePipeline, type PipelineOutcome } from '@/lib/ai-pipeline';
+import { LEGACY_CALENDAR } from '@/lib/calendar-scope';
 import { intEnv } from '@/lib/env';
 import { prisma } from '@/lib/prisma';
 import { nextSendDelay } from '@/lib/send-jitter';
@@ -34,6 +35,11 @@ import { buildMinuteWindow, getAppTimeZone, zonedDayRange } from '@/lib/time';
  * poster that already exists. A row approved without ever being pre-generated is
  * marked for the backlog and rendered by it in the same sweep, so there is exactly
  * one path that calls the pipeline and exactly one claim guarding it.
+ *
+ * **Legacy rows only.** Every selection and every claim below carries
+ * `LEGACY_CALENDAR`: campaign days (`campaignId` set) are delivered through
+ * their active poster version, which this sweep does not know about yet. See
+ * src/lib/calendar-scope.ts.
  */
 
 export interface DispatchQueueItem {
@@ -118,6 +124,7 @@ export async function executeIntervalDispatch(
   // null as "due now" would deliver every one of them on the next sweep.
   const dueSends = await prisma.contentCalendar.findMany({
     where: {
+      ...LEGACY_CALENDAR,
       deliveryStatus: DeliveryStatus.GENERATED,
       sendAfter: { not: null, lte: now },
       // A client paused between generation and send should not receive.
@@ -181,6 +188,7 @@ export async function executeIntervalDispatch(
       cronTime: true,
       calendarDays: {
         where: {
+          ...LEGACY_CALENDAR,
           scheduledDate: { gte: start, lt: end },
           approvedAt: { not: null },
           OR: [
@@ -231,6 +239,7 @@ export async function executeIntervalDispatch(
   // minute has already passed is exactly the case worth surfacing.
   const awaitingApproval = await prisma.contentCalendar.count({
     where: {
+      ...LEGACY_CALENDAR,
       scheduledDate: { gte: start, lt: end },
       approvedAt: null,
       deliveryStatus: { in: [DeliveryStatus.PENDING, DeliveryStatus.GENERATED] },
@@ -283,6 +292,7 @@ export async function executeIntervalDispatch(
           await prisma.contentCalendar.updateMany({
             where: {
               id: { in: toGenerate.map((item) => item.calendarId) },
+              ...LEGACY_CALENDAR,
               deliveryStatus: DeliveryStatus.PENDING,
               generationQueuedAt: null,
             },
@@ -303,6 +313,7 @@ export async function executeIntervalDispatch(
   // renders inside one HTTP request.
   const backlog = await prisma.contentCalendar.findMany({
     where: {
+      ...LEGACY_CALENDAR,
       deliveryStatus: DeliveryStatus.PENDING,
       generationQueuedAt: { not: null },
       client: { isActive: true, isDemo: false },
@@ -399,6 +410,7 @@ async function releaseApproved(
   const claimed = await prisma.contentCalendar.updateMany({
     where: {
       id: calendarId,
+      ...LEGACY_CALENDAR,
       deliveryStatus: DeliveryStatus.GENERATED,
       approvedAt: { not: null },
       sendAfter: null,
@@ -455,6 +467,7 @@ async function claimAndPreGenerate(calendarId: string): Promise<PipelineOutcome>
   const claimed = await prisma.contentCalendar.updateMany({
     where: {
       id: calendarId,
+      ...LEGACY_CALENDAR,
       deliveryStatus: DeliveryStatus.PENDING,
       generationQueuedAt: { not: null },
     },
@@ -498,6 +511,7 @@ async function claimAndSend(calendarId: string): Promise<PipelineOutcome> {
   const claimed = await prisma.contentCalendar.updateMany({
     where: {
       id: calendarId,
+      ...LEGACY_CALENDAR,
       // Re-asserted, not assumed: the row was selected moments ago and another
       // sweep may have taken it since.
       deliveryStatus: DeliveryStatus.GENERATED,

@@ -1,5 +1,6 @@
 import { DeliveryStatus, UsageKeySource } from '@prisma/client';
 
+import { CAMPAIGN_DAY_REFUSAL } from '@/lib/calendar-scope';
 import { intEnv, optionalEnv, requireEnv } from '@/lib/env';
 import { resolveFalCredentials, type FalCredentials } from '@/lib/fal-credentials';
 import { downloadDriveFile, uploadClientAsset } from '@/lib/google-drive';
@@ -158,6 +159,23 @@ export async function runCreativePipeline(
 
     if (!entry) {
       throw new PipelineStageError('load', `Calendar entry ${calendarId} not found`);
+    }
+    /*
+     * A campaign day is never rendered or sent by this pipeline.
+     *
+     * Its posters are versioned rows and its approval lives on them; running the
+     * legacy path would write a file straight into `gDriveFileId` and broadcast it
+     * past both. Returned rather than thrown, so the catch below does not stamp
+     * the row FAILED — a refusal must leave a campaign day exactly as it was.
+     */
+    if (entry.campaignId) {
+      return {
+        ok: false,
+        calendarId,
+        status: entry.deliveryStatus,
+        stage: 'load',
+        error: CAMPAIGN_DAY_REFUSAL,
+      };
     }
     if (
       entry.deliveryStatus === DeliveryStatus.DELIVERED &&

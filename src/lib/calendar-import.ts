@@ -9,6 +9,7 @@ import {
   type ConflictMode,
 } from '@/lib/calendar-parse';
 import { checkRowFit, type FitWarning } from '@/lib/calendar-fit';
+import { campaignCalendarRefusal, countCampaignDays } from '@/lib/calendar-scope';
 import { copyNeedsOf, findHtmlTemplateFor } from '@/lib/poster/html/template';
 import { prisma } from '@/lib/prisma';
 import { getAppTimeZone, nthDeliveryDate } from '@/lib/time';
@@ -104,6 +105,19 @@ export async function applyCalendarImport(
   const totalDays = client.plan.durationDays;
   if (totalDays < 1) {
     throw new Error(`Plan "${client.plan.name}" has an invalid durationDays`);
+  }
+
+  /*
+   * Refused outright for a campaign calendar, before anything is planned.
+   *
+   * The planner reads occupied days client-wide, so in overwrite mode a campaign
+   * day would be rewritten like any PENDING row — content, template, date and
+   * approval — and in skip mode legacy rows would be appended into the
+   * campaign's numbering. See src/lib/calendar-scope.ts.
+   */
+  const campaignDays = await countCampaignDays(clientId);
+  if (campaignDays > 0) {
+    throw new Error(campaignCalendarRefusal(client.companyName, campaignDays));
   }
 
   /*

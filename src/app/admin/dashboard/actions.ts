@@ -29,6 +29,7 @@ import {
   type BrandGuideline,
 } from '@/lib/types/brand';
 import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
+import { CAMPAIGN_DAY_REFUSAL, LEGACY_CALENDAR } from '@/lib/calendar-scope';
 import type { CalendarImportInput } from '@/lib/calendar-parse';
 import {
   ManualUploadRefusal,
@@ -570,6 +571,9 @@ export async function updateClientCategory(
       prisma.contentCalendar.updateMany({
         where: {
           clientId: id,
+          // A campaign day's template is checked against the campaign's own
+          // vertical, not the client's, so moving the client strands nothing there.
+          ...LEGACY_CALENDAR,
           posterTemplateId: { not: null },
           deliveryStatus: { in: [DeliveryStatus.PENDING, DeliveryStatus.FAILED] },
         },
@@ -626,8 +630,9 @@ export async function updateClientPlan(
     }
     if (client.planId === nextId) return failure('That is already this client’s plan.');
 
+    // Campaign days follow their campaign's own duration, not the client's plan.
     const stranded = await prisma.contentCalendar.count({
-      where: { clientId: id, dayNumber: { gt: plan.durationDays } },
+      where: { clientId: id, ...LEGACY_CALENDAR, dayNumber: { gt: plan.durationDays } },
     });
     if (stranded > 0) {
       return failure(
@@ -702,13 +707,15 @@ export async function updateClientDeliveryDays(
     const timeZone = getAppTimeZone();
     const stored = parsed.length === 7 ? [] : parsed;
 
+    // Legacy rows only: a campaign's days are placed by the campaign's own
+    // delivery weekdays, which this client-level preference does not change.
     const pending = await prisma.contentCalendar.findMany({
-      where: { clientId: id, deliveryStatus: DeliveryStatus.PENDING },
+      where: { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: DeliveryStatus.PENDING },
       select: { id: true, dayNumber: true },
       orderBy: { dayNumber: 'asc' },
     });
     const kept = await prisma.contentCalendar.count({
-      where: { clientId: id, deliveryStatus: { not: DeliveryStatus.PENDING } },
+      where: { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: { not: DeliveryStatus.PENDING } },
     });
 
     const endDate = nthDeliveryDate(
@@ -780,6 +787,7 @@ export async function retryFailedDeliveries(
   try {
     const id = clientId ? z.string().uuid().parse(clientId) : null;
     const where = {
+      ...LEGACY_CALENDAR,
       deliveryStatus: DeliveryStatus.FAILED,
       ...(id ? { clientId: id } : {}),
     };
@@ -946,7 +954,9 @@ export async function queueCampaignGeneration(
       );
     }
 
-    const pending = { clientId: id, deliveryStatus: DeliveryStatus.PENDING };
+    // Legacy rows only. A marked campaign day would be rendered by the backlog
+    // phase straight into `gDriveFileId`, bypassing its poster versions.
+    const pending = { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: DeliveryStatus.PENDING };
 
     const alreadyQueued = await prisma.contentCalendar.count({
       where: { ...pending, generationQueuedAt: { not: null } },
@@ -1003,6 +1013,7 @@ async function bookSendNow(calendarId: string): Promise<boolean> {
   const claimed = await prisma.contentCalendar.updateMany({
     where: {
       id: calendarId,
+      ...LEGACY_CALENDAR,
       deliveryStatus: DeliveryStatus.GENERATED,
       approvedAt: { not: null },
       sendAfter: null,
@@ -1034,6 +1045,7 @@ export async function approveCreative(
     const entry = await prisma.contentCalendar.findUnique({
       where: { id },
       select: {
+        campaignId: true,
         deliveryStatus: true,
         scheduledDate: true,
         approvedAt: true,
@@ -1042,6 +1054,7 @@ export async function approveCreative(
     });
 
     if (!entry) return failure('That calendar entry no longer exists.');
+    if (entry.campaignId) return failure(CAMPAIGN_DAY_REFUSAL);
     if (entry.approvedAt) return failure('That poster is already approved.');
     if (entry.deliveryStatus !== DeliveryStatus.GENERATED) {
       return failure(
@@ -1054,7 +1067,7 @@ export async function approveCreative(
     // Conditional on the status re-read, so a row generated-then-delivered by a
     // sweep in the intervening milliseconds is not retroactively approved.
     const approved = await prisma.contentCalendar.updateMany({
-      where: { id, deliveryStatus: DeliveryStatus.GENERATED, approvedAt: null },
+      where: { id, ...LEGACY_CALENDAR, deliveryStatus: DeliveryStatus.GENERATED, approvedAt: null },
       data: { approvedAt: new Date() },
     });
     if (approved.count === 0) {
@@ -1094,12 +1107,16 @@ export async function approveAllCreatives(
   try {
     const id = z.string().uuid().parse(clientId);
 
+    // Legacy rows only: a campaign day's approval lives on its poster versions.
+    const waiting = {
+      clientId: id,
+      ...LEGACY_CALENDAR,
+      deliveryStatus: DeliveryStatus.GENERATED,
+      approvedAt: null,
+    };
+
     const rows = await prisma.contentCalendar.findMany({
-      where: {
-        clientId: id,
-        deliveryStatus: DeliveryStatus.GENERATED,
-        approvedAt: null,
-      },
+      where: waiting,
       select: {
         scheduledDate: true,
         client: { select: { cronTime: true } },
@@ -1115,11 +1132,7 @@ export async function approveAllCreatives(
     ).length;
 
     const approved = await prisma.contentCalendar.updateMany({
-      where: {
-        clientId: id,
-        deliveryStatus: DeliveryStatus.GENERATED,
-        approvedAt: null,
-      },
+      where: waiting,
       data: { approvedAt: now },
     });
 
@@ -1143,11 +1156,15 @@ export async function unapproveCreative(calendarId: string): Promise<ActionResul
     const id = z.string().uuid().parse(calendarId);
 
     const cleared = await prisma.contentCalendar.updateMany({
-      where: { id, deliveryStatus: DeliveryStatus.GENERATED, sendAfter: null },
+      where: { id, ...LEGACY_CALENDAR, deliveryStatus: DeliveryStatus.GENERATED, sendAfter: null },
       data: { approvedAt: null },
     });
 
     if (cleared.count === 0) {
+      const campaignDay = await prisma.contentCalendar.count({
+        where: { id, campaignId: { not: null } },
+      });
+      if (campaignDay > 0) return failure(CAMPAIGN_DAY_REFUSAL);
       return failure('Too late to withdraw — that poster is already booked to send or has gone out.');
     }
 
@@ -1194,6 +1211,7 @@ export async function deleteCalendarEntry(
     const entry = await prisma.contentCalendar.findUnique({
       where: { id },
       select: {
+        campaignId: true,
         dayNumber: true,
         deliveryStatus: true,
         sourceType: true,
@@ -1201,6 +1219,7 @@ export async function deleteCalendarEntry(
       },
     });
     if (!entry) return failure('That calendar entry no longer exists.');
+    if (entry.campaignId) return failure(CAMPAIGN_DAY_REFUSAL);
 
     if (entry.deliveryStatus === DeliveryStatus.DELIVERED) {
       return failure(
@@ -1270,13 +1289,15 @@ export async function clearClientCalendar(
   try {
     const id = z.string().uuid().parse(clientId);
 
+    // Legacy rows only. Campaign days are never cleared from here, whatever
+    // their status — they are removed with their campaign, not by this button.
     const [removable, kept] = await Promise.all([
       prisma.contentCalendar.findMany({
-        where: { clientId: id, deliveryStatus: { in: CLEARABLE } },
+        where: { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: { in: CLEARABLE } },
         select: { id: true, gDriveFileId: true },
       }),
       prisma.contentCalendar.count({
-        where: { clientId: id, deliveryStatus: { notIn: CLEARABLE } },
+        where: { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: { notIn: CLEARABLE } },
       }),
     ]);
 
@@ -1289,7 +1310,7 @@ export async function clearClientCalendar(
     }
 
     const { count } = await prisma.contentCalendar.deleteMany({
-      where: { id: { in: removable.map((row) => row.id) } },
+      where: { id: { in: removable.map((row) => row.id) }, ...LEGACY_CALENDAR },
     });
 
     // A FAILED row can still own an asset — upload succeeded, broadcast did
@@ -1779,9 +1800,11 @@ export async function regenerateCreative(
      */
     const entry = await prisma.contentCalendar.findUnique({
       where: { id },
-      select: { sourceType: true },
+      select: { sourceType: true, campaignId: true },
     });
     if (!entry) return failure('That calendar entry no longer exists.');
+    // Before the approval is cleared below: a refusal must leave the row as it was.
+    if (entry.campaignId) return failure(CAMPAIGN_DAY_REFUSAL);
     if (entry.sourceType === ContentSourceType.MANUAL_UPLOAD) {
       return failure(
         'This poster was uploaded by hand, so there is nothing to regenerate — no template, ' +
@@ -1790,7 +1813,7 @@ export async function regenerateCreative(
     }
 
     const cleared = await prisma.contentCalendar.updateMany({
-      where: { id },
+      where: { id, ...LEGACY_CALENDAR },
       data: { approvedAt: null, sendAfter: null },
     });
     if (cleared.count === 0) return failure('That calendar entry no longer exists.');

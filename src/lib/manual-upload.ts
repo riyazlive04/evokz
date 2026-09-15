@@ -1,6 +1,7 @@
 import { ContentSourceType, DeliveryStatus, Prisma } from '@prisma/client';
 
 import { buildAssetFileName } from '@/lib/ai-pipeline';
+import { campaignCalendarRefusal, countCampaignDays } from '@/lib/calendar-scope';
 import { trashDriveFile, uploadClientAsset } from '@/lib/google-drive';
 import {
   MANUAL_IMAGE_MAX_BYTES,
@@ -163,6 +164,13 @@ export async function storeManualPoster(
   const totalDays = client.plan.durationDays;
   if (totalDays < 1) {
     throw new Error(`Plan "${client.plan.name}" has an invalid durationDays`);
+  }
+
+  // Before the Drive upload, so a refusal leaves nothing behind. A refusal
+  // rather than an error, so the panel lists it against the file.
+  const campaignDays = await countCampaignDays(client.id);
+  if (campaignDays > 0) {
+    throw new ManualUploadRefusal(campaignCalendarRefusal(client.companyName, campaignDays), copy.day);
   }
 
   /*

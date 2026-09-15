@@ -439,15 +439,42 @@ No OpenAI, fal.ai, Drive or WhatsApp calls.
 
 ### 17.11 Known concerns — address before campaign days exist outside tests
 
-1. **Legacy client-level actions do not know about campaigns.**
-   - `queueCampaignGeneration` would mark campaign days, and the legacy pipeline would render them straight into `gDriveFileId`, bypassing versions.
-   - `clearClientCalendar` would delete PENDING campaign days.
-   - `updateClientDeliveryDays` rewrites their `scheduledDate`; `updateClientCategory` clears their pins.
-   - `seedContentCalendar` and imports would fill gaps as legacy rows.
-   - Scope these to `campaignId: null`, or route them, as the first Phase 2 step. Harmless today because nothing creates campaign days.
+1. ~~**Legacy client-level actions do not know about campaigns.**~~ **Resolved** — see §17.12.
 2. **One calendar per client.** `ContentCalendar @@unique([clientId, dayNumber])` remains for the legacy pipeline, so a client cannot hold a second campaign (for example a renewal) with overlapping day numbers. `createCampaign` refuses this with `calendar-occupied`. The fix is a planned change to that constraint, not part of Phase 1.
 3. **Schedule duplication.** `Client.startDate/endDate/cronTime/deliveryDays/planId` and the campaign's own schedule can diverge. The dispatch sweep still reads the client. When delivery is wired, dispatch should read the campaign for campaign days.
 4. **Delivery projection.** The existing sweep sends `gDriveFileId`/`gDriveViewUrl` (a link-readable file) after `approvedAt`. Campaign images are Drive ids, and studio files are unpublished. The delivery phase must copy the ready, active version into those columns (publishing the file) or teach dispatch to read versions directly.
 5. **Studio file sharing.** Studio deletion only checks studio rows before trashing. The `RESTRICT` FK blocks deleting a linked studio row, but the studio's error message is generic. Integration should check `PosterVersion` references first.
 6. `CategoryTemplate.isActive` and `contentTypes` are not yet honoured by the legacy template rotation.
-7. The local dev server's Prisma engine was locked during `prisma generate`. The locked DLL was renamed (`node_modules/.prisma/client/query_engine-windows.dll.node.locked-*`), not deleted, and can be removed once `next dev` restarts.
+7. The legacy dashboard/ledger **pages** (read-only) still list and count campaign days alongside legacy days for a client; their buttons now refuse campaign days (§17.12). Separating the views is campaign-dashboard work.
+8. The local dev server's Prisma engine was locked during `prisma generate`. The locked DLL was renamed (`node_modules/.prisma/client/query_engine-windows.dll.node.locked-*`), not deleted, and can be removed once `next dev` restarts.
+
+### 17.12 Legacy calendar tooling is scoped away from campaign days
+
+`src/lib/calendar-scope.ts` defines `LEGACY_CALENDAR` (`{ campaignId: null }`), the refusal copy, and `countCampaignDays`. For every row that predates campaigns `campaignId` is null, so legacy behaviour is unchanged. Campaign days are changed only by `src/lib/campaign/service.ts`.
+
+| Path | Change |
+| --- | --- |
+| `queueCampaignGeneration` (queue all) | Counts and marks legacy PENDING rows only |
+| `clearClientCalendar` | Selects, counts and deletes legacy rows only |
+| `updateClientDeliveryDays` | Reschedules and counts legacy rows only |
+| `updateClientCategory` | Unpins legacy rows only (a campaign day's template is checked against the campaign's vertical) |
+| `updateClientPlan` | Stranded-day refusal counts legacy rows only |
+| `approveAllCreatives`, `retryFailedDeliveries` | Legacy rows only |
+| `approveCreative`, `unapproveCreative`, `deleteCalendarEntry`, `regenerateCreative` | Refuse a campaign day before writing anything (`bookSendNow` is scoped too) |
+| `runCreativePipeline` | Returns a `load` refusal for a campaign day **without** writing to the row. This covers "Send now", retry and the sweep's claims |
+| `executeIntervalDispatch` (all three phases, the awaiting-approval count, and the release, pre-generate and send claims) | Legacy rows only |
+| `generateContentCalendar` (seed), `applyCalendarImport` (sheet import), `storeManualPoster` (manual upload) | Refuse a client whose calendar holds campaign days, before any LLM call, planning or Drive upload. Each reads occupied days client-wide, so it would rewrite a campaign day (import overwrite) or interleave legacy days into the campaign's numbering |
+
+Not changed: `runDemoCreativeNow` (appends a new legacy row after the highest day number and never touches existing rows), `deleteClient` (explicit client deletion cascades to campaigns by design), and read-only pages.
+
+`npm run check:calendar-scope` has 39 checks.
+- **Fixtures:** clients mixing campaign days (dressed as FAILED, GENERATED, approved, pinned, queued and due) with legacy days.
+- **Code under test:** the real server actions, importer, manual upload, seeder entry, pipeline and dispatch sweep.
+- **Assertions:**
+  - Each legacy effect still happens.
+  - Campaign rows and their poster versions are byte-identical afterwards.
+- **Isolation:**
+  - Everything runs inside one rolled-back transaction, via a facade on `globalThis.prisma`.
+  - Table counts are compared before and after.
+  - `fetch` is stubbed and provider keys are blanked. The suite asserts zero network attempts.
+- **Proof it catches the bug:** against the pre-fix code, 23 of the 39 checks fail.
