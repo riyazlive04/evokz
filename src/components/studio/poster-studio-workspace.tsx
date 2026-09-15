@@ -10,7 +10,9 @@ import {
   Copy,
   Minus,
   Download,
+  ExternalLink,
   Image as ImageIcon,
+  ImageOff,
   Info,
   Layers,
   RefreshCw,
@@ -41,6 +43,7 @@ import {
   studioClientLogoUrl,
   studioImageUrl,
   type StudioAspectRatio,
+  type StudioFooterBackground,
   type StudioLogoBackground,
   type StudioMode,
   type StudioOverlayElement,
@@ -71,6 +74,8 @@ const MODE_COPY: Record<
   StudioMode,
   {
     tab: string;
+    /** One line under the mode switch: what this mode does. */
+    summary: string;
     promptLabel: string;
     placeholder: string;
     imageLabel: string;
@@ -85,14 +90,15 @@ const MODE_COPY: Record<
 > = {
   GENERATE: {
     tab: 'Generate',
+    summary: 'A new poster from your brief. Optionally guided by a reference poster.',
     promptLabel: 'Poster brief',
     placeholder:
       'e.g. Launch poster for a luxury 3-BHK apartment in South Mumbai. Headline "Live Above It All". Warm sunset light, modern architecture, gold accents.',
-    imageLabel: 'Style reference',
+    imageLabel: 'Reference poster',
     imageRequired: false,
     imageHint:
-      'Sent to the image model as a style and layout reference. Its wording, logos and people are not copied.',
-    uploadCta: 'Upload reference image',
+      'Visual inspiration only: its style guides the design. Its wording, logos and brand identity are not copied.',
+    uploadCta: 'Upload reference poster',
     button: 'Generate poster',
     working: 'Generating poster…',
     done: 'Poster generated and saved to History.',
@@ -100,11 +106,13 @@ const MODE_COPY: Record<
   },
   EDIT: {
     tab: 'Edit',
+    summary: 'Change part of an existing poster. What you do not mention stays as it is.',
     promptLabel: 'Edit instruction',
-    placeholder: 'e.g. Change the background lighting to dusk blue. Keep the headline and layout.',
+    placeholder:
+      'e.g. Replace the main photo with a modern family dental consultation. Keep the headline and layout.',
     imageLabel: 'Image to edit',
     imageRequired: true,
-    imageHint: 'Only the change you describe is applied; the rest of the image is kept as it is.',
+    imageHint: 'The change you describe is applied fully; the rest of the image is kept as it is.',
     uploadCta: 'Upload image to edit',
     button: 'Apply edit',
     working: 'Applying edit…',
@@ -114,19 +122,20 @@ const MODE_COPY: Record<
   },
   VARIATION: {
     tab: 'Variation',
+    summary: 'A fresh creative direction for the same campaign: new concept, imagery and layout.',
     promptLabel: 'Variation direction',
     placeholder:
-      'e.g. Same brand and headline, but a warmer evening palette and a different layout.',
+      'e.g. A bright illustrated take — the family outdoors in the sun, headline set large at the top.',
     imageLabel: 'Parent image',
     imageRequired: true,
     imageHint:
-      'The new design keeps the parent’s brand identity and follows your direction.',
+      'Used for the campaign’s message and mood. The concept, imagery and layout are redesigned.',
     uploadCta: 'Upload parent image',
     button: 'Generate variation',
     working: 'Generating variation…',
     done: 'Variation generated and saved to History.',
     missingImage:
-      'Variation needs a parent image. Upload an image, or choose Variant on a poster in History.',
+      'Variation needs a parent image. Upload an image, or choose Vary on a poster in History.',
   },
 };
 
@@ -162,8 +171,12 @@ export function PosterStudioWorkspace({
   const [history, setHistory] = useState<StudioHistoryItem[]>(initialHistory);
   const [currentId, setCurrentId] = useState<string | null>(initialHistory[0]?.id ?? null);
   const [brokenPreviewId, setBrokenPreviewId] = useState<string | null>(null);
+  /** Bumped by "Try again" on a preview that failed to load, to refetch it. */
+  const [previewAttempt, setPreviewAttempt] = useState(0);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -177,12 +190,46 @@ export function PosterStudioWorkspace({
   const [brandError, setBrandError] = useState<string | null>(null);
   const [overlayElements, setOverlayElements] = useState<StudioOverlayElement[]>([]);
   const [logoBackground, setLogoBackground] = useState<StudioLogoBackground>('ORIGINAL');
+  const [footerBackground, setFooterBackground] = useState<StudioFooterBackground>('AUTO');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
 
   const copy = MODE_COPY[mode];
   const prompt = drafts[mode];
   const current = history.find((item) => item.id === currentId) ?? null;
+
+  // A generation keeps running on the server if the page is left, and still
+  // lands in History — but the operator would lose sight of it. Warn, and count
+  // the seconds so a slow request visibly is still working.
+  useEffect(() => {
+    if (!loading) return;
+    const started = Date.now();
+    setElapsedSeconds(0);
+    const timer = window.setInterval(() => setElapsedSeconds(Math.round((Date.now() - started) / 1000)), 1000);
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('beforeunload', warn);
+    };
+  }, [loading]);
+
+  /** On a single-column layout the preview sits below the controls; bring it into view. */
+  const revealPreview = () => {
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const selectItem = (id: string) => {
+    setCurrentId(id);
+    setBrokenPreviewId(null);
+    revealPreview();
+  };
 
   useEffect(() => {
     setLogoBackgroundRefused(false);
@@ -288,6 +335,14 @@ export function PosterStudioWorkspace({
       setError('The Brand Canvas is still loading. Try again in a moment.');
       return;
     }
+    // A client was chosen for their branding; without the Brand Canvas the poster
+    // would silently come out unbranded.
+    if (clientId && brandError) {
+      setError(
+        'The Brand Canvas for this client could not be loaded, so the poster cannot be branded. Choose the client again, or switch to generic studio mode.',
+      );
+      return;
+    }
     const drawsLogo = overlayElements.includes('logo');
     if (drawsLogo && logoBackground === 'REMOVED' && brandCanvas && !brandCanvas.logo.removal.possible) {
       setError(brandCanvas.logo.removal.message ?? 'The background cannot be removed from this logo.');
@@ -303,6 +358,7 @@ export function PosterStudioWorkspace({
     formData.set('textFree', textFree ? '1' : '0');
     formData.set('overlayElements', clientId ? overlayElements.join(',') : '');
     formData.set('logoBackground', logoBackground);
+    formData.set('footerBackground', footerBackground);
     if (!attachment) {
       formData.set('sourceKind', 'none');
     } else if (attachment.kind === 'upload') {
@@ -329,8 +385,7 @@ export function PosterStudioWorkspace({
 
       const generation = result.generation;
       setHistory((previous) => [generation, ...previous.filter((item) => item.id !== generation.id)]);
-      setCurrentId(generation.id);
-      setBrokenPreviewId(null);
+      selectItem(generation.id);
 
       // The upload is in Drive now. Point at the stored copy so the next request
       // reuses it instead of uploading the same file again.
@@ -368,32 +423,46 @@ export function PosterStudioWorkspace({
     });
     setError(null);
     setSuccess(null);
+    // The controls are above the preview on a narrow screen; the attachment
+    // and prompt are what the operator needs next.
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
 
   const handleDelete = async (item: StudioHistoryItem) => {
+    const hasChildren = history.some((entry) => entry.parentGenerationId === item.id);
     if (
       !window.confirm(
-        'Delete this poster from History? Its image file is moved to the Google Drive bin unless another history item still uses it.',
+        hasChildren
+          ? 'Delete this poster from History? Edits and variations made from it are kept. Its image files go to the Google Drive bin unless another history item still uses them.'
+          : 'Delete this poster from History? Its image files go to the Google Drive bin unless another history item still uses them.',
       )
     ) {
       return;
     }
 
-    const result = await deleteStudioGenerationAction(item.id);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
+    setDeletingId(item.id);
+    try {
+      const result = await deleteStudioGenerationAction(item.id);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
 
-    const remaining = history.filter((entry) => entry.id !== item.id);
-    setHistory(remaining);
-    if (currentId === item.id) setCurrentId(remaining[0]?.id ?? null);
-    if (
-      attachment &&
-      attachment.kind !== 'upload' &&
-      attachment.generationId === item.id
-    ) {
-      setAttachment(null);
+      // Children survive with their parent link cleared, as in the database.
+      const remaining = history
+        .filter((entry) => entry.id !== item.id)
+        .map((entry) => (entry.parentGenerationId === item.id ? { ...entry, parentGenerationId: null } : entry));
+      setHistory(remaining);
+      if (currentId === item.id) setCurrentId(remaining[0]?.id ?? null);
+      if (attachment && attachment.kind !== 'upload' && attachment.generationId === item.id) {
+        setAttachment(null);
+      }
+    } catch {
+      setError('The poster could not be deleted. Your session may have expired — reload the page and try again.');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -491,6 +560,7 @@ export function PosterStudioWorkspace({
                 </button>
               ))}
             </div>
+            <p className="text-[11px] text-muted-foreground leading-snug">{copy.summary}</p>
           </div>
 
           {/* Input image */}
@@ -524,10 +594,13 @@ export function PosterStudioWorkspace({
                   <img
                     src={attachmentPreview}
                     alt="Attached input"
-                    className="w-12 h-16 object-cover rounded border border-border shadow-sm"
+                    onError={(event) => {
+                      event.currentTarget.style.visibility = 'hidden';
+                    }}
+                    className="w-12 h-16 object-cover rounded border border-border shadow-sm bg-muted shrink-0"
                   />
                 ) : (
-                  <div className="w-12 h-16 rounded border border-border bg-muted" />
+                  <div className="w-12 h-16 rounded border border-border bg-muted shrink-0" />
                 )}
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium text-foreground truncate">{attachment.label}</p>
@@ -635,6 +708,8 @@ export function PosterStudioWorkspace({
                 setLogoBackground(value);
                 setLogoBackgroundRefused(false);
               }}
+              footerBackground={footerBackground}
+              onFooterBackgroundChange={setFooterBackground}
               disabled={loading}
             />
           )}
@@ -675,8 +750,8 @@ export function PosterStudioWorkspace({
                 <Type className="w-3.5 h-3.5 text-brand-to" /> Text-free artwork
               </span>
               <span className="block text-[10px] text-muted-foreground leading-snug mt-0.5">
-                Asks the model for no lettering and clear space for a headline and logo. The studio
-                does not add text or logos — place them afterwards in your design tool.
+                Asks the model for artwork with no lettering, leaving clear space for a headline. Any
+                exact brand identity selected above is still added in the footer.
               </span>
             </span>
             <input
@@ -713,50 +788,100 @@ export function PosterStudioWorkspace({
         </div>
 
         {/* CENTER COLUMN: Preview */}
-        <div className="lg:col-span-8 xl:col-span-5 rounded-xl border border-border bg-card text-card-foreground p-6 min-h-[550px] flex flex-col items-center justify-center relative shadow-sm">
+        <div
+          ref={previewRef}
+          className="lg:col-span-8 xl:col-span-5 rounded-xl border border-border bg-card text-card-foreground p-4 sm:p-6 min-h-[420px] sm:min-h-[550px] flex flex-col items-center justify-center relative shadow-sm scroll-mt-4"
+        >
           {loading ? (
-            <div className="flex flex-col items-center justify-center gap-4 text-center p-8">
+            <div className="flex flex-col items-center justify-center gap-4 text-center p-8" aria-live="polite">
               <div className="relative">
                 <div className="w-16 h-16 rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
                 <Sparkles className="w-6 h-6 text-brand-to absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-pulse" />
               </div>
               <div>
                 <p className="text-sm font-semibold text-foreground">{copy.working}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  This can take a minute or more, depending on format and quality.
+                <p className="text-xs text-muted-foreground mt-1 tabular-nums">
+                  {formatElapsed(elapsedSeconds)} elapsed · usually 30–90 seconds
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-2 max-w-xs">
+                  If you leave this page, the poster still finishes and appears in History when you
+                  come back.
                 </p>
               </div>
             </div>
           ) : current ? (
             <div className="flex flex-col items-center gap-4 max-w-full w-full">
-              <div className="relative group max-h-[calc(100vh-16rem)] rounded-xl overflow-hidden border border-border shadow-xl bg-black/90">
+              <div className="relative max-w-full rounded-xl overflow-hidden border border-border shadow-xl bg-muted">
                 {brokenPreviewId === current.id ? (
-                  <div className="flex h-72 w-64 flex-col items-center justify-center gap-2 p-6 text-center text-xs text-white/80">
-                    <AlertCircle className="w-6 h-6" />
-                    Could not load this image from Google Drive.
+                  <div className="flex h-72 w-64 max-w-full flex-col items-center justify-center gap-3 p-6 text-center text-xs text-muted-foreground">
+                    <ImageOff className="w-6 h-6" />
+                    <span>This image could not be loaded. It may have been removed from Google Drive.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBrokenPreviewId(null);
+                        setPreviewAttempt((attempt) => attempt + 1);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 font-semibold text-foreground hover:bg-muted"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Try again
+                    </button>
                   </div>
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element -- session-gated Drive proxy; next/image cannot forward the admin cookie
                   <img
-                    key={current.id}
-                    src={studioImageUrl(current.id, { width: 1152 })}
+                    key={`${current.id}-${previewAttempt}`}
+                    src={`${studioImageUrl(current.id, { width: 1152 })}${previewAttempt > 0 ? `&retry=${previewAttempt}` : ''}`}
                     alt={`Poster: ${current.prompt}`}
                     onError={() => setBrokenPreviewId(current.id)}
-                    className="max-h-[calc(100vh-16rem)] w-auto object-contain rounded-xl"
+                    className="block max-h-[70vh] lg:max-h-[calc(100vh-16rem)] max-w-full w-auto object-contain"
                   />
                 )}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-end justify-between p-4">
-                  <span className="text-xs text-white bg-black/60 backdrop-blur px-2.5 py-1 rounded-md border border-white/20 font-medium">
-                    {current.aspectRatio} · {current.width && current.height ? `${current.width} × ${current.height}` : current.size}
-                  </span>
-                  <a
-                    href={studioImageUrl(current.id, { download: true })}
-                    download
-                    className="py-1.5 px-3 bg-primary text-primary-foreground rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-md hover:opacity-90 transition-opacity"
-                  >
-                    <Download className="w-3.5 h-3.5" /> Download
-                  </a>
-                </div>
+                <span className="absolute left-2 top-2 text-[10px] text-white bg-black/60 backdrop-blur px-2 py-0.5 rounded-md border border-white/20 font-medium">
+                  {current.aspectRatio} · {current.width && current.height ? `${current.width} × ${current.height}` : current.size}
+                </span>
+              </div>
+
+              <div className="flex w-full flex-wrap items-center justify-center gap-2">
+                <a
+                  href={studioImageUrl(current.id, { download: true })}
+                  download
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-sm hover:opacity-90"
+                >
+                  <Download className="w-3.5 h-3.5" /> Download
+                </a>
+                <a
+                  href={studioImageUrl(current.id, { width: 2048 })}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" /> Full size
+                </a>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => attachHistoryImage(current, 'EDIT')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  <Wand2 className="w-3.5 h-3.5" /> Edit
+                </button>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => attachHistoryImage(current, 'VARIATION')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  <Copy className="w-3.5 h-3.5" /> Variation
+                </button>
+                <button
+                  type="button"
+                  disabled={loading || deletingId === current.id}
+                  onClick={() => handleDelete(current)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-destructive hover:border-destructive/40 disabled:opacity-50"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> {deletingId === current.id ? 'Deleting…' : 'Delete'}
+                </button>
               </div>
 
               <GenerationDetails
@@ -766,7 +891,7 @@ export function PosterStudioWorkspace({
                     ? history.some((item) => item.id === current.parentGenerationId)
                     : false
                 }
-                onSelectParent={() => current.parentGenerationId && setCurrentId(current.parentGenerationId)}
+                onSelectParent={() => current.parentGenerationId && selectItem(current.parentGenerationId)}
               />
             </div>
           ) : (
@@ -778,8 +903,8 @@ export function PosterStudioWorkspace({
                 <h3 className="text-sm font-semibold text-foreground">No posters yet</h3>
                 <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
                   {mode === 'GENERATE'
-                    ? 'Write a brief and generate your first poster.'
-                    : `${copy.tab} works on an existing image — upload one to start.`}
+                    ? 'Write a brief, pick a client for exact branding, and generate your first poster.'
+                    : `${copy.tab} works on an existing image — upload one, or generate a poster first and pick it from History.`}
                 </p>
               </div>
             </div>
@@ -795,14 +920,16 @@ export function PosterStudioWorkspace({
           </div>
 
           {history.length === 0 ? (
-            <p className="text-xs text-muted-foreground text-center py-6">No posters saved yet.</p>
+            <p className="text-xs text-muted-foreground text-center py-6">
+              No posters saved yet. Everything you generate is kept here.
+            </p>
           ) : (
-            <div className="grid grid-cols-2 xl:grid-cols-1 gap-3 max-h-[600px] overflow-y-auto pr-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-3 max-h-[600px] overflow-y-auto pr-1">
               {history.map((item) => (
                 <div
                   key={item.id}
                   className={cn(
-                    'group relative rounded-xl border p-2.5 transition-all',
+                    'group relative rounded-xl border p-2.5 transition-all min-w-0',
                     currentId === item.id
                       ? 'border-primary bg-primary/5 ring-1 ring-primary'
                       : 'border-border bg-background hover:border-muted-foreground/30',
@@ -810,18 +937,14 @@ export function PosterStudioWorkspace({
                 >
                   <button
                     type="button"
-                    onClick={() => setCurrentId(item.id)}
+                    onClick={() => selectItem(item.id)}
+                    aria-label={`Preview ${describeItem(item)}`}
                     className="flex w-full items-start gap-2.5 text-left"
                   >
-                    {/* eslint-disable-next-line @next/next/no-img-element -- session-gated Drive proxy */}
-                    <img
-                      src={studioImageUrl(item.id, { width: 160 })}
-                      alt=""
-                      loading="lazy"
-                      className="w-14 h-20 object-cover rounded-lg border border-border shrink-0 bg-muted"
-                    />
+                    <HistoryThumbnail id={item.id} />
                     <span className="flex-1 min-w-0 space-y-1">
-                      <span className="block text-xs font-medium text-foreground line-clamp-2 leading-snug">
+                      {/* No `block`: it would override line-clamp's -webkit-box display. */}
+                      <span className="text-xs font-medium text-foreground line-clamp-2 leading-snug [overflow-wrap:anywhere]">
                         {item.prompt}
                       </span>
                       <span className="flex flex-wrap gap-1">
@@ -831,43 +954,57 @@ export function PosterStudioWorkspace({
                         <span className="inline-block text-[10px] text-muted-foreground bg-muted border border-border px-1.5 py-0.5 rounded font-medium">
                           {item.aspectRatio}
                         </span>
+                        {item.clientName && (
+                          <span
+                            className="inline-block max-w-full truncate text-[10px] text-muted-foreground bg-muted border border-border px-1.5 py-0.5 rounded font-medium"
+                            title={item.clientName}
+                          >
+                            {item.clientName}
+                          </span>
+                        )}
                       </span>
                     </span>
                   </button>
 
-                  <div className="mt-2.5 pt-2 border-t border-border flex items-center justify-between text-[11px] gap-1">
+                  <div className="mt-2 pt-1.5 border-t border-border grid grid-cols-4 text-[11px]">
                     <button
                       type="button"
                       disabled={loading}
                       onClick={() => attachHistoryImage(item, 'EDIT')}
-                      className="text-muted-foreground hover:text-primary flex items-center gap-1 font-medium disabled:opacity-50"
+                      className="flex items-center justify-center gap-1 rounded-md py-1.5 text-muted-foreground hover:text-primary hover:bg-muted font-medium disabled:opacity-50"
                     >
-                      <Wand2 className="w-3 h-3" /> Edit
+                      <Wand2 className="w-3.5 h-3.5" /> Edit
                     </button>
                     <button
                       type="button"
                       disabled={loading}
                       onClick={() => attachHistoryImage(item, 'VARIATION')}
-                      className="text-muted-foreground hover:text-brand-to flex items-center gap-1 font-medium disabled:opacity-50"
+                      className="flex items-center justify-center gap-1 rounded-md py-1.5 text-muted-foreground hover:text-brand-to hover:bg-muted font-medium disabled:opacity-50"
                     >
-                      <Copy className="w-3 h-3" /> Variant
+                      <Copy className="w-3.5 h-3.5" /> Vary
                     </button>
                     <a
                       href={studioImageUrl(item.id, { download: true })}
                       download
                       aria-label="Download poster"
-                      className="text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 p-0.5"
+                      title="Download"
+                      className="flex items-center justify-center rounded-md py-1.5 text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400 hover:bg-muted"
                     >
-                      <Download className="w-3 h-3" />
+                      <Download className="w-3.5 h-3.5" />
                     </a>
                     <button
                       type="button"
-                      disabled={loading}
+                      disabled={loading || deletingId === item.id}
                       onClick={() => handleDelete(item)}
                       aria-label="Delete poster"
-                      className="text-muted-foreground hover:text-destructive p-0.5 disabled:opacity-50"
+                      title="Delete"
+                      className="flex items-center justify-center rounded-md py-1.5 text-muted-foreground hover:text-destructive hover:bg-muted disabled:opacity-50"
                     >
-                      <Trash2 className="w-3 h-3" />
+                      {deletingId === item.id ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
                     </button>
                   </div>
                 </div>
@@ -890,9 +1027,9 @@ function GenerationDetails({
   onSelectParent: () => void;
 }) {
   return (
-    <div className="w-full bg-muted/40 border border-border rounded-xl p-3.5 text-xs space-y-2">
+    <div className="w-full min-w-0 bg-muted/40 border border-border rounded-xl p-3.5 text-xs space-y-2">
       <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground text-[11px]">
-        <span className="font-semibold uppercase tracking-wider">
+        <span className="font-semibold uppercase tracking-wider min-w-0 break-words">
           {MODE_BADGE[item.mode]}
           {item.clientName ? ` · ${item.clientName}` : ''}
         </span>
@@ -908,13 +1045,18 @@ function GenerationDetails({
               src={studioImageUrl(item.id, { variant: 'reference', width: 160 })}
               alt="Input image"
               loading="lazy"
+              onError={(event) => {
+                event.currentTarget.style.visibility = 'hidden';
+              }}
               className="w-12 h-16 object-cover rounded border border-border bg-muted"
             />
             <p className="text-[9px] text-muted-foreground text-center">Input</p>
           </div>
         )}
         <div className="min-w-0 space-y-1">
-          <p className="text-foreground font-medium leading-relaxed">{item.prompt}</p>
+          <p className="text-foreground font-medium leading-relaxed break-words whitespace-pre-line max-h-40 overflow-y-auto">
+            {item.prompt}
+          </p>
           <p className="text-[10px] text-muted-foreground">
             {item.model} · quality {item.quality} · {item.size}
             {item.textFree ? ' · text-free' : ''}
@@ -925,6 +1067,7 @@ function GenerationDetails({
               {item.logoBackground
                 ? ` · logo ${item.logoBackground === 'REMOVED' ? 'background removed' : 'original background'}`
                 : ''}
+              {item.footerTone ? ` · ${describeFooter(item.footerBackground, item.footerTone)}` : ''}
               {' · '}
               <a
                 href={studioImageUrl(item.id, { variant: 'raw', download: true })}
@@ -958,13 +1101,55 @@ function GenerationDetails({
         <summary className="text-[11px] text-brand-to cursor-pointer hover:underline font-medium">
           Prompt sent to the model
         </summary>
-        <p className="text-[11px] text-muted-foreground mt-1.5 p-2 bg-background rounded-md border border-border font-mono whitespace-pre-wrap">
+        <p className="text-[11px] text-muted-foreground mt-1.5 p-2 bg-background rounded-md border border-border font-mono whitespace-pre-wrap break-words max-h-72 overflow-y-auto">
           {item.sentPrompt}
         </p>
       </details>
     </div>
   );
 }
+
+/** A History thumbnail that degrades to a placeholder when the image cannot be loaded. */
+function HistoryThumbnail({ id }: { id: string }) {
+  const [broken, setBroken] = useState(false);
+  if (broken) {
+    return (
+      <span
+        className="w-14 h-20 rounded-lg border border-border shrink-0 bg-muted flex items-center justify-center text-muted-foreground"
+        title="Image unavailable"
+      >
+        <ImageOff className="w-4 h-4" />
+      </span>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- session-gated Drive proxy
+    <img
+      src={studioImageUrl(id, { width: 160 })}
+      alt=""
+      loading="lazy"
+      onError={() => setBroken(true)}
+      className="w-14 h-20 object-cover rounded-lg border border-border shrink-0 bg-muted"
+    />
+  );
+}
+
+function formatElapsed(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return minutes > 0 ? `${minutes}m ${String(rest).padStart(2, '0')}s` : `${rest}s`;
+}
+
+function describeFooter(choice: StudioHistoryItem['footerBackground'], tone: StudioHistoryItem['footerTone']): string {
+  const toneLabel = tone === 'LIGHT' ? 'light' : 'dark';
+  return choice === 'AUTO' ? `footer auto (${toneLabel})` : `footer ${toneLabel}`;
+}
+
+const FOOTER_OPTIONS: Array<{ value: StudioFooterBackground; label: string }> = [
+  { value: 'AUTO', label: 'Auto' },
+  { value: 'LIGHT', label: 'Light' },
+  { value: 'DARK', label: 'Dark' },
+];
 
 function Banner({
   tone,
@@ -1036,6 +1221,8 @@ function BrandCanvasPanel({
   onElementsChange,
   logoBackground,
   onLogoBackgroundChange,
+  footerBackground,
+  onFooterBackgroundChange,
   disabled,
 }: {
   clientId: string;
@@ -1046,6 +1233,8 @@ function BrandCanvasPanel({
   onElementsChange: (elements: StudioOverlayElement[]) => void;
   logoBackground: StudioLogoBackground;
   onLogoBackgroundChange: (value: StudioLogoBackground) => void;
+  footerBackground: StudioFooterBackground;
+  onFooterBackgroundChange: (value: StudioFooterBackground) => void;
   disabled: boolean;
 }) {
   if (loading) {
@@ -1217,12 +1406,51 @@ function BrandCanvasPanel({
         </div>
         <p className="text-[10px] text-muted-foreground leading-snug">
           {elements.length > 0
-            ? `Drawn exactly from Brand Canvas after generation, never by the AI, in a band along the bottom.${
+            ? `Drawn exactly from Brand Canvas after generation, never by the AI, in a footer along the bottom.${
                 elements.includes('logo') && summary.logo.includesName ? '' : ' The company name is added too.'
               }`
             : 'No identity overlay — the poster is the AI artwork only.'}
         </p>
       </div>
+
+      {elements.length > 0 && (
+        <div className="space-y-1 border-t border-border pt-2">
+          <p className="text-[10px] font-medium text-foreground" id="studio-footer-label">
+            Footer background
+          </p>
+          <div
+            role="radiogroup"
+            aria-labelledby="studio-footer-label"
+            className="grid grid-cols-3 gap-1 bg-muted/60 p-1 rounded-md border border-border text-[11px]"
+          >
+            {FOOTER_OPTIONS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={footerBackground === option.value}
+                disabled={disabled}
+                onClick={() => onFooterBackgroundChange(option.value)}
+                className={cn(
+                  'py-1 rounded font-medium transition-all disabled:opacity-60',
+                  footerBackground === option.value
+                    ? 'bg-card text-foreground shadow-sm font-semibold'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-muted-foreground leading-snug">
+            {footerBackground === 'AUTO'
+              ? 'Light or dark, chosen from the finished artwork so the footer blends in.'
+              : footerBackground === 'LIGHT'
+                ? 'A light footer with dark text.'
+                : 'A dark footer with light text.'}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
