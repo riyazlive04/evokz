@@ -55,16 +55,17 @@ enum UsageKeySource {
 }
 
 model Plan {
-  id           String   @id @default(uuid())
+  id           String     @id @default(uuid())
   name         String // e.g., "100-Day Blitz", "365-Day Scale"
   durationDays Int
   // Campaign fee in whole rupees for the full duration — not per month. Drives
   // the margin column on the dashboard; null means "not priced yet", which
   // reads as unknown margin rather than zero.
   priceInr     Int?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
   clients      Client[]
+  campaigns    Campaign[]
 }
 
 model Category {
@@ -74,6 +75,7 @@ model Category {
   updatedAt DateTime           @updatedAt
   clients   Client[]
   templates CategoryTemplate[]
+  campaigns Campaign[]
 
   /// The layout every template uploaded to this vertical is given, as a
   /// `PosterLayoutSpec`.
@@ -246,8 +248,28 @@ model CategoryTemplate {
   /// whose catalogue may grow, where a migration per addition is the wrong trade.
   paletteSource String @default("client")
 
-  /// Days pinned to this template by name in an imported sheet.
-  calendarDays ContentCalendar[]
+  // ---- Campaign mapping metadata (Phase 1 foundation) ----------------------
+  /// Whether this template may be newly assigned to campaign days.
+  ///
+  /// Retirement without deletion: deleting a template SetNulls every day pinned
+  /// to it, which on a manually mapped 365-day campaign silently discards the
+  /// operator's mapping. Deactivating keeps existing assignments and history.
+  ///
+  /// Enforced only by the campaign domain (`src/lib/campaign/service.ts`). The
+  /// legacy rotation in `ai-pipeline.ts` does not read it yet.
+  isActive     Boolean  @default(true)
+  /// Content-type keys this template suits, from `CAMPAIGN_CONTENT_TYPES`
+  /// (src/lib/campaign/model.ts). Empty means "any" — every existing row.
+  /// Strings rather than an enum, like `imageSizePreset`: the catalogue grows.
+  contentTypes String[] @default([])
+
+  /// Days pinned to this template: by name in an imported sheet, or as a
+  /// campaign day's selected template.
+  calendarDays     ContentCalendar[] @relation("SelectedTemplate")
+  /// Campaign days the AUTO mapper suggested this template for.
+  suggestedForDays ContentCalendar[] @relation("SuggestedTemplate")
+  /// Campaign poster versions drawn from this template.
+  posterVersions   PosterVersion[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -368,11 +390,126 @@ model Client {
   calendarDays  ContentCalendar[]
   usageEvents   UsageEvent[]
   studioPosters PosterStudioGeneration[]
+  campaigns     Campaign[]
   createdAt     DateTime                 @default(now())
   updatedAt     DateTime                 @updatedAt
 
   // Drives the per-minute dispatch sweep: (cronTime IN window) AND isActive.
   @@index([cronTime, isActive])
+}
+
+// ===========================================================================
+// Campaign automation — Phase 1 foundation
+// ===========================================================================
+//
+// CLIENT → CAMPAIGN → CAMPAIGN DAYS (ContentCalendar) → POSTER VERSIONS
+//
+// A 365-day campaign is 365 independently editable slots, not 365 locked
+// posters. Content lives on the day; images live in PosterVersion rows; the day
+// points at one active version. Approval, delivery queue, generation and
+// WhatsApp wiring are later phases — see AI_POSTER_HANDOFF.md §17.
+
+/// Campaign lifecycle. Transitions are defined in `CAMPAIGN_TRANSITIONS`
+/// (src/lib/campaign/model.ts); COMPLETED and CANCELLED are terminal.
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+/// How a campaign's days get their templates.
+enum TemplateMappingMode {
+  AUTO // The mapper suggests; an operator's selection still wins
+  MANUAL // Only the operator's selection counts
+}
+
+/// Whether a new poster version needs a human decision before delivery.
+enum CampaignApprovalPolicy {
+  MANUAL_REVIEW
+  AUTO_APPROVE
+}
+
+/// A campaign day's last poster generation attempt.
+enum PosterGenerationStatus {
+  NOT_REQUESTED
+  QUEUED
+  GENERATING
+  SUCCEEDED
+  FAILED
+}
+
+/// Which path produced a poster version.
+enum PosterVersionSource {
+  PIPELINE // Automatic generation
+  POSTER_STUDIO // Made or edited in AI Poster Studio
+  MANUAL_UPLOAD // Finished artwork uploaded by the operator
+}
+
+/// The review decision on one poster version — on the version, because an
+/// approval is a statement about one exact image.
+enum PosterApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// One client's scheduled content program on one plan and one vertical.
+///
+/// **Brand Canvas is not copied here.** Posters read the client's current
+/// Brand Canvas when they are generated, exactly as Poster Studio does.
+///
+/// The schedule (start, duration, delivery weekdays and time) is the
+/// campaign's own, snapshotted from the client at creation, because the days
+/// are materialised from it. `Client.startDate/endDate/cronTime/deliveryDays`
+/// remain the legacy single-campaign fields the current dispatch sweep reads.
+model Campaign {
+  id String @id @default(uuid())
+
+  // Cascade, matching ContentCalendar: a campaign has no meaning without its
+  // client. Cancelling (status) is the normal way to end one.
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // Restrict, matching Client.
+  planId     String
+  plan       Plan     @relation(fields: [planId], references: [id], onDelete: Restrict)
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  name   String
+  status CampaignStatus @default(DRAFT)
+
+  /// Local midnight of the first delivery day.
+  startDate    DateTime
+  /// Number of content slots (days) in the campaign.
+  durationDays Int
+  /// Local midnight of the last delivery day, derived from start, duration and
+  /// `deliveryDays` exactly as `Client.endDate` is.
+  endDate      DateTime
+
+  // ---- Delivery configuration ----------------------------------------------
+  /// "HH:MM" in the app timezone.
+  deliveryTime String @default("09:00")
+  /// ISO weekdays (1 = Mon … 7 = Sun). Empty means every day.
+  deliveryDays Int[]  @default([])
+
+  // ---- Mapping, approval and generation configuration ----------------------
+  templateMappingMode  TemplateMappingMode    @default(AUTO)
+  approvalPolicy       CampaignApprovalPolicy @default(MANUAL_REVIEW)
+  /// Size of the future rolling generation window: posters are produced only
+  /// for the next N days, not for the whole campaign. Not implemented yet.
+  generationWindowDays Int                    @default(14)
+
+  days ContentCalendar[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Target of ContentCalendar's (campaignId, clientId) composite key.
+  @@unique([id, clientId])
+  @@index([clientId, status])
+  @@index([status])
 }
 
 model ContentCalendar {
@@ -422,8 +559,11 @@ model ContentCalendar {
   /// SetNull rather than Restrict: retiring a template must not be blocked by the
   /// days that once used it, and a row falling back to the rotation is a better
   /// outcome than an undeletable row.
+  ///
+  /// On a campaign day this is the day's **selected** template — at most one,
+  /// by construction. See `suggestedTemplateId` for the AUTO mapper's choice.
   posterTemplateId   String?
-  posterTemplate     CategoryTemplate? @relation(fields: [posterTemplateId], references: [id], onDelete: SetNull)
+  posterTemplate     CategoryTemplate? @relation("SelectedTemplate", fields: [posterTemplateId], references: [id], onDelete: SetNull)
   gDriveFileId       String? // Storage reference inside Google Drive
   gDriveViewUrl      String? // Public link used by Evolution API + the dashboard
   deliveryStatus     DeliveryStatus    @default(PENDING)
@@ -461,10 +601,65 @@ model ContentCalendar {
   /// mark is the queue, so a killed container resumes where it stopped.
   generationQueuedAt DateTime?
   errorMessage       String?           @db.Text
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
+
+  // ---- Campaign day (Phase 1 foundation) -----------------------------------
+  // A row with `campaignId` set is a CampaignDay: one independently editable
+  // content/poster slot of a `Campaign`. Rows with it null are the legacy
+  // single-calendar-per-client pipeline and carry null / default values in
+  // every column below. Nothing in the dispatch sweep reads these columns yet.
+  //
+  // Reused rather than duplicated on a campaign day: `theme` is the content
+  // topic, `caption` / `hashtags` / `imagePrompt` / `backgroundPrompt` are
+  // content, `posterTemplateId` is the selected template, and `deliveryStatus`
+  // is the delivery axis. Empty strings in the NOT NULL content columns mean
+  // "not written yet".
+
+  /// Owning campaign. The composite key makes a day's campaign belong to the
+  /// same client as the day, so the client-scoped dispatch sweep can never meet
+  /// a row whose campaign is someone else's.
+  campaignId            String?
+  campaign              Campaign?               @relation(fields: [campaignId, clientId], references: [id, clientId], onDelete: Cascade)
+  /// Key from `CAMPAIGN_CONTENT_TYPES`, e.g. "festival", "educational".
+  contentType           String?
+  headline              String?                 @db.Text
+  supportingText        String?                 @db.Text
+  cta                   String?
+  /// The AUTO mapper's template for this day. Never set by a human; the
+  /// operator's choice is `posterTemplateId`, which wins when both are set.
+  suggestedTemplateId   String?
+  suggestedTemplate     CategoryTemplate?       @relation("SuggestedTemplate", fields: [suggestedTemplateId], references: [id], onDelete: SetNull)
+  /// Counts changes to this day's poster inputs (topic, content type, headline,
+  /// supporting text, CTA, prompts, effective template). A poster version made
+  /// from an older revision is stale. Caption and hashtags travel with the
+  /// WhatsApp message rather than the image, so they do not bump it.
+  contentRevision       Int                     @default(1)
+  /// Last poster generation attempt for this slot. Null on legacy rows, whose
+  /// generation is described by `deliveryStatus` and `generationQueuedAt`.
+  generationStatus      PosterGenerationStatus?
+  /// Allocator for `PosterVersion.versionNumber`: incremented atomically in the
+  /// transaction that inserts a version, so numbers are never reused.
+  lastPosterVersion     Int                     @default(0)
+  posterVersions        PosterVersion[]         @relation("DayPosterVersions")
+  /// The one version that represents this day. Only it may be delivered.
+  ///
+  /// A pointer rather than a status on each version, so "at most one ACTIVE"
+  /// holds by construction instead of by a partial index Prisma cannot model.
+  /// The composite key (version id, this day's id) makes it impossible to point
+  /// at another day's version. NoAction: an active version cannot be deleted;
+  /// deleting the day itself still cascades.
+  activePosterVersionId String?                 @unique
+  activePosterVersion   PosterVersion?          @relation("ActivePosterVersion", fields: [activePosterVersionId, id], references: [id, calendarDayId], onDelete: NoAction, onUpdate: NoAction)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([clientId, dayNumber])
+  // A campaign day is addressable as (campaign, day number).
+  @@unique([campaignId, dayNumber])
+  // Rolling generation window: "this campaign's next N days by date".
+  @@index([campaignId, scheduledDate])
+  // Serves the SetNull cascade when a suggested template is deleted.
+  @@index([suggestedTemplateId])
   // Ultra-fast time-window scanning for the dispatch engine.
   @@index([scheduledDate, deliveryStatus])
   // Drives the send phase: "which generated posters are due to go out now",
@@ -631,7 +826,7 @@ model PosterStudioGeneration {
   finalImageMimeType    String?
   /// Which exact elements the overlay drew, e.g. ["logo","name","website","phone"].
   /// Names only — the values stay on Client, the single source of truth.
-  overlayElements       String[]                    @default([])
+  overlayElements       String[]                      @default([])
   /// Placement used, e.g. "footer-band". Null when no overlay was drawn.
   overlayPreset         String?
   /// Per-poster logo background choice. Null when no logo was drawn. Never
@@ -662,9 +857,74 @@ model PosterStudioGeneration {
   // SetNull, matching UsageEvent: a removed client's drafts stay reviewable.
   client   Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
 
+  /// Campaign poster versions made from this generation (future integration).
+  campaignPosterVersions PosterVersion[]
+
   createdAt DateTime @default(now())
 
   @@index([createdAt])
   @@index([clientId, createdAt])
 }
 
+/// One image of one campaign day. Phase 1 foundation.
+///
+/// Day 127 → v1 generated → v2 edited in Poster Studio → v3 edited again. Each
+/// is its own row; none is ever overwritten. The day's `activePosterVersionId`
+/// says which one represents the day, and only that one may be delivered.
+///
+/// **No image bytes.** Like PosterStudioGeneration, a row holds a Drive file id.
+/// A row is written only once its image exists, and after that only the review
+/// fields change.
+model PosterVersion {
+  id String @id @default(uuid())
+
+  calendarDayId String
+  // Cascade: versions are the day's history and go with the day.
+  calendarDay   ContentCalendar     @relation("DayPosterVersions", fields: [calendarDayId], references: [id], onDelete: Cascade)
+  /// 1-based per day, allocated from `ContentCalendar.lastPosterVersion`.
+  versionNumber Int
+  source        PosterVersionSource
+
+  /// The poster itself, in Google Drive.
+  imageDriveFileId String
+  imageMimeType    String
+  width            Int?
+  height           Int?
+
+  /// The day's `contentRevision` this image was made from. Lower than the
+  /// day's current revision means the poster no longer matches its content.
+  contentRevision Int
+  /// Template the image was drawn from, if any.
+  templateId      String?
+  template        CategoryTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  /// The version this one was edited from (same day).
+  parentVersionId String?
+  parentVersion   PosterVersion?  @relation("PosterVersionLineage", fields: [parentVersionId], references: [id], onDelete: SetNull)
+  childVersions   PosterVersion[] @relation("PosterVersionLineage")
+
+  /// Set for POSTER_STUDIO versions: the studio row whose image this is. The
+  /// Drive file is shared, not copied. Restrict: deleting that studio row would
+  /// trash a file this version still uses.
+  studioGenerationId String?
+  studioGeneration   PosterStudioGeneration? @relation(fields: [studioGenerationId], references: [id], onDelete: Restrict)
+
+  approvalStatus PosterApprovalStatus @default(PENDING)
+  reviewedAt     DateTime?
+  reviewNote     String?              @db.Text
+
+  /// Back-relation of `ContentCalendar.activePosterVersion`. A list only to
+  /// satisfy Prisma's composite-key rules: the composite key limits it to this
+  /// version's own day and `activePosterVersionId @unique` to one row, so it
+  /// holds zero or one day.
+  activeForDay ContentCalendar[] @relation("ActivePosterVersion")
+
+  createdAt DateTime @default(now())
+
+  @@unique([calendarDayId, versionNumber])
+  // Target of ContentCalendar's (activePosterVersionId, id) composite key.
+  @@unique([id, calendarDayId])
+  @@index([templateId])
+  @@index([studioGenerationId])
+  @@index([parentVersionId])
+}
