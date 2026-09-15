@@ -98,7 +98,13 @@ export async function trashUnreferencedStudioFiles(
   for (const fileId of unique) {
     try {
       const stillUsed = await prisma.posterStudioGeneration.count({
-        where: { OR: [{ imageDriveFileId: fileId }, { referenceDriveFileId: fileId }] },
+        where: {
+          OR: [
+            { imageDriveFileId: fileId },
+            { finalImageDriveFileId: fileId },
+            { referenceDriveFileId: fileId },
+          ],
+        },
       });
       if (stillUsed === 0) await trashDriveFile(fileId);
     } catch (error) {

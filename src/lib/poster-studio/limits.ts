@@ -75,13 +75,75 @@ export const STUDIO_SOURCE_KINDS = [
 
 export type StudioSourceKind = (typeof STUDIO_SOURCE_KINDS)[number];
 
-/** Browser-facing URL for a stored studio image. Served by the admin-gated proxy route. */
+// ---------------------------------------------------------------------------
+// Brand Canvas identity overlay
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-poster logo background choice. Never written back to the client: Brand
+ * Canvas owns the logo, and this only decides which version a poster draws.
+ */
+export const STUDIO_LOGO_BACKGROUNDS = ['ORIGINAL', 'REMOVED'] as const;
+export type StudioLogoBackground = (typeof STUDIO_LOGO_BACKGROUNDS)[number];
+
+/**
+ * Exact Brand Canvas elements an operator can ask the overlay to draw. The
+ * company name is not in this list: it follows the renderer's own rule and is
+ * printed whenever there is no logo, or the logo does not spell the name.
+ */
+export const STUDIO_OVERLAY_ELEMENTS = ['logo', 'tagline', 'website', 'phone'] as const;
+export type StudioOverlayElement = (typeof STUDIO_OVERLAY_ELEMENTS)[number];
+
+/** Elements recorded on a generation: the selectable ones plus the derived name. */
+export type StudioDrawnElement = StudioOverlayElement | 'name';
+
+/**
+ * The only placement so far: a full-width identity band along the bottom edge,
+ * logo on the left, exact contact details on the right. A string rather than a
+ * boolean so a later preset is an addition, not a migration.
+ */
+export const STUDIO_OVERLAY_PRESET = 'footer-band' as const;
+
+/**
+ * Share of the canvas height the identity band covers, per format.
+ *
+ * Shared by the prompt, which asks the model to keep this strip clear, and the
+ * compositor, which draws into it — the two must agree or the band lands on
+ * something the model thought was safe to draw there.
+ */
+export function identityBandFraction(aspectRatio: StudioAspectRatio): number {
+  switch (aspectRatio) {
+    case '9:16':
+      return 0.12;
+    case '1:1':
+      return 0.15;
+    case '16:9':
+      return 0.18;
+  }
+}
+
+/** Browser-facing preview of a client's Brand Canvas logo, resolved server-side. */
+export function studioClientLogoUrl(
+  clientId: string,
+  background: StudioLogoBackground,
+  width = 240,
+): string {
+  return `/api/poster-studio/clients/${encodeURIComponent(clientId)}/logo?background=${background}&w=${width}`;
+}
+
+/**
+ * Browser-facing URL for a stored studio image. Served by the admin-gated proxy route.
+ *
+ *   final      the composited poster when there is one, else the raw artwork (default)
+ *   raw        exactly what the image model returned — what Edit and Variation send
+ *   reference  the input image sent with the request
+ */
 export function studioImageUrl(
   generationId: string,
-  options: { variant?: 'output' | 'reference'; width?: number; download?: boolean } = {},
+  options: { variant?: 'final' | 'raw' | 'reference'; width?: number; download?: boolean } = {},
 ): string {
   const params = new URLSearchParams();
-  if (options.variant === 'reference') params.set('variant', 'reference');
+  if (options.variant === 'reference' || options.variant === 'raw') params.set('variant', options.variant);
   if (options.download) {
     params.set('full', '1');
     params.set('download', '1');

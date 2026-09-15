@@ -5,8 +5,10 @@ import {
   AlertCircle,
   AlertTriangle,
   Building2,
+  Check,
   CheckCircle2,
   Copy,
+  Minus,
   Download,
   Image as ImageIcon,
   Info,
@@ -24,7 +26,9 @@ import {
 import {
   deleteStudioGenerationAction,
   generateStudioPosterAction,
+  loadStudioBrandCanvasAction,
 } from '@/app/admin/poster-studio/actions';
+import type { StudioBrandCanvasSummary } from '@/lib/poster-studio/brand-context';
 import type { StudioHistoryItem } from '@/lib/poster-studio/history';
 import {
   MAX_STUDIO_IMAGE_BYTES,
@@ -34,9 +38,12 @@ import {
   STUDIO_ASPECT_RATIO_KEYS,
   STUDIO_ASPECT_RATIOS,
   STUDIO_IMAGE_MIME_TYPES,
+  studioClientLogoUrl,
   studioImageUrl,
   type StudioAspectRatio,
+  type StudioLogoBackground,
   type StudioMode,
+  type StudioOverlayElement,
 } from '@/lib/poster-studio/limits';
 import { cn } from '@/lib/utils';
 
@@ -159,13 +166,63 @@ export function PosterStudioWorkspace({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [unsaved, setUnsaved] = useState<{ dataUri: string; fileName: string } | null>(null);
+  /** Set when the server refused "Remove background" for this logo; offers "Keep original". */
+  const [logoBackgroundRefused, setLogoBackgroundRefused] = useState(false);
+
+  // The selected client's existing Brand Canvas — loaded, never re-entered here.
+  const [brandCanvas, setBrandCanvas] = useState<StudioBrandCanvasSummary | null>(null);
+  const [brandLoading, setBrandLoading] = useState(false);
+  const [brandError, setBrandError] = useState<string | null>(null);
+  const [overlayElements, setOverlayElements] = useState<StudioOverlayElement[]>([]);
+  const [logoBackground, setLogoBackground] = useState<StudioLogoBackground>('ORIGINAL');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const copy = MODE_COPY[mode];
   const prompt = drafts[mode];
   const current = history.find((item) => item.id === currentId) ?? null;
+
+  useEffect(() => {
+    setLogoBackgroundRefused(false);
+    if (!clientId) {
+      setBrandCanvas(null);
+      setBrandError(null);
+      setOverlayElements([]);
+      setBrandLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setBrandLoading(true);
+    setBrandError(null);
+    setBrandCanvas(null);
+    setOverlayElements([]);
+
+    loadStudioBrandCanvasAction(clientId)
+      .then((result) => {
+        if (cancelled) return;
+        if (!result.ok) {
+          setBrandError(result.error);
+          return;
+        }
+        const summary = result.summary;
+        setBrandCanvas(summary);
+        setOverlayElements(defaultOverlayElements(summary));
+        setLogoBackground(summary.logo.removal.possible ? summary.logo.defaultBackground : 'ORIGINAL');
+      })
+      .catch(() => {
+        if (!cancelled) setBrandError('The Brand Canvas could not be loaded. Reload the page and try again.');
+      })
+      .finally(() => {
+        if (!cancelled) setBrandLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
 
   // Object URLs are created and revoked by the same effect, so a StrictMode
   // remount cannot revoke a URL an <img> is still showing.
@@ -184,7 +241,9 @@ export function PosterStudioWorkspace({
     : attachment.kind === 'upload'
       ? uploadPreviewUrl
       : studioImageUrl(attachment.generationId, {
-          variant: attachment.kind === 'generation-reference' ? 'reference' : 'output',
+          // A history poster is sent to the model as its RAW artwork, so that is
+          // what the attachment shows.
+          variant: attachment.kind === 'generation-reference' ? 'reference' : 'raw',
           width: 160,
         });
 
@@ -212,7 +271,9 @@ export function PosterStudioWorkspace({
   const handleGenerate = async () => {
     setError(null);
     setSuccess(null);
+    setWarning(null);
     setUnsaved(null);
+    setLogoBackgroundRefused(false);
 
     const trimmed = prompt.trim();
     if (trimmed.length < MIN_STUDIO_PROMPT_LENGTH) {
@@ -223,6 +284,16 @@ export function PosterStudioWorkspace({
       setError(copy.missingImage);
       return;
     }
+    if (clientId && brandLoading) {
+      setError('The Brand Canvas is still loading. Try again in a moment.');
+      return;
+    }
+    const drawsLogo = overlayElements.includes('logo');
+    if (drawsLogo && logoBackground === 'REMOVED' && brandCanvas && !brandCanvas.logo.removal.possible) {
+      setError(brandCanvas.logo.removal.message ?? 'The background cannot be removed from this logo.');
+      setLogoBackgroundRefused(true);
+      return;
+    }
 
     const formData = new FormData();
     formData.set('mode', mode);
@@ -230,6 +301,8 @@ export function PosterStudioWorkspace({
     formData.set('aspectRatio', aspectRatio);
     formData.set('clientId', clientId);
     formData.set('textFree', textFree ? '1' : '0');
+    formData.set('overlayElements', clientId ? overlayElements.join(',') : '');
+    formData.set('logoBackground', logoBackground);
     if (!attachment) {
       formData.set('sourceKind', 'none');
     } else if (attachment.kind === 'upload') {
@@ -248,9 +321,11 @@ export function PosterStudioWorkspace({
 
       if (!result.ok) {
         setError(result.error);
+        if (result.kind === 'logo-background') setLogoBackgroundRefused(true);
         if (result.unsaved) setUnsaved(result.unsaved);
         return;
       }
+      if (result.warning) setWarning(result.warning);
 
       const generation = result.generation;
       setHistory((previous) => [generation, ...previous.filter((item) => item.id !== generation.id)]);
@@ -281,6 +356,11 @@ export function PosterStudioWorkspace({
 
   const attachHistoryImage = (item: StudioHistoryItem, nextMode: 'EDIT' | 'VARIATION') => {
     setMode(nextMode);
+    // Keep the poster's Brand Canvas: an edit or variation of a client's poster
+    // is composited with that client's identity again.
+    if (item.clientId && clients.some((client) => client.id === item.clientId)) {
+      setClientId(item.clientId);
+    }
     setAttachment({
       kind: 'generation-output',
       generationId: item.id,
@@ -327,7 +407,28 @@ export function PosterStudioWorkspace({
 
       {error && (
         <Banner tone="error" icon={AlertCircle} onDismiss={() => setError(null)}>
-          {error}
+          <span className="flex flex-wrap items-center gap-3">
+            {error}
+            {logoBackgroundRefused && (
+              <button
+                type="button"
+                onClick={() => {
+                  setLogoBackground('ORIGINAL');
+                  setLogoBackgroundRefused(false);
+                  setError(null);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-destructive/40 bg-background px-2.5 py-1 text-xs font-semibold text-foreground hover:bg-muted"
+              >
+                Use &ldquo;Keep original&rdquo; for this poster
+              </button>
+            )}
+          </span>
+        </Banner>
+      )}
+
+      {warning && (
+        <Banner tone="warning" icon={AlertTriangle} onDismiss={() => setWarning(null)}>
+          {warning}
         </Banner>
       )}
 
@@ -490,42 +591,52 @@ export function PosterStudioWorkspace({
             />
           </div>
 
-          {/* Client brand context */}
-          {mode !== 'EDIT' ? (
-            <div className="space-y-1.5">
-              <label
-                htmlFor="studio-client"
-                className="text-xs font-medium text-foreground flex items-center gap-1.5"
-              >
-                <Building2 className="w-3.5 h-3.5 text-brand-to" /> Client brand context (optional)
-              </label>
-              <select
-                id="studio-client"
-                value={clientId}
-                disabled={loading}
-                onChange={(event) => setClientId(event.target.value)}
-                className="w-full bg-background border border-input rounded-lg px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
-              >
-                <option value="">No client — generic studio mode</option>
-                {clients.map((client) => (
-                  <option key={client.id} value={client.id}>
-                    {client.companyName}
-                  </option>
-                ))}
-              </select>
-              <p className="text-[10px] text-muted-foreground leading-snug">
-                Adds the client&apos;s name, industry, tagline, stored brand colours, typography and
-                layout rules to the prompt — only what is saved on the client.
+          {/* Client and Brand Canvas */}
+          <div className="space-y-1.5">
+            <label
+              htmlFor="studio-client"
+              className="text-xs font-medium text-foreground flex items-center gap-1.5"
+            >
+              <Building2 className="w-3.5 h-3.5 text-brand-to" /> Client (optional)
+            </label>
+            <select
+              id="studio-client"
+              value={clientId}
+              disabled={loading}
+              onChange={(event) => setClientId(event.target.value)}
+              className="w-full bg-background border border-input rounded-lg px-3 py-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+            >
+              <option value="">No client — generic studio mode</option>
+              {clients.map((client) => (
+                <option key={client.id} value={client.id}>
+                  {client.companyName}
+                </option>
+              ))}
+            </select>
+            {mode === 'EDIT' && (
+              <p className="text-[10px] text-muted-foreground leading-snug flex items-start gap-1.5">
+                <Info className="w-3 h-3 shrink-0 mt-0.5" />
+                Edits send only your instruction with the raw artwork, so the design is kept. The
+                Brand Canvas identity is composited onto the result.
               </p>
-            </div>
-          ) : (
-            <div className="rounded-lg border border-border bg-muted/40 p-3 text-[10px] text-muted-foreground flex items-start gap-2">
-              <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <p className="leading-snug">
-                Edits send only your instruction with the image, so the existing design is kept.
-                {clientId ? ' The selected client is still recorded against the result.' : ''}
-              </p>
-            </div>
+            )}
+          </div>
+
+          {clientId && (
+            <BrandCanvasPanel
+              clientId={clientId}
+              summary={brandCanvas}
+              loading={brandLoading}
+              error={brandError}
+              elements={overlayElements}
+              onElementsChange={setOverlayElements}
+              logoBackground={logoBackground}
+              onLogoBackgroundChange={(value) => {
+                setLogoBackground(value);
+                setLogoBackgroundRefused(false);
+              }}
+              disabled={loading}
+            />
           )}
 
           {/* Format */}
@@ -808,6 +919,24 @@ function GenerationDetails({
             {item.model} · quality {item.quality} · {item.size}
             {item.textFree ? ' · text-free' : ''}
           </p>
+          {item.hasFinal ? (
+            <p className="text-[10px] text-muted-foreground">
+              Brand identity: {item.overlayElements.map(describeElement).join(', ')}
+              {item.logoBackground
+                ? ` · logo ${item.logoBackground === 'REMOVED' ? 'background removed' : 'original background'}`
+                : ''}
+              {' · '}
+              <a
+                href={studioImageUrl(item.id, { variant: 'raw', download: true })}
+                download
+                className="text-brand-to hover:underline font-medium"
+              >
+                download raw artwork
+              </a>
+            </p>
+          ) : item.clientId ? (
+            <p className="text-[10px] text-muted-foreground">No brand identity overlay — raw artwork only.</p>
+          ) : null}
           {item.parentGenerationId &&
             (parentInHistory ? (
               <button
@@ -867,6 +996,233 @@ function Banner({
           <X className="w-4 h-4" />
         </button>
       )}
+    </div>
+  );
+}
+
+const ELEMENT_LABELS: Record<string, string> = {
+  logo: 'logo',
+  name: 'company name',
+  tagline: 'tagline',
+  website: 'website',
+  phone: 'phone',
+};
+
+function describeElement(element: string): string {
+  return ELEMENT_LABELS[element] ?? element;
+}
+
+/** Everything the Brand Canvas actually has, ticked by default. Nothing is invented. */
+function defaultOverlayElements(summary: StudioBrandCanvasSummary): StudioOverlayElement[] {
+  const elements: StudioOverlayElement[] = [];
+  if (summary.logo.available && !summary.logo.loadError) elements.push('logo');
+  if (summary.tagline) elements.push('tagline');
+  if (summary.website) elements.push('website');
+  if (summary.phone) elements.push('phone');
+  return elements;
+}
+
+/**
+ * The selected client's existing Brand Canvas: what is available, the logo as a
+ * poster would draw it, the per-poster logo background, and which exact identity
+ * elements the overlay adds. Read-only — Brand Canvas is edited on its own page.
+ */
+function BrandCanvasPanel({
+  clientId,
+  summary,
+  loading,
+  error,
+  elements,
+  onElementsChange,
+  logoBackground,
+  onLogoBackgroundChange,
+  disabled,
+}: {
+  clientId: string;
+  summary: StudioBrandCanvasSummary | null;
+  loading: boolean;
+  error: string | null;
+  elements: StudioOverlayElement[];
+  onElementsChange: (elements: StudioOverlayElement[]) => void;
+  logoBackground: StudioLogoBackground;
+  onLogoBackgroundChange: (value: StudioLogoBackground) => void;
+  disabled: boolean;
+}) {
+  if (loading) {
+    return (
+      <div className="rounded-lg border border-border bg-muted/40 p-3 text-[11px] text-muted-foreground flex items-center gap-2">
+        <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading Brand Canvas…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-[11px] text-destructive">
+        {error}
+      </div>
+    );
+  }
+  if (!summary) return null;
+
+  const logoUsable = summary.logo.available && !summary.logo.loadError;
+  const toggle = (element: StudioOverlayElement, on: boolean) =>
+    onElementsChange(on ? [...elements.filter((e) => e !== element), element] : elements.filter((e) => e !== element));
+
+  const checklist: Array<{ label: string; ok: boolean; detail?: React.ReactNode }> = [
+    { label: 'Logo', ok: logoUsable, detail: summary.logo.loadError ? 'unreadable' : undefined },
+    {
+      label: 'Colors',
+      ok: summary.colors.length > 0,
+      detail:
+        summary.colors.length > 0 ? (
+          <span className="flex gap-0.5">
+            {summary.colors.map((color) => (
+              <span
+                key={`${color.role}-${color.hex}`}
+                title={`${color.role} ${color.hex}`}
+                className="inline-block w-2.5 h-2.5 rounded-sm border border-border"
+                style={{ backgroundColor: color.hex }}
+              />
+            ))}
+          </span>
+        ) : undefined,
+    },
+    { label: 'Typography', ok: summary.typography !== null, detail: summary.typography?.headingFont },
+    { label: 'Tagline', ok: Boolean(summary.tagline) },
+    { label: 'Website', ok: Boolean(summary.website) },
+    { label: 'Phone', ok: Boolean(summary.phone), detail: summary.phoneIsFallback ? 'from WhatsApp' : undefined },
+    { label: 'Layout rules', ok: summary.layoutDirectives.length > 0, detail: summary.layoutDirectives.length || undefined },
+    { label: 'Industry', ok: Boolean(summary.industry), detail: summary.industry ?? undefined },
+  ];
+
+  const selectable: Array<{ element: StudioOverlayElement; label: string; available: boolean; value?: string | null }> = [
+    { element: 'logo', label: 'Logo', available: logoUsable },
+    { element: 'tagline', label: 'Tagline', available: Boolean(summary.tagline), value: summary.tagline },
+    { element: 'website', label: 'Website', available: Boolean(summary.website), value: summary.website },
+    { element: 'phone', label: 'Phone', available: Boolean(summary.phone), value: summary.phone },
+  ];
+
+  return (
+    <div className="rounded-lg border border-border bg-background p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">Brand Canvas</p>
+        <a
+          href={`/admin/clients/${encodeURIComponent(clientId)}/brand?return=${encodeURIComponent('/admin/poster-studio')}`}
+          className="text-[10px] text-brand-to hover:underline font-medium"
+        >
+          Edit in Brand Canvas
+        </a>
+      </div>
+
+      <ul className="grid grid-cols-2 gap-x-3 gap-y-1">
+        {checklist.map((item) => (
+          <li key={item.label} className="flex items-center gap-1.5 text-[11px] min-w-0">
+            {item.ok ? (
+              <Check className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            ) : (
+              <Minus className="w-3 h-3 text-muted-foreground shrink-0" />
+            )}
+            <span className={cn('shrink-0', item.ok ? 'text-foreground' : 'text-muted-foreground')}>{item.label}</span>
+            {item.ok && item.detail !== undefined ? (
+              <span className="text-[10px] text-muted-foreground truncate">{item.detail}</span>
+            ) : !item.ok ? (
+              <span className="text-[10px] text-muted-foreground truncate">{item.detail ?? 'not set'}</span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+
+      {summary.logo.loadError && <p className="text-[10px] text-destructive leading-snug">{summary.logo.loadError}</p>}
+
+      {logoUsable && elements.includes('logo') && (
+        <div className="flex items-start gap-3">
+          <div
+            className="w-20 h-14 shrink-0 rounded border border-border flex items-center justify-center overflow-hidden"
+            style={{
+              backgroundImage: 'repeating-conic-gradient(rgba(127,127,127,0.25) 0% 25%, transparent 0% 50%)',
+              backgroundSize: '10px 10px',
+            }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- session-gated route; the logo's storage is never exposed */}
+            <img
+              key={logoBackground}
+              src={studioClientLogoUrl(clientId, logoBackground)}
+              alt={`${summary.companyName} logo`}
+              className="max-w-full max-h-full object-contain"
+            />
+          </div>
+          <fieldset className="space-y-1 text-[11px]" disabled={disabled}>
+            <legend className="text-[10px] font-medium text-foreground mb-0.5">Logo background</legend>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="radio"
+                name="studio-logo-background"
+                checked={logoBackground === 'ORIGINAL'}
+                onChange={() => onLogoBackgroundChange('ORIGINAL')}
+              />
+              Keep original
+            </label>
+            <label
+              className={cn(
+                'flex items-center gap-1.5',
+                summary.logo.removal.possible ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed',
+              )}
+            >
+              <input
+                type="radio"
+                name="studio-logo-background"
+                checked={logoBackground === 'REMOVED'}
+                disabled={!summary.logo.removal.possible}
+                onChange={() => onLogoBackgroundChange('REMOVED')}
+              />
+              Remove background
+            </label>
+            {summary.logo.removal.possible ? (
+              <p className="text-[10px] text-muted-foreground leading-snug">
+                {summary.logo.removal.via === 'brand-canvas-removed'
+                  ? 'Uses the transparent logo already in Brand Canvas.'
+                  : summary.logo.removal.via === 'keyed-for-poster'
+                    ? 'Removed for this poster only; Brand Canvas is not changed.'
+                    : 'This logo is already transparent.'}
+              </p>
+            ) : (
+              <p className="text-[10px] text-muted-foreground leading-snug">{summary.logo.removal.message}</p>
+            )}
+          </fieldset>
+        </div>
+      )}
+
+      <div className="space-y-1 border-t border-border pt-2">
+        <p className="text-[10px] font-medium text-foreground">Exact identity on the poster</p>
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+          {selectable.map((option) => (
+            <label
+              key={option.element}
+              className={cn(
+                'flex items-center gap-1.5 text-[11px] min-w-0',
+                option.available ? 'cursor-pointer text-foreground' : 'text-muted-foreground cursor-not-allowed',
+              )}
+              title={option.value ?? undefined}
+            >
+              <input
+                type="checkbox"
+                disabled={disabled || !option.available}
+                checked={option.available && elements.includes(option.element)}
+                onChange={(event) => toggle(option.element, event.target.checked)}
+              />
+              <span className="shrink-0">{option.label}</span>
+              {option.value && <span className="text-[10px] text-muted-foreground truncate">{option.value}</span>}
+            </label>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted-foreground leading-snug">
+          {elements.length > 0
+            ? `Drawn exactly from Brand Canvas after generation, never by the AI, in a band along the bottom.${
+                elements.includes('logo') && summary.logo.includesName ? '' : ' The company name is added too.'
+              }`
+            : 'No identity overlay — the poster is the AI artwork only.'}
+        </p>
+      </div>
     </div>
   );
 }

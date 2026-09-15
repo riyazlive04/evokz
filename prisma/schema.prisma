@@ -568,6 +568,12 @@ enum PosterStudioMode {
   VARIATION // A new design derived from an existing image
 }
 
+/// Which version of a client's Brand Canvas logo a studio poster drew.
+enum PosterStudioLogoBackground {
+  ORIGINAL // The exact uploaded logo, untouched
+  REMOVED // A transparent version: Brand Canvas's own, or keyed in memory for this poster
+}
+
 /// One image produced in the AI Poster Studio (/admin/poster-studio).
 ///
 /// **No image bytes live in this table.** Both the output and the input image
@@ -601,11 +607,29 @@ model PosterStudioGeneration {
   /// The operator asked for artwork with no lettering. Nothing is composited.
   textFree    Boolean @default(false)
 
+  /// RAW artwork: exactly what the image model returned, with no identity
+  /// overlay. The input for any Edit or Variation made from this row — the
+  /// composited poster is never sent back to the model.
   imageDriveFileId String
   imageMimeType    String
-  /// Measured from the returned bytes, not copied from the request.
+  /// Measured from the returned bytes, not copied from the request. The final
+  /// poster is composited at the same size.
   width            Int?
   height           Int?
+
+  /// FINAL poster: the raw artwork with exact Brand Canvas identity elements
+  /// composited on top. Null when no overlay was drawn, in which case the raw
+  /// artwork is the poster.
+  finalImageDriveFileId String?
+  finalImageMimeType    String?
+  /// Which exact elements the overlay drew, e.g. ["logo","name","website","phone"].
+  /// Names only — the values stay on Client, the single source of truth.
+  overlayElements       String[]                    @default([])
+  /// Placement used, e.g. "footer-band". Null when no overlay was drawn.
+  overlayPreset         String?
+  /// Per-poster logo background choice. Null when no logo was drawn. Never
+  /// written back to the client's Brand Canvas.
+  logoBackground        PosterStudioLogoBackground?
 
   /// The input image actually sent to the model, when there was one: an
   /// operator upload, or another generation's output. Shared, not copied, when

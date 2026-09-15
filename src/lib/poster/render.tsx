@@ -5,16 +5,14 @@ import { Resvg } from '@resvg/resvg-js';
 import sharp from 'sharp';
 import satori from 'satori';
 
-import { intEnv, optionalEnv } from '@/lib/env';
+import { formatPhone, normalizeTagline, normalizeWebsite } from '@/lib/brand/identity-format';
+import { fetchLogoUrl, sniffLogo } from '@/lib/brand/logo-fetch';
+import { optionalEnv } from '@/lib/env';
 import { loadFonts } from '@/lib/poster/fonts';
 import { renderLayoutSpec } from '@/lib/poster/layout-render';
 import { renderHtmlPoster } from '@/lib/poster/html/render';
 import { findHtmlTemplateFor, type HtmlTemplate } from '@/lib/poster/html/template';
-import {
-  readImageDimensions,
-  readSvgDimensions,
-  type ImageDimensions,
-} from '@/lib/poster/image-info';
+import { readImageDimensions, type ImageDimensions } from '@/lib/poster/image-info';
 import { hexToRgb, relativeLuminance } from '@/lib/poster/color';
 import { measureInkLuminance, tintLogoInk } from '@/lib/poster/logo-key';
 import { resolveMetrics } from '@/lib/poster/metrics';
@@ -812,9 +810,6 @@ interface LoadedLogo {
  */
 const logoCache = new Map<string, Promise<LoadedLogo | null>>();
 
-/** Refuses anything larger than this; a logo this big is a mistake, not a logo. */
-const MAX_LOGO_BYTES = 4 * 1024 * 1024;
-
 /**
  * Fetches and measures the logo.
  *
@@ -842,53 +837,16 @@ async function loadLogo(url: string | null): Promise<LoadedLogo | null> {
 }
 
 async function fetchLogo(url: string): Promise<LoadedLogo | null> {
-  const timeoutMs = intEnv('POSTER_LOGO_TIMEOUT_MS', 15_000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Timeout, size cap and the `image/*` check (a Drive link whose sharing was
+  // never opened answers with an HTML interstitial and a 200) live in the shared
+  // fetcher, so the studio and the Brand Canvas action enforce the same ones.
+  const { bytes, declaredType } = await fetchLogoUrl(url);
 
-  let response: Response;
-  try {
-    response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (!response.ok) {
-    throw new Error(`responded ${response.status} ${response.statusText}`);
-  }
-
-  const declaredType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? '';
-  // A Drive link whose sharing was never opened returns an HTML interstitial with
-  // a 200, so the content type has to be checked rather than assumed.
-  if (declaredType && !declaredType.startsWith('image/')) {
-    throw new Error(
-      `served "${declaredType}" rather than an image — if this is a Google Drive ` +
-        'link, the file is probably not shared link-readable',
-    );
-  }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength === 0) throw new Error('the file was empty');
-  if (bytes.byteLength > MAX_LOGO_BYTES) {
-    throw new Error(
-      `the file is ${(bytes.byteLength / 1024 / 1024).toFixed(1)} MB, over the ${
-        MAX_LOGO_BYTES / 1024 / 1024
-      } MB cap`,
-    );
-  }
-
-  const isSvg =
-    declaredType === 'image/svg+xml' ||
-    bytes.toString('utf8', 0, 300).trimStart().startsWith('<svg') ||
-    bytes.toString('utf8', 0, 300).includes('<?xml');
-
-  const dimensions = isSvg
-    ? readSvgDimensions(bytes.toString('utf8'))
-    : readImageDimensions(bytes);
-
-  if (!dimensions) {
+  const sniffed = sniffLogo(bytes, declaredType);
+  if (!sniffed) {
     throw new Error('its dimensions could not be read');
   }
+  const { isSvg, dimensions } = sniffed;
 
   return {
     dataUri: toDataUri(bytes, dimensions.mimeType),
@@ -910,41 +868,10 @@ function toDataUri(bytes: Buffer, mimeType: string): string {
   return `data:${mimeType};base64,${bytes.toString('base64')}`;
 }
 
-function normalizeTagline(raw: string | null): string | null {
-  const trimmed = raw?.trim();
-  return trimmed ? trimmed : null;
-}
-
-/**
- * Strips the scheme and any trailing slash, leaving the bare host form the
- * references use (`www.loremipsum.com`, never `https://www.loremipsum.com/`).
- */
-function normalizeWebsite(raw: string | null): string | null {
-  const trimmed = raw?.trim();
-  if (!trimmed) return null;
-  return trimmed.replace(/^[a-z]+:\/\//i, '').replace(/\/+$/, '') || null;
-}
-
-/**
- * The contact bar's phone value.
- *
- * `displayPhone` is passed through verbatim when set — an operator who typed
- * "+91 98765 43210" chose that spacing and it must not be reformatted. Only the
- * fallback path formats, grouping Indian numbers as `+91 XXXXX XXXXX` to match the
- * reference set; anything else gets a plain `+` prefix rather than a guessed
- * grouping, since applying Indian spacing to a 9-digit European number would
- * render a number that cannot be dialled.
- */
-export function formatPhone(displayPhone: string | null, whatsappNumber: string): string {
-  const explicit = displayPhone?.trim();
-  if (explicit) return explicit;
-
-  const digits = whatsappNumber.replace(/\D/g, '');
-  if (digits.length === 12 && digits.startsWith('91')) {
-    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
-  }
-  return digits ? `+${digits}` : '';
-}
+// `normalizeTagline`, `normalizeWebsite` and `formatPhone` live in
+// `@/lib/brand/identity-format`, shared with the AI Poster Studio overlay.
+// `formatPhone` is re-exported from here for existing callers.
+export { formatPhone };
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

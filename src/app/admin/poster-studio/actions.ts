@@ -14,7 +14,13 @@ import {
   buildVariationPrompt,
 } from '@/lib/ai/studio-prompts';
 import { MissingEnvError } from '@/lib/env';
-import { loadStudioClient, type ResolvedStudioClient } from '@/lib/poster-studio/brand-context';
+import {
+  loadStudioBrandCanvas,
+  summarizeStudioBrandCanvas,
+  type StudioBrandCanvas,
+  type StudioBrandCanvasSummary,
+} from '@/lib/poster-studio/brand-context';
+import { composeStudioPoster, prepareStudioOverlay, type StudioOverlayPlan } from '@/lib/poster-studio/compose';
 import { StudioError, type StudioErrorKind } from '@/lib/poster-studio/errors';
 import {
   studioHistorySelect,
@@ -24,13 +30,17 @@ import {
 } from '@/lib/poster-studio/history';
 import { prepareStudioInputImage } from '@/lib/poster-studio/images';
 import {
+  identityBandFraction,
   MAX_STUDIO_PROMPT_LENGTH,
   MIN_STUDIO_PROMPT_LENGTH,
   STUDIO_ASPECT_RATIO_KEYS,
   STUDIO_ASPECT_RATIOS,
+  STUDIO_LOGO_BACKGROUNDS,
   STUDIO_MODES,
+  STUDIO_OVERLAY_ELEMENTS,
   STUDIO_SOURCE_KINDS,
   type StudioAspectRatio,
+  type StudioOverlayElement,
 } from '@/lib/poster-studio/limits';
 import {
   readStudioFile,
@@ -54,7 +64,16 @@ import { recordOpenAiImageUsage } from '@/lib/usage';
  */
 
 export type StudioGenerateResult =
-  | { ok: true; generation: StudioHistoryItem }
+  | {
+      ok: true;
+      generation: StudioHistoryItem;
+      /**
+       * Set when the raw artwork was generated and saved but the identity overlay
+       * could not be composited afterwards. The pre-flight dry run makes this
+       * unlikely; the raw artwork is kept either way.
+       */
+      warning?: string;
+    }
   | {
       ok: false;
       kind: StudioErrorKind;
@@ -68,6 +87,10 @@ export type StudioGenerateResult =
     };
 
 export type StudioDeleteResult = { ok: true } | { ok: false; error: string };
+
+export type StudioBrandCanvasResult =
+  | { ok: true; summary: StudioBrandCanvasSummary }
+  | { ok: false; error: string };
 
 const optionalUuid = z
   .string()
@@ -89,6 +112,21 @@ const requestSchema = z.object({
   textFree: z.enum(['0', '1']).transform((value) => value === '1'),
   sourceKind: z.enum(STUDIO_SOURCE_KINDS),
   sourceGenerationId: optionalUuid,
+  /** Comma-separated subset of STUDIO_OVERLAY_ELEMENTS; empty means no identity overlay. */
+  overlayElements: z
+    .string()
+    .trim()
+    .transform((value) => [...new Set(value.split(',').map((part) => part.trim()).filter(Boolean))])
+    .pipe(
+      z.array(
+        z.enum(STUDIO_OVERLAY_ELEMENTS, {
+          errorMap: () => ({ message: 'Unknown brand identity element.' }),
+        }),
+      ),
+    ),
+  logoBackground: z.enum(STUDIO_LOGO_BACKGROUNDS, {
+    errorMap: () => ({ message: 'Choose a logo background.' }),
+  }),
 });
 
 type StudioRequest = z.infer<typeof requestSchema>;
@@ -109,28 +147,68 @@ export async function generateStudioPosterAction(formData: FormData): Promise<St
 
   try {
     const request = parseRequest(formData);
-    const client = request.clientId ? await withDatabase(() => loadStudioClient(request.clientId!), 'Loading the client') : null;
+    const client = request.clientId
+      ? await withDatabase(() => loadStudioBrandCanvas(request.clientId!), 'Loading the Brand Canvas')
+      : null;
+    // RAW artwork of a history item, never its composited final — see `resolveSource`.
     const source = await resolveSource(request, formData);
 
-    // Before any spend: a request whose image cannot be stored must not be paid for.
+    // ---- Pre-flight: everything deterministic, before any spend -------------
+    // The identity overlay's prerequisites — each selected element present in
+    // Brand Canvas, the logo readable, the chosen logo background achievable,
+    // the brand fonts loadable, and a full dry-run composite.
+    const overlay: StudioOverlayPlan | null =
+      client && request.overlayElements.length > 0
+        ? await prepareStudioOverlay(
+            client,
+            { elements: request.overlayElements, logoBackground: request.logoBackground },
+            request.aspectRatio,
+          )
+        : null;
+
+    // A request whose image cannot be stored must not be paid for.
     const folderId = await resolveStudioFolder(client?.companyName ?? null);
 
     const format = STUDIO_ASPECT_RATIOS[request.aspectRatio];
-    const sentPrompt = buildPrompt(request, client, source.image !== null);
+    const sentPrompt = buildPrompt(request, client, source.image !== null, overlay !== null);
 
     rendered = await renderStudioImage({ prompt: sentPrompt, size: format.size, image: source.image });
 
     // Recorded before storage: the money is spent whether or not the image is kept.
-    await recordOpenAiImageUsage(rendered.usage, rendered.model, { clientId: client?.id ?? null });
+    await recordOpenAiImageUsage(rendered.usage, rendered.model, { clientId: client?.clientId ?? null });
+
+    // ---- FINAL poster: raw artwork + exact Brand Canvas identity ------------
+    let composed: { bytes: Buffer; mimeType: string; drawn: string[] } | null = null;
+    let warning: string | undefined;
+    if (overlay) {
+      try {
+        composed = await composeStudioPoster(rendered.bytes, overlay);
+      } catch (error) {
+        console.error('[studio:action] identity overlay failed after generation:', error);
+        warning =
+          'The artwork was generated and saved, but the brand identity overlay could not be drawn on it. The saved image has no logo or contact details.';
+      }
+    }
 
     const stamp = fileStamp();
     const imageDriveFileId = await storeStudioFile({
       folderId,
-      fileName: `poster-studio-${stamp}-${request.mode.toLowerCase()}.${extensionFor(rendered.mimeType)}`,
+      fileName: `poster-studio-${stamp}-${request.mode.toLowerCase()}-raw.${extensionFor(rendered.mimeType)}`,
       body: rendered.bytes,
       mimeType: rendered.mimeType,
     });
     writtenThisRequest.push(imageDriveFileId);
+
+    let finalImageDriveFileId: string | null = null;
+    if (composed) {
+      finalImageDriveFileId = await storeStudioFile({
+        folderId,
+        fileName: `poster-studio-${stamp}-${request.mode.toLowerCase()}-final.png`,
+        body: composed.bytes,
+        mimeType: composed.mimeType,
+      });
+      writtenThisRequest.push(finalImageDriveFileId);
+    }
 
     let referenceDriveFileId = source.existingFileId;
     if (source.needsUpload && source.image) {
@@ -164,7 +242,13 @@ export async function generateStudioPosterAction(formData: FormData): Promise<St
             referenceDriveFileId,
             referenceMimeType: referenceDriveFileId ? (source.image?.mimeType ?? null) : null,
             parentGenerationId: source.parentGenerationId,
-            clientId: client?.id ?? null,
+            clientId: client?.clientId ?? null,
+            // Per-poster choices only — the brand values stay on Client.
+            finalImageDriveFileId,
+            finalImageMimeType: composed ? composed.mimeType : null,
+            overlayElements: composed ? composed.drawn : [],
+            overlayPreset: composed && overlay ? overlay.preset : null,
+            logoBackground: composed && overlay?.logo ? overlay.logo.background : null,
           },
           select: studioHistorySelect,
         }),
@@ -172,7 +256,7 @@ export async function generateStudioPosterAction(formData: FormData): Promise<St
     );
 
     revalidatePath('/admin/poster-studio');
-    return { ok: true, generation: toStudioHistoryItem(row) };
+    return { ok: true, generation: toStudioHistoryItem(row), ...(warning ? { warning } : {}) };
   } catch (error) {
     const failure = toStudioError(error);
 
@@ -205,6 +289,29 @@ export async function generateStudioPosterAction(formData: FormData): Promise<St
 }
 
 /**
+ * Loads the selected client's existing Brand Canvas for the studio panel.
+ *
+ * Read-only. Returns what is available and how the logo can be drawn — including
+ * whether "Remove background" is achievable, checked by running the same
+ * resolution a poster would — with no Drive ids, URLs or folder ids.
+ */
+export async function loadStudioBrandCanvasAction(clientId: string): Promise<StudioBrandCanvasResult> {
+  const parsed = z.string().uuid().safeParse(clientId);
+  if (!parsed.success) return { ok: false, error: 'That client id is not valid.' };
+
+  try {
+    const canvas = await withDatabase(() => loadStudioBrandCanvas(parsed.data), 'Loading the Brand Canvas');
+    return { ok: true, summary: await summarizeStudioBrandCanvas(canvas) };
+  } catch (error) {
+    const failure = toStudioError(error);
+    if (failure.kind !== 'validation') {
+      console.error(`[studio:brand-canvas] ${failure.kind}: ${failure.message}`, failure.cause ?? '');
+    }
+    return { ok: false, error: failure.message };
+  }
+}
+
+/**
  * Deletes one history row and bins its Drive files once nothing else uses them.
  *
  * An edit made from this row keeps working: its own output is its own file, its
@@ -218,13 +325,19 @@ export async function deleteStudioGenerationAction(id: string): Promise<StudioDe
   try {
     const row = await prisma.posterStudioGeneration.findUnique({
       where: { id: parsed.data },
-      select: { imageDriveFileId: true, referenceDriveFileId: true },
+      select: { imageDriveFileId: true, finalImageDriveFileId: true, referenceDriveFileId: true },
     });
     // Already gone is the state the operator asked for.
     if (!row) return { ok: true };
 
     await prisma.posterStudioGeneration.delete({ where: { id: parsed.data } });
-    await trashUnreferencedStudioFiles([row.imageDriveFileId, row.referenceDriveFileId]);
+    // Studio files only. A client's Brand Canvas logo is never referenced by a
+    // studio row, so it can never be trashed from here.
+    await trashUnreferencedStudioFiles([
+      row.imageDriveFileId,
+      row.finalImageDriveFileId,
+      row.referenceDriveFileId,
+    ]);
 
     revalidatePath('/admin/poster-studio');
     return { ok: true };
@@ -253,6 +366,8 @@ function parseRequest(formData: FormData): StudioRequest {
     textFree: field('textFree') || '0',
     sourceKind: field('sourceKind') || 'none',
     sourceGenerationId: field('sourceGenerationId'),
+    overlayElements: field('overlayElements'),
+    logoBackground: field('logoBackground') || 'ORIGINAL',
   });
 
   if (!parsed.success) {
@@ -260,6 +375,15 @@ function parseRequest(formData: FormData): StudioRequest {
   }
 
   const request = parsed.data;
+
+  // The overlay draws a client's Brand Canvas; with no client there is nothing
+  // exact to draw, and silently dropping the request would ship an unbranded poster.
+  if (request.overlayElements.length > 0 && !request.clientId) {
+    throw new StudioError(
+      'validation',
+      'Select a client to add brand identity, or untick the identity elements for a generic poster.',
+    );
+  }
 
   // Edit and Variation are defined by their input image. Without one they would
   // silently become a text-only generation of an unrelated poster.
@@ -336,6 +460,9 @@ async function resolveSource(request: StudioRequest, formData: FormData): Promis
       }
 
       const useOutput = request.sourceKind === 'generation-output';
+      // `imageDriveFileId` is the RAW artwork. The composited final is never sent
+      // back to the model: it would redraw — and so corrupt — the exact logo and
+      // contact details, which are composited afresh on the new result instead.
       const fileId = useOutput ? row.imageDriveFileId : row.referenceDriveFileId;
       const mimeType = useOutput ? row.imageMimeType : row.referenceMimeType;
       if (!fileId || !mimeType) {
@@ -356,9 +483,14 @@ async function resolveSource(request: StudioRequest, formData: FormData): Promis
 
 function buildPrompt(
   request: StudioRequest,
-  client: ResolvedStudioClient | null,
+  client: StudioBrandCanvas | null,
   hasImage: boolean,
+  withIdentityOverlay: boolean,
 ): string {
+  // Only when exact identity will be composited: the model then keeps the band
+  // clear and draws no logo, name, tagline, phone, URL or QR code itself.
+  const identityBand = withIdentityOverlay ? identityBandFraction(request.aspectRatio) : null;
+
   switch (request.mode) {
     case 'GENERATE':
       return buildGeneratePrompt({
@@ -367,12 +499,16 @@ function buildPrompt(
         textFree: request.textFree,
         brand: client?.brand ?? null,
         hasReference: hasImage,
+        identityBandFraction: identityBand,
       });
     case 'EDIT':
+      // No brand block: an edit preserves the design it is given. The Brand
+      // Canvas still decides what is composited on the result.
       return buildEditPrompt({
         instruction: request.prompt,
         aspectRatio: request.aspectRatio,
         textFree: request.textFree,
+        identityBandFraction: identityBand,
       });
     case 'VARIATION':
       return buildVariationPrompt({
@@ -380,6 +516,7 @@ function buildPrompt(
         aspectRatio: request.aspectRatio,
         textFree: request.textFree,
         brand: client?.brand ?? null,
+        identityBandFraction: identityBand,
       });
   }
 }

@@ -53,7 +53,12 @@ import {
 } from '@/lib/types/layout-spec';
 import { readImageDimensions } from '@/lib/poster/image-info';
 import { assessAutoApproval } from '@/lib/poster/layout-risk';
-import { keyLogoBackground, type LogoKeySkipReason } from '@/lib/poster/logo-key';
+import { fetchLogoUrl } from '@/lib/brand/logo-fetch';
+import {
+  describeLogoKeySkip,
+  keyLogoBackground,
+  type LogoKeySkipReason,
+} from '@/lib/poster/logo-key';
 import { BODY_FONT_OPTIONS, HEADING_FONT_OPTIONS } from '@/lib/poster/theme';
 import { sampleRegionInk } from '@/lib/poster/plate-ink';
 import { findPlateHoles } from '@/lib/poster/plate-regions';
@@ -3488,59 +3493,26 @@ async function trashSupersededLogos(
 }
 
 /** Operator-facing explanation for each reason the keyer declined. */
-function describeSkip(reason: LogoKeySkipReason): string {
-  switch (reason) {
-    case 'already-transparent':
-      return 'This logo already has a transparent background — nothing to remove.';
-    case 'background-not-flat':
-      return "This logo's background is not a flat colour (it looks like a gradient or a photo), so removing it automatically would damage the mark. Supply a PNG with a transparent background instead.";
-    case 'nothing-to-remove':
-      return 'No background was found around the edges of this logo.';
-    case 'would-erase-logo':
-      return 'The logo is the same colour as its border, so removing the background would erase the mark itself.';
-    case 'vector':
-      return 'SVG logos are vector artwork and have no background to remove.';
-    case 'undecodable':
-      return 'That file could not be read as an image.';
-  }
-}
+const describeSkip = describeLogoKeySkip;
 
 /**
  * Downloads a logo we already published, for reprocessing.
  *
- * Deliberately narrow — this is not a general fetcher. It mirrors the renderer's
- * own `fetchLogo` checks (timeout, `image/*` content type, size cap) because the
+ * Deliberately narrow — this is not a general fetcher. The timeout, `image/*`
+ * content type and size cap are the shared `fetchLogoUrl` checks, because the
  * same failure modes apply: a Drive link that has lost its sharing grant answers
- * with an HTML interstitial and a 200.
+ * with an HTML interstitial and a 200. Stricter than the renderer in one respect:
+ * a response with no content type at all is refused, since the keyer needs it.
  */
 async function fetchLogoBytes(
   url: string,
 ): Promise<{ bytes: Buffer; mimeType: string } | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    intEnv('POSTER_LOGO_TIMEOUT_MS', 15_000),
-  );
-
   try {
-    const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
-    if (!response.ok) return null;
-
-    const mimeType = (response.headers.get('content-type') ?? '')
-      .split(';')[0]
-      ?.trim()
-      .toLowerCase();
-    if (!mimeType) return null;
-    if (!mimeType.startsWith('image/')) return null;
-
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length === 0 || bytes.length > MAX_LOGO_BYTES) return null;
-
-    return { bytes, mimeType };
+    const { bytes, declaredType } = await fetchLogoUrl(url);
+    if (!declaredType) return null;
+    return { bytes, mimeType: declaredType };
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

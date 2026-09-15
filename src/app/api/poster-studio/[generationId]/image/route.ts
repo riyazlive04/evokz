@@ -19,7 +19,11 @@ import { prisma } from '@/lib/prisma';
  * them. Do not add it to that list.
  *
  * Query parameters:
- *   variant   "reference" serves the input image instead of the output
+ *   variant   omitted: the final composited poster, or the raw artwork when no
+ *             identity overlay was drawn
+ *             "raw": exactly what the image model returned — what Edit and
+ *             Variation send back to it
+ *             "reference": the input image sent with the request
  *   w         preview width, 1–2048 (default 640), re-encoded as WebP
  *   full      serve the stored file untouched
  *   download  with full, send it as an attachment
@@ -43,7 +47,8 @@ export async function GET(
   }
 
   const search = request.nextUrl.searchParams;
-  const variant = search.get('variant') === 'reference' ? 'reference' : 'output';
+  const requestedVariant = search.get('variant');
+  const variant = requestedVariant === 'reference' || requestedVariant === 'raw' ? requestedVariant : 'final';
 
   let row;
   try {
@@ -52,6 +57,8 @@ export async function GET(
       select: {
         imageDriveFileId: true,
         imageMimeType: true,
+        finalImageDriveFileId: true,
+        finalImageMimeType: true,
         referenceDriveFileId: true,
         referenceMimeType: true,
       },
@@ -63,8 +70,11 @@ export async function GET(
 
   if (!row) return new NextResponse('Not found', { status: 404 });
 
-  const fileId = variant === 'reference' ? row.referenceDriveFileId : row.imageDriveFileId;
-  const storedMimeType = variant === 'reference' ? row.referenceMimeType : row.imageMimeType;
+  const useFinal = variant === 'final' && row.finalImageDriveFileId !== null;
+  const fileId =
+    variant === 'reference' ? row.referenceDriveFileId : useFinal ? row.finalImageDriveFileId : row.imageDriveFileId;
+  const storedMimeType =
+    variant === 'reference' ? row.referenceMimeType : useFinal ? row.finalImageMimeType : row.imageMimeType;
   if (!fileId || !storedMimeType) return new NextResponse('Not found', { status: 404 });
 
   const full = search.get('full') === '1';
@@ -93,7 +103,8 @@ export async function GET(
 
     if (download) {
       const extension = storedMimeType === 'image/webp' ? 'webp' : storedMimeType === 'image/jpeg' ? 'jpg' : 'png';
-      const name = `poster-studio-${params.generationId.slice(0, 8)}${variant === 'reference' ? '-input' : ''}.${extension}`;
+      const suffix = variant === 'reference' ? '-input' : variant === 'raw' ? '-raw' : '';
+      const name = `poster-studio-${params.generationId.slice(0, 8)}${suffix}.${extension}`;
       headers['Content-Disposition'] = `attachment; filename="${name}"`;
     }
 

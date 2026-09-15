@@ -29,6 +29,11 @@ export interface StudioHistoryItem {
   height: number | null;
   /** An input image was sent with the request and is stored on this row. */
   hasReference: boolean;
+  /** A composited final poster exists. When false, the raw artwork is the poster. */
+  hasFinal: boolean;
+  /** Exact Brand Canvas elements the overlay drew — names only. */
+  overlayElements: string[];
+  logoBackground: 'ORIGINAL' | 'REMOVED' | null;
   parentGenerationId: string | null;
   clientId: string | null;
   clientName: string | null;
@@ -49,6 +54,9 @@ export const studioHistorySelect = {
   width: true,
   height: true,
   referenceDriveFileId: true,
+  finalImageDriveFileId: true,
+  overlayElements: true,
+  logoBackground: true,
   parentGenerationId: true,
   clientId: true,
   createdAt: true,
@@ -71,6 +79,9 @@ export function toStudioHistoryItem(row: HistoryRow): StudioHistoryItem {
     width: row.width,
     height: row.height,
     hasReference: row.referenceDriveFileId !== null,
+    hasFinal: row.finalImageDriveFileId !== null,
+    overlayElements: row.overlayElements,
+    logoBackground: row.logoBackground,
     parentGenerationId: row.parentGenerationId,
     clientId: row.clientId,
     clientName: row.client?.companyName ?? null,

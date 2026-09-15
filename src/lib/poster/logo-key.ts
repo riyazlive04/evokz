@@ -71,6 +71,29 @@ export type LogoKeySkipReason =
   | 'vector'
   | 'undecodable';
 
+/**
+ * Operator-facing explanation for each reason the keyer declined.
+ *
+ * Lives beside the reasons rather than in the Brand Canvas action so the Brand
+ * Canvas panel and the AI Poster Studio say the same thing about the same logo.
+ */
+export function describeLogoKeySkip(reason: LogoKeySkipReason): string {
+  switch (reason) {
+    case 'already-transparent':
+      return 'This logo already has a transparent background — nothing to remove.';
+    case 'background-not-flat':
+      return "This logo's background is not a flat colour (it looks like a gradient or a photo), so removing it automatically would damage the mark. Supply a PNG with a transparent background instead.";
+    case 'nothing-to-remove':
+      return 'No background was found around the edges of this logo.';
+    case 'would-erase-logo':
+      return 'The logo is the same colour as its border, so removing the background would erase the mark itself.';
+    case 'vector':
+      return 'SVG logos are vector artwork and have no background to remove.';
+    case 'undecodable':
+      return 'That file could not be read as an image.';
+  }
+}
+
 export type LogoKeyResult =
   | {
       keyed: true;

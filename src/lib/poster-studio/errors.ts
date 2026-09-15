@@ -30,7 +30,16 @@ export type StudioErrorKind =
   | 'network'
   | 'provider'
   | 'storage'
-  | 'database';
+  | 'database'
+  /** The client's Brand Canvas logo is missing or could not be read. */
+  | 'logo'
+  /**
+   * "Remove background" was chosen and the keyer declined. The operator can
+   * switch this poster to "Keep original"; nothing falls back silently.
+   */
+  | 'logo-background'
+  /** The deterministic identity overlay could not be prepared or drawn (fonts, rendering). */
+  | 'composition';
 
 export class StudioError extends Error {
   constructor(
