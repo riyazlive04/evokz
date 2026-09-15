@@ -574,6 +574,13 @@ enum PosterStudioLogoBackground {
   REMOVED // A transparent version: Brand Canvas's own, or keyed in memory for this poster
 }
 
+/// Identity footer background on a studio poster.
+enum PosterStudioFooterBackground {
+  AUTO // Chosen from the artwork's luminance after generation (a choice only, never a resolved tone)
+  LIGHT
+  DARK
+}
+
 /// One image produced in the AI Poster Studio (/admin/poster-studio).
 ///
 /// **No image bytes live in this table.** Both the output and the input image
@@ -630,6 +637,12 @@ model PosterStudioGeneration {
   /// Per-poster logo background choice. Null when no logo was drawn. Never
   /// written back to the client's Brand Canvas.
   logoBackground        PosterStudioLogoBackground?
+  /// Per-poster identity footer choice: AUTO, LIGHT or DARK. Null when no
+  /// overlay was drawn.
+  footerBackground      PosterStudioFooterBackground?
+  /// The tone the footer was actually drawn in — LIGHT or DARK, never AUTO.
+  /// Differs from `footerBackground` only for AUTO.
+  footerTone            PosterStudioFooterBackground?
 
   /// The input image actually sent to the model, when there was one: an
   /// operator upload, or another generation's output. Shared, not copied, when

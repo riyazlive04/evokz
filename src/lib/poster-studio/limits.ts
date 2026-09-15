@@ -99,10 +99,25 @@ export type StudioDrawnElement = StudioOverlayElement | 'name';
 
 /**
  * The only placement so far: a full-width identity band along the bottom edge,
- * logo on the left, exact contact details on the right. A string rather than a
- * boolean so a later preset is an addition, not a migration.
+ * logo, company name and tagline on the left, exact contact details on the
+ * right. A string rather than a boolean so a later preset is an addition, not a
+ * migration.
  */
 export const STUDIO_OVERLAY_PRESET = 'footer-band' as const;
+
+/**
+ * Per-poster identity footer background.
+ *
+ *   AUTO   light or dark, chosen from the luminance of the artwork the footer
+ *          meets — decided after generation, so the footer suits the image
+ *   LIGHT  a light footer with dark text
+ *   DARK   a dark footer with light text
+ *
+ * Text colours always follow the resolved tone. Never written to Brand Canvas.
+ */
+export const STUDIO_FOOTER_BACKGROUNDS = ['AUTO', 'LIGHT', 'DARK'] as const;
+export type StudioFooterBackground = (typeof STUDIO_FOOTER_BACKGROUNDS)[number];
+export type StudioFooterTone = Exclude<StudioFooterBackground, 'AUTO'>;
 
 /**
  * Share of the canvas height the identity band covers, per format.

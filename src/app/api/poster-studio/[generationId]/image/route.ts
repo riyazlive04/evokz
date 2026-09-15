@@ -110,7 +110,8 @@ export async function GET(
 
     return new NextResponse(image.body as unknown as BodyInit, { status: 200, headers });
   } catch (error) {
-    console.error('[ace:studio-image]', params.generationId, variant, error);
+    // The message only: a Drive client error object carries the request it made.
+    console.error('[ace:studio-image]', params.generationId, variant, error instanceof Error ? error.message : error);
     return plainText('Could not load this image from Google Drive.', 502);
   }
 }

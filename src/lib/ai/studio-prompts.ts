@@ -8,9 +8,14 @@ import { STUDIO_ASPECT_RATIOS, type StudioAspectRatio } from '@/lib/poster-studi
  * all of them towards the same one — a full redraw:
  *
  *   GENERATE   brief + format + brand + text rules (+ how to treat a reference)
- *   EDIT       the change, and an instruction to leave everything else alone
- *   VARIATION  a new layout for the same campaign: what must survive, and
- *              explicit licence to redesign everything else
+ *   EDIT       the change, applied fully, and the untouched areas left alone
+ *   VARIATION  a new creative direction for the same campaign: the message and
+ *              brand mood survive, the concept, imagery and layout do not
+ *
+ * Every builder ends with the same "no invented branding" rule. Exact identity —
+ * logo, company name, tagline, contact details — is composited deterministically
+ * after generation, and a model-drawn mark beside it (or instead of it) is the
+ * failure the studio exists to prevent.
  *
  * There is no vision pre-pass. The first version described an attached image
  * with gpt-4o and pasted the description in here — for an edit, that meant
@@ -54,105 +59,173 @@ export interface EditPromptInput extends CommonInput {
   instruction: string;
 }
 
+/**
+ * Concrete creative approaches a Variation rotates through.
+ *
+ * "Redesign substantially" on its own did not move the model: live Variations of
+ * a family dental poster kept returning the same mother-and-child clinic scene
+ * with the headline block top-left, partly because the campaign itself pulls
+ * towards that picture. A named approach gives the model somewhere specific to
+ * go. Each describes a concept and a composition, never a brand or a medium
+ * that would override Brand Canvas guidance; the operator's own direction wins
+ * when it asks for a style or layout.
+ */
+export const VARIATION_APPROACHES = [
+  'Typographic concept: make the headline itself the main visual — very large, confident type across the middle of the frame — supported by one smaller, simple image.',
+  'Illustrated concept: a clean, modern illustration style instead of photography, with a different subject from the source and the headline in a band across the top.',
+  'Split layout: divide the frame into two clear zones — imagery in one, the message on a solid brand-colour block in the other — arranged differently from the source.',
+  'Wide scene concept: a spacious environmental scene with the subject small in the frame, plenty of open space, and the headline centred in that space.',
+  'Graphic shapes concept: bold geometric shapes in the brand colours framing a cut-out subject, with the headline stacked beside or below it.',
+  'Close-up concept: one large, tightly framed hero detail or object that symbolises the campaign, filling most of the frame, with the headline set over the lower half.',
+] as const;
+
 export interface VariationPromptInput extends CommonInput {
   direction: string;
   brand: StudioBrandContext | null;
+  /** Index into `VARIATION_APPROACHES`, wrapped; chosen by the caller so successive variations differ. */
+  approach: number;
+  /**
+   * The brief the source artwork's campaign was generated from, when the source
+   * is a History item whose lineage reaches a Generate. Gives the model the
+   * campaign's intent in words, so it does not have to recover it by copying the
+   * picture. Null for an uploaded source.
+   */
+  campaignBrief?: string | null;
 }
 
 export function buildGeneratePrompt(input: GeneratePromptInput): string {
+  const band = input.identityBandFraction ?? null;
   const sections = [
     'Design a finished, professional marketing poster.',
     `Brief:\n${input.brief.trim()}`,
     formatSection(input.aspectRatio),
   ];
 
-  if (input.hasReference) {
-    sections.push(
-      [
-        'Reference image:',
-        'The attached image is a style and layout reference only. Follow its composition, visual hierarchy, colour treatment and typographic feel.',
-        'Do not copy its wording, logos, people, products or brand marks, and do not reproduce it — design a new poster for the brief above.',
-      ].join('\n'),
-    );
-  }
-
-  const band = input.identityBandFraction ?? null;
+  if (input.hasReference) sections.push(referenceSection(input.brand !== null));
   if (input.brand) sections.push(brandSection(input.brand, 'apply', band !== null));
   if (band !== null) sections.push(identitySection(band));
   sections.push(textSection(input.textFree));
+  sections.push(noInventedBrandingSection('create', band !== null));
 
   return sections.join('\n\n');
 }
 
+/**
+ * An edit changes what it is asked to and nothing else — but it does change it.
+ *
+ * The first version listed "composition, subject, colours…" under "keep
+ * everything else as it is", which pulled a request to replace the main artwork
+ * back towards the old subject. The change is now applied fully, and the
+ * preservation clause covers only the areas it does not touch.
+ */
 export function buildEditPrompt(input: EditPromptInput): string {
   const band = input.identityBandFraction ?? null;
   return [
-    'Edit the attached image. Make only this change:',
+    'Edit the attached image. Make this change:',
     input.instruction.trim(),
-    'Keep everything else as it is — composition, subject, colours, lighting, typography and all existing text, spelled exactly as it appears — unless the change above requires otherwise. Do not redraw or restyle the rest of the image.',
+    'Apply the change fully. If it replaces a subject, a scene, the main artwork or another large region, redraw that region completely as described — do not keep, blend in or ghost the old content there.',
+    'Leave every area the change does not touch as it is: its composition, colours, lighting, typography and existing text, spelled exactly as it appears. Do not redesign or restyle unrelated parts of the image.',
     `Output frame: ${STUDIO_ASPECT_RATIOS[input.aspectRatio].orientation}. If the attached image has a different shape, extend or crop its background naturally; never stretch or distort it.`,
     band !== null ? identitySection(band) : null,
-    input.textFree ? 'Do not add any new text, letters, numbers or logos.' : null,
+    input.textFree ? 'Do not add any new text, letters or numbers.' : null,
+    noInventedBrandingSection('edit', band !== null),
   ]
     .filter((part): part is string => part !== null)
     .join('\n\n');
 }
 
 /**
- * A new poster for the parent's campaign — not an edit of the parent.
+ * A new creative direction for the source artwork's campaign — not an edit of it.
  *
- * The attached image goes through the edit endpoint, which leans towards
- * keeping what it is given. The first version of this prompt asked to keep the
- * "typographic style" and "existing wording exactly as written" in one breath
- * and left "change the layout" as a closing clause, and in live testing the
- * model kept the whole text block in place — same position, scale and line
- * breaks — and only rearranged the imagery. So this prompt separates *what* is
- * kept (campaign, brand, quality, essential wording) from *where* it goes, and
- * spells out that position, scale, hierarchy and negative space are open.
+ * The attached image goes through the edit endpoint, which leans hard towards
+ * keeping what it is given. Two earlier versions asked to keep the "typographic
+ * style" or "typographic character" and the "essential wording exactly as
+ * written" of the parent, and in live testing the model kept the whole text
+ * block — position, scale, typeface and line breaks — and only rearranged the
+ * imagery. The parent's layout and typography are therefore never named as
+ * something to keep. What survives is the message and the brand mood; the
+ * concept, imagery, focal point, composition and hierarchy are explicitly open,
+ * and a near-duplicate is named as the failure. Brand Canvas colours, typography
+ * and layout rules still guide the design, as brand guidance rather than as a
+ * copy of the parent.
+ *
+ * Wording alone was not enough: at full resolution the model still kept the
+ * parent's subject, pose and headline block. The action therefore sends a
+ * reduced preview of the source (`reduceVariationSource`), and each variation
+ * is given one concrete approach from `VARIATION_APPROACHES`.
  */
 export function buildVariationPrompt(input: VariationPromptInput): string {
   const band = input.identityBandFraction ?? null;
-  // With the identity band, the brand name is composited afterwards, so the
-  // model is asked to keep the visual identity and the headline — not to write
-  // the name itself.
-  const keep = [
-    '- the campaign concept and its message',
-    band !== null
-      ? '- the brand identity: the colour palette, the typographic character and the mood'
-      : '- the brand identity: any brand name, the colour palette, the typographic character and the mood',
-    '- the same level of finish and visual quality',
+  const brief = input.campaignBrief?.trim() || null;
+
+  const sections = [
+    'Create a genuinely new creative direction for the campaign shown in the attached artwork.',
+    [
+      'The attached image is a small preview of the source artwork. Use it to understand the campaign — its message, its key facts and its mood — not as a layout to reuse or an image to edit.',
+      'Preserve the underlying message and the brand mood, but substantially redesign the visual concept, imagery, focal point, composition and layout. Do not create a near-duplicate: explore a clearly different visual concept.',
+    ].join('\n'),
   ];
-  if (!input.textFree) {
-    keep.push(
-      band !== null
-        ? '- the essential wording — headline and key supporting line — spelled exactly as written, unless the direction changes it'
-        : '- the essential wording — headline, key supporting line and any brand name — spelled exactly as written, unless the direction changes it',
+
+  if (brief) {
+    sections.push(
+      `Campaign intent — the brief this campaign was first created from (the source artwork is authoritative where the two differ):\n${brief}`,
     );
   }
 
-  const sections = [
-    'Design a new poster for the same campaign as the attached poster.',
-    'The attached poster is the parent design. Use it as the campaign and brand reference, not as a layout to reuse. The result must read as a different poster from the same campaign, not as an edited copy of the parent.',
-    `Direction:\n${input.direction.trim()}`,
-    ['Keep from the parent:', ...keep].join('\n'),
+  const approach =
+    VARIATION_APPROACHES[
+      ((input.approach % VARIATION_APPROACHES.length) + VARIATION_APPROACHES.length) % VARIATION_APPROACHES.length
+    ];
+
+  sections.push(
+    `Direction for this variation:\n${input.direction.trim()}`,
+    `Creative approach for this variation — follow it unless the direction above asks for a specific style or layout:\n${approach}`,
     [
-      'Redesign freely:',
-      '- the overall composition and layout grid',
-      '- where the text block sits, and the headline’s scale, line breaks and placement',
-      '- the main imagery: what is shown, how it is arranged, angle, framing and crop',
-      '- the visual hierarchy and the order in which the poster is read',
-      '- the position of objects and the supporting graphic elements',
-      '- the amount and placement of negative space',
+      'Keep:',
+      '- the campaign’s core message and the key facts it states, such as an offer, a date or an audience',
+      '- the brand mood and colour world',
+      '- a finished, professional level of quality',
     ].join('\n'),
-    'Do not reuse the parent’s arrangement. Placing the text block in a different area, changing the headline scale, choosing a different dominant image and rebalancing the negative space are all expected. If the result could pass for the parent with small changes, it is not different enough.',
+    [
+      'Change substantially:',
+      '- the visual concept and the main subject or scene',
+      '- the imagery: what is shown, the illustration or photographic style, the angle, framing and crop',
+      '- the focal point',
+      '- the composition, spatial arrangement and layout grid',
+      '- the visual hierarchy: where the headline sits, its scale and its typographic treatment',
+      '- the colour treatment and lighting, within the brand palette',
+      '- the supporting graphic elements and the negative space',
+    ].join('\n'),
+    'Different enough means that, side by side, the two read as two different poster concepts for the same campaign. Do not keep the source’s headline position, text block shape, type styling, main subject, subject placement or background scene. If the result could pass for the source with small changes, it is not different enough.',
     formatSection(input.aspectRatio),
-  ];
+  );
 
   if (input.brand) sections.push(brandSection(input.brand, 'preserve', band !== null));
   if (band !== null) sections.push(identitySection(band));
   sections.push(variationTextSection(input.textFree));
+  sections.push(noInventedBrandingSection('create', band !== null, 'source'));
 
   return sections.join('\n\n');
+}
+
+/**
+ * How Generate treats an attached reference poster: visual inspiration, never a
+ * template to trace and never a source of identity. The reference usually
+ * belongs to someone else's brand, so its logo, name and contact details are
+ * named explicitly as things to ignore — and not to replace with invented ones.
+ */
+function referenceSection(hasBrand: boolean): string {
+  return [
+    'Reference image:',
+    'The attached image is visual inspiration only — a guide to visual language, not a poster to copy. Take from it the overall style: the composition approach, visual hierarchy, colour and lighting treatment, typographic feel and level of finish.',
+    'Design a new poster for the brief above, with new imagery, the wording from the brief, and a composition adapted to the output frame. Do not reproduce the reference or rebuild its layout element for element, and do not copy its wording, people or products.',
+    'Ignore the reference’s own identity entirely: its logos, brand or company names, taglines, contact details, QR codes, badges and seals. Do not copy them and do not replace them with invented ones.',
+    hasBrand
+      ? 'Where the reference’s colours or typography conflict with the brand guidelines below, follow the brand guidelines.'
+      : null,
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
 }
 
 /**
@@ -163,9 +236,45 @@ export function buildVariationPrompt(input: VariationPromptInput): string {
 function identitySection(fraction: number): string {
   const percent = Math.round(fraction * 100);
   return [
-    `Identity band: the bottom ${percent}% of the image will be covered afterwards by an exact brand identity band (logo and contact details). Keep that strip free of text, faces, products and important detail — let the background simply continue behind it.`,
-    'Do not draw any logo, brand name, wordmark, tagline, phone number, web address, social media handle or QR code anywhere in the image. Exact brand identity is added separately.',
+    `Identity band: the bottom ${percent}% of the image will be covered afterwards by an exact brand identity footer (logo, company name and contact details). Keep that strip free of text, faces, products and important detail — let the background simply continue behind it.`,
+    'Do not write the brand name, tagline, phone number, web address or social media handle anywhere in the image. Exact brand identity is added separately.',
   ].join('\n');
+}
+
+/**
+ * The rule against model-drawn identity, shared by every mode.
+ *
+ * Aimed at what *reads as* branding — a live BrightSmile generation put a tooth
+ * pictogram in a circular tile in the top corner, exactly where a logo sits —
+ * without banning the ordinary icons and illustrations a poster legitimately
+ * uses. `source` adds a clause for Variation, whose attached artwork may already
+ * carry such a mark from an earlier generation.
+ */
+function noInventedBrandingSection(
+  mode: 'create' | 'edit',
+  identityOverlay: boolean,
+  source?: 'source',
+): string {
+  const lines = [
+    mode === 'edit'
+      ? 'No invented branding: do not add logos, logo-like marks, monograms, emblems, crests, badges, seals, stamps, certification or award marks, watermarks, QR codes or barcodes, and do not add company, brand or business names unless the change above asks for them.'
+      : identityOverlay
+        ? 'No invented branding: do not create logos, logo-like marks, monograms, emblems, crests, badges, seals, stamps, certification or award marks, watermarks, QR codes or barcodes, and do not invent company, brand or business names.'
+        : 'No invented branding: do not create logos, logo-like marks, monograms, emblems, crests, badges, seals, stamps, certification or award marks, watermarks, QR codes or barcodes, and do not invent company, brand or business names — use only names given above.',
+    'That includes a symbol set on its own in a circle, shield or rounded tile in a corner or header where a logo would sit, a stand-alone emblem of the business’s subject (such as a tooth for a dental clinic) placed by itself in a corner or along an edge, and stylised lettering that reads as a made-up wordmark. Where a logo would normally go, leave clean background — no placeholder.',
+  ];
+  if (source) {
+    lines.push('If the source artwork contains a logo, a brand name, a badge, a seal or a logo-like mark, do not carry it over.');
+  }
+  if (identityOverlay) {
+    lines.push(
+      "The client's exact logo, company name, tagline, website and phone number are added deterministically after generation, so the artwork must not contain its own version of any of them.",
+    );
+  }
+  lines.push(
+    'Ordinary illustrations, pictograms and decorative icons that belong to the scene or explain the message are fine, as long as they do not look like a brand mark.',
+  );
+  return lines.join('\n');
 }
 
 function formatSection(aspectRatio: StudioAspectRatio): string {
@@ -221,14 +330,14 @@ function brandSection(
 }
 
 /**
- * Variation's own text rule, kept apart from `textSection` so Generate's wording
- * is untouched. A variation's copy comes from the parent image rather than a typed
- * brief, and a redesign is exactly when a model invents badges and QR codes.
+ * Variation's own text rule. A variation's copy comes from the source artwork
+ * rather than a typed brief. The *words* carry the campaign's message and are
+ * kept; how they are set is part of the redesign, so the rule says so here too.
  */
 function variationTextSection(textFree: boolean): string {
   return textFree
-    ? `${textSection(true)} Do not add QR codes or badges.`
-    : 'Text: use only wording that appears in the parent poster or in the direction, correctly spelled and clearly legible. Do not add logos, QR codes, watermarks, badges, placeholder copy, or invented phone numbers, addresses or web addresses.';
+    ? textSection(true)
+    : 'Text: carry over the campaign’s key wording from the source artwork — the headline and key facts such as an offer or a date — or use wording from the direction, correctly spelled and clearly legible. Give it a new typographic treatment, scale and position. Do not add placeholder copy or invented phone numbers, addresses or web addresses.';
 }
 
 function textSection(textFree: boolean): string {

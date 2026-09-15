@@ -11,10 +11,23 @@ import {
   STUDIO_OVERLAY_PRESET,
   type StudioAspectRatio,
   type StudioDrawnElement,
+  type StudioFooterBackground,
+  type StudioFooterTone,
   type StudioLogoBackground,
   type StudioOverlayElement,
 } from '@/lib/poster-studio/limits';
-import { heaviestWeight, loadFonts, type LoadedFont } from '@/lib/poster/fonts';
+import {
+  bestTextOn,
+  ensureContrast,
+  hexToRgb,
+  hslToRgb,
+  relativeLuminance,
+  rgbToHex,
+  rgbToHsl,
+  withAlpha,
+  type Rgb,
+} from '@/lib/poster/color';
+import { heaviestWeight, lightestWeight, loadFonts, type LoadedFont } from '@/lib/poster/fonts';
 import { containFit } from '@/lib/poster/image-info';
 import { logoReadsOn } from '@/lib/poster/slots';
 import { requiredFaces, resolvePosterTheme } from '@/lib/poster/theme';
@@ -31,27 +44,35 @@ import type { PosterTheme } from '@/lib/types/poster';
  *
  * Not `renderPoster`. That renderer lays out a whole poster from an approved
  * reference template; an AI poster already has its composition, so this adds a
- * single identity band on top and touches nothing else.
+ * single identity footer on top and touches nothing else.
  *
  * Two stages:
- *   1. Text and the band itself — satori to SVG, resvg to PNG, in the client's
+ *   1. Text and the footer itself — satori to SVG, resvg to PNG, in the client's
  *      own typography and theme colours (`resolvePosterTheme`, `loadFonts`).
- *   2. Pixels — sharp composites the band and the logo onto the raw artwork.
+ *   2. Pixels — sharp composites the footer and the logo onto the raw artwork.
+ *
+ * **The footer.** A light or dark ground (`StudioFooterBackground`) whose top
+ * edge feathers into the artwork rather than cutting across it, faintly tinted
+ * with the artwork's own colour so it reads as part of the poster. AUTO picks the
+ * tone from the luminance of the artwork the footer meets — a plain pixel
+ * measurement, no model call. Hierarchy: company name strongest, tagline
+ * secondary beneath it, contact details readable but quieter.
  *
  * **The logo is scaled and nothing else.** No trim, no recolour, no backing plate:
  * "Keep original" means the uploaded file, and "Remove background" means the
- * transparent version `resolveStudioLogo` produced. Whether the logo reads on the
- * band decides the band's colour instead (`logoReadsOn`), so the artwork is never
- * altered to fit the band.
+ * transparent version `resolveStudioLogo` produced. Whether a transparent logo
+ * reads on the ground limits the tone instead (`logoReadsOn`), so the logo is
+ * never altered to fit the footer.
  *
  * `prepareStudioOverlay` does everything that can fail deterministically — the
- * logo, the fonts, a full dry-run composite — and runs before any image is paid
- * for.
+ * logo, the fonts, the footer tone, a full dry-run composite — and runs before
+ * any image is paid for.
  */
 
 export interface StudioOverlaySelection {
   elements: StudioOverlayElement[];
   logoBackground: StudioLogoBackground;
+  footerBackground: StudioFooterBackground;
 }
 
 export interface StudioOverlayPlan {
@@ -60,10 +81,13 @@ export interface StudioOverlayPlan {
   theme: PosterTheme;
   fonts: LoadedFont[];
   logo: ResolvedStudioLogo | null;
+  /** Measured once from the logo's pixels; decides which footer grounds it reads on. */
+  logoInk: LogoInk | null;
   name: string | null;
   tagline: string | null;
   website: string | null;
   phone: string | null;
+  footerBackground: StudioFooterBackground;
   drawn: StudioDrawnElement[];
 }
 
@@ -71,14 +95,16 @@ export interface ComposedPoster {
   bytes: Buffer;
   mimeType: 'image/png';
   drawn: StudioDrawnElement[];
+  /** The tone actually drawn — what AUTO resolved to, or the explicit choice. */
+  footerTone: StudioFooterTone;
 }
 
 /**
  * Validates a selection against the client's Brand Canvas and loads everything
  * the overlay needs. Throws `StudioError` before any spend when a prerequisite
  * is missing: an element with no stored value, an unreadable logo, a background
- * removal the keyer declines, fonts that cannot be loaded, or a composite that
- * does not render.
+ * removal the keyer declines, a footer tone the logo cannot be read on, fonts
+ * that cannot be loaded, or a composite that does not render.
  */
 export async function prepareStudioOverlay(
   canvas: StudioBrandCanvas,
@@ -99,12 +125,27 @@ export async function prepareStudioOverlay(
   }
 
   const logo = wants.has('logo') ? await resolveStudioLogo(canvas.logo, selection.logoBackground) : null;
+  const logoInk = logo ? await sampleLogoInk(logo) : null;
 
   // The renderer's rule: the company name is printed unless a logo that already
   // spells it is on the poster.
   const name = !logo || !canvas.logoIncludesName ? canvas.companyName : null;
 
   const theme = resolvePosterTheme(canvas.guideline);
+
+  // An explicit tone the logo cannot be read on is refused here, before spend,
+  // rather than silently switched after the operator chose it.
+  if (logo && logoInk && selection.footerBackground !== 'AUTO') {
+    const tone = selection.footerBackground;
+    if (!logoReadsOnGround(logo, logoInk, neutralGround(theme, tone))) {
+      const other = tone === 'LIGHT' ? 'Dark' : 'Light';
+      throw new StudioError(
+        'validation',
+        `This logo would not be readable on a ${tone === 'LIGHT' ? 'light' : 'dark'} footer. Choose "${other}" or "Auto" for this poster.`,
+      );
+    }
+  }
+
   let fonts: LoadedFont[];
   try {
     fonts = await loadFonts(requiredFaces(theme));
@@ -129,10 +170,12 @@ export async function prepareStudioOverlay(
     theme,
     fonts,
     logo,
+    logoInk,
     name,
     tagline: wants.has('tagline') ? canvas.tagline : null,
     website: wants.has('website') ? canvas.website : null,
     phone: wants.has('phone') ? canvas.phone : null,
+    footerBackground: selection.footerBackground,
     drawn,
   };
 
@@ -153,87 +196,400 @@ export async function prepareStudioOverlay(
   return plan;
 }
 
-/** Draws the plan's identity band onto raw artwork of any size. */
+/** Draws the plan's identity footer onto raw artwork of any size. */
 export async function composeStudioPoster(raw: Buffer, plan: StudioOverlayPlan): Promise<ComposedPoster> {
   const metadata = await sharp(raw).metadata();
   const width = metadata.width;
   const height = metadata.height;
   if (!width || !height) throw new Error('The raw artwork has no readable dimensions');
 
-  const band = layoutBand(width, height, plan);
-  const bandPng = await renderBand(band, plan);
+  const bandHeight = Math.round(height * identityBandFraction(plan.aspectRatio));
+  const sample = await sampleFooterArtwork(raw, width, height, bandHeight);
+  const palette = resolveFooterPalette(plan, sample);
 
-  const layers: OverlayOptions[] = [{ input: bandPng, left: 0, top: height - band.height }];
+  const band = layoutBand(width, bandHeight, plan);
+  const bandPng = await renderBand(band, plan, palette);
+
+  const top = height - band.height;
+  const layers: OverlayOptions[] = [{ input: bandPng, left: 0, top }];
 
   if (plan.logo && band.logo) {
     layers.push({
       input: await rasterizeLogo(plan.logo, band.logo.width, band.logo.height),
       left: band.logo.left,
-      top: height - band.height + band.logo.top,
+      top: top + band.logo.top,
     });
   }
 
   const bytes = await sharp(raw).composite(layers).png().toBuffer();
-  return { bytes, mimeType: 'image/png', drawn: plan.drawn };
+  return { bytes, mimeType: 'image/png', drawn: plan.drawn, footerTone: palette.tone };
+}
+
+// ---------------------------------------------------------------------------
+// Tone and colour
+// ---------------------------------------------------------------------------
+
+/**
+ * AUTO's threshold on mean relative luminance. 0.32 is roughly L* 63: a pale,
+ * airy image sits well above it, a dark or saturated one below. Measured per
+ * pixel in linear light, so a few bright highlights on a dark scene do not tip it.
+ */
+const LIGHT_ARTWORK_LUMINANCE = 0.32;
+
+/** How much of the artwork's hue the ground takes on. Enough to belong, not enough to tint the text. */
+const MAX_TINT_SATURATION = { LIGHT: 0.32, DARK: 0.45 } as const;
+
+/**
+ * A transparent logo reads on a ground when at least this share of its ink
+ * clears 3:1 against it. A share rather than the mean: a teal disc carrying a
+ * white glyph averages out mid-light and fails a mean test on white, yet the
+ * disc — most of the ink — plainly reads there.
+ */
+const LEGIBLE_INK_SHARE = 0.6;
+
+interface LogoInk {
+  /** No transparent pixels: the logo carries its own background and reads on any ground. */
+  opaque: boolean;
+  /** Relative luminance of each opaque pixel of a downsampled copy; null when unmeasurable (SVG). */
+  luminances: number[] | null;
+}
+
+interface ArtworkSample {
+  /** Mean relative luminance, 0–1. */
+  luminance: number;
+  /** Mean colour, sRGB. */
+  color: Rgb;
+}
+
+interface FooterPalette {
+  tone: StudioFooterTone;
+  ground: string;
+  name: string;
+  tagline: string;
+  contact: string;
+}
+
+/**
+ * The artwork the footer meets: the strip just above it, which stays visible,
+ * and the top of the band, which shows through the feathered edge. Downsampled
+ * first — this is an average, not an inspection.
+ */
+async function sampleFooterArtwork(
+  raw: Buffer,
+  width: number,
+  height: number,
+  bandHeight: number,
+): Promise<ArtworkSample> {
+  const above = Math.round(bandHeight * 0.75);
+  const into = Math.round(bandHeight * 0.35);
+  const top = Math.max(0, height - bandHeight - above);
+  const regionHeight = Math.min(height - top, above + into);
+
+  const { data, info } = await sharp(raw)
+    .extract({ left: 0, top, width, height: regionHeight })
+    .removeAlpha()
+    .resize({ width: 96, height: 12, fit: 'fill' })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let luminance = 0;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  const pixels = info.width * info.height;
+  for (let index = 0; index < data.length; index += info.channels) {
+    const rgb = { r: data[index]!, g: data[index + 1]!, b: data[index + 2]! };
+    luminance += relativeLuminance(rgb);
+    r += rgb.r;
+    g += rgb.g;
+    b += rgb.b;
+  }
+
+  return { luminance: luminance / pixels, color: { r: r / pixels, g: g / pixels, b: b / pixels } };
+}
+
+function resolveFooterPalette(plan: StudioOverlayPlan, sample: ArtworkSample): FooterPalette {
+  const preferred: StudioFooterTone =
+    plan.footerBackground === 'AUTO'
+      ? sample.luminance >= LIGHT_ARTWORK_LUMINANCE
+        ? 'LIGHT'
+        : 'DARK'
+      : plan.footerBackground;
+
+  const tone = plan.footerBackground === 'AUTO' ? autoTone(plan, preferred) : preferred;
+
+  // The tinted ground, unless it would cost a transparent logo its legibility —
+  // then the brand's plain neutral for the same tone, which the pre-flight (for
+  // an explicit tone) or `autoTone` has already confirmed the logo reads on.
+  let ground = tintedGround(plan.theme, tone, sample.color);
+  if (plan.logo && plan.logoInk && !logoReadsOnGround(plan.logo, plan.logoInk, ground)) {
+    ground = neutralGround(plan.theme, tone);
+  }
+
+  const name = ensureContrast(bestTextOn(ground), ground, 7);
+  return {
+    tone,
+    ground,
+    name,
+    tagline: ensureContrast(plan.theme.accent, ground, 4.5),
+    // Quieter than the name, still comfortably readable.
+    contact: ensureContrast(mixHex(name, ground, 0.22), ground, 4.5),
+  };
+}
+
+/** AUTO follows the artwork unless a transparent logo would not read on that tone. */
+function autoTone(plan: StudioOverlayPlan, preferred: StudioFooterTone): StudioFooterTone {
+  if (!plan.logo || !plan.logoInk) return preferred;
+  if (logoReadsOnGround(plan.logo, plan.logoInk, neutralGround(plan.theme, preferred))) return preferred;
+  const other: StudioFooterTone = preferred === 'LIGHT' ? 'DARK' : 'LIGHT';
+  if (logoReadsOnGround(plan.logo, plan.logoInk, neutralGround(plan.theme, other))) return other;
+  // Reads on neither: the renderer's historical default.
+  return 'DARK';
+}
+
+function neutralGround(theme: PosterTheme, tone: StudioFooterTone): string {
+  return tone === 'LIGHT' ? theme.lightNeutral : theme.darkNeutral;
+}
+
+/**
+ * The brand neutral, carrying the artwork's hue at low saturation. A grey or
+ * near-neutral artwork leaves the brand neutral as it is.
+ */
+function tintedGround(theme: PosterTheme, tone: StudioFooterTone, artwork: Rgb): string {
+  const neutral = neutralGround(theme, tone);
+  const hue = rgbToHsl(artwork);
+  if (hue.s < 0.08) return neutral;
+
+  const base = rgbToHsl(hexToRgb(neutral) ?? { r: 128, g: 128, b: 128 });
+  // Light: at least near-white. Dark: a deep tone with enough lightness for the
+  // hue to show, never lighter than a dark ground should be.
+  const lightness = tone === 'LIGHT' ? Math.max(base.l, 0.955) : Math.min(Math.max(base.l, 0.09), 0.13);
+  const saturation = Math.min(hue.s * (tone === 'LIGHT' ? 0.5 : 0.6), MAX_TINT_SATURATION[tone]);
+  return rgbToHex(hslToRgb({ h: hue.h, s: saturation, l: lightness }));
+}
+
+function logoReadsOnGround(logo: ResolvedStudioLogo, ink: LogoInk, ground: string): boolean {
+  if (ink.opaque) return true;
+  const rgb = hexToRgb(ground);
+  if (!ink.luminances || ink.luminances.length === 0 || !rgb) return logoReadsOn(logo.inkLuminance, ground);
+
+  const groundLuminance = relativeLuminance(rgb);
+  let legible = 0;
+  for (const luminance of ink.luminances) {
+    const lighter = Math.max(luminance, groundLuminance);
+    const darker = Math.min(luminance, groundLuminance);
+    if ((lighter + 0.05) / (darker + 0.05) >= 3) legible += 1;
+  }
+  return legible / ink.luminances.length >= LEGIBLE_INK_SHARE;
+}
+
+async function sampleLogoInk(logo: ResolvedStudioLogo): Promise<LogoInk> {
+  if (logo.isSvg) return { opaque: false, luminances: null };
+  try {
+    const { data, info } = await sharp(logo.bytes)
+      .resize({ width: 64, height: 64, fit: 'inside' })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let opaque = true;
+    const luminances: number[] = [];
+    for (let index = 0; index < data.length; index += info.channels) {
+      const alpha = data[index + 3]!;
+      if (alpha < 250) opaque = false;
+      if (alpha >= 128) {
+        luminances.push(relativeLuminance({ r: data[index]!, g: data[index + 1]!, b: data[index + 2]! }));
+      }
+    }
+    return { opaque, luminances };
+  } catch {
+    return { opaque: false, luminances: null };
+  }
+}
+
+function mixHex(from: string, to: string, amount: number): string {
+  const a = hexToRgb(from);
+  const b = hexToRgb(to);
+  if (!a || !b) return from;
+  return rgbToHex({
+    r: a.r + (b.r - a.r) * amount,
+    g: a.g + (b.g - a.g) * amount,
+    b: a.b + (b.b - a.b) * amount,
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
 
+/**
+ * Average advance width per em, deliberately generous. Text is sized to fit
+ * rather than truncated — exact contact details that are cut off are worse than
+ * smaller ones — so an estimate that runs wide only costs a few pixels of size.
+ */
+const EM = { heading: 0.66, bodyBold: 0.58, body: 0.55 } as const;
+
+/** One block of text, already broken into the lines it is drawn on. */
+interface TextBlock {
+  lines: string[];
+  size: number;
+}
+
 interface BandLayout {
   width: number;
   height: number;
-  padding: number;
+  /** Height of the feathered top edge; the solid footer is below it. */
+  fade: number;
+  paddingX: number;
+  paddingY: number;
+  inner: number;
   gap: number;
-  rule: number;
-  ground: string;
-  textColor: string;
-  accentText: string;
   logo: { left: number; top: number; width: number; height: number } | null;
+  identityWidth: number;
+  name: TextBlock | null;
+  tagline: TextBlock | null;
+  taglineGap: number;
+  contact: TextBlock | null;
 }
 
-function layoutBand(width: number, height: number, plan: StudioOverlayPlan): BandLayout {
-  const bandHeight = Math.round(height * identityBandFraction(plan.aspectRatio));
-  const rule = Math.max(3, Math.round(bandHeight * 0.025));
-  const padding = Math.round(bandHeight * 0.17);
-  const gap = Math.round(bandHeight * 0.14);
-
-  // Dark band by default; light only when a logo would not read on dark. The
-  // band adapts to the logo, never the other way round.
-  const dark = !plan.logo || logoReadsOn(plan.logo.inkLuminance, plan.theme.darkNeutral);
-  const ground = dark ? plan.theme.darkNeutral : plan.theme.lightNeutral;
+/**
+ * Sizes and places everything in the footer.
+ *
+ * Order of precedence: the logo takes its box; the tagline and the contact
+ * details share one secondary size, solved together so neither crowds the other
+ * out of the row; the company name takes what the identity column then allows,
+ * always larger than the tagline. A name or tagline that would otherwise be set
+ * very small goes onto two balanced lines — split explicitly, not left to
+ * satori's greedy wrapping, which can run to a third line.
+ */
+function layoutBand(width: number, bandHeight: number, plan: StudioOverlayPlan): BandLayout {
+  const fade = Math.round(bandHeight * 0.16);
+  const solid = bandHeight - fade;
+  const paddingY = Math.round(solid * 0.12);
+  const paddingX = Math.round(Math.max(solid * 0.3, width * 0.04));
+  const inner = solid - paddingY * 2;
+  const gap = Math.round(solid * 0.14);
+  const available = width - paddingX * 2;
 
   let logo: BandLayout['logo'] = null;
   if (plan.logo) {
-    const box = {
-      width: Math.round(width * 0.3),
-      height: bandHeight - rule - padding * 2,
-    };
+    const box = { width: Math.round(width * (plan.name ? 0.22 : 0.3)), height: inner };
     const fitted = containFit({ width: plan.logo.width, height: plan.logo.height }, box);
     logo = {
-      left: padding,
-      top: rule + padding + Math.round((box.height - fitted.height) / 2),
+      left: paddingX,
+      top: fade + paddingY + Math.round((inner - fitted.height) / 2),
       width: Math.max(1, fitted.width),
       height: Math.max(1, fitted.height),
     };
   }
 
+  const contactTexts = [plan.website, plan.phone].filter((text): text is string => Boolean(text));
+  const contactChars = Math.max(0, ...contactTexts.map((text) => text.length));
+  const hasIdentityText = Boolean(plan.name || plan.tagline);
+  const room =
+    available - (logo ? logo.width + gap : 0) - (contactTexts.length > 0 && hasIdentityText ? gap * 2 : 0);
+
+  const nameTarget = inner * (plan.tagline ? 0.38 : 0.46);
+  const taglineTarget = inner * (plan.name ? 0.2 : 0.25);
+  const contactTarget = Math.min(
+    inner * (contactTexts.length > 1 ? 0.21 : 0.24),
+    inner / Math.max(1, contactTexts.length) / 1.3,
+  );
+  const taglineGap = Math.round(inner * 0.07);
+
+  // ---- Secondary size: tagline and contact, solved together ----------------
+  const secondaryFor = (taglineChars: number) => {
+    const perPixel = taglineChars * EM.bodyBold + contactChars * EM.body;
+    let size = Math.min(plan.tagline ? taglineTarget : Infinity, contactTexts.length > 0 ? contactTarget : Infinity);
+    if (perPixel > 0) size = Math.min(size, room / perPixel);
+    // With a tagline beside it the contact column cannot claim the whole row.
+    if (contactChars > 0 && hasIdentityText) size = Math.min(size, (available * 0.44) / (contactChars * EM.body));
+    return size;
+  };
+
+  const taglineSplit = plan.tagline ? balancedSplit(plan.tagline) : null;
+  let taglineLines = plan.tagline ? [plan.tagline] : [];
+  let secondary = secondaryFor(plan.tagline?.length ?? 0);
+  if (plan.tagline && taglineSplit && secondary < taglineTarget * 0.62) {
+    const twoLine = secondaryFor(longest(taglineSplit));
+    if (twoLine > secondary * 1.2) {
+      secondary = twoLine;
+      taglineLines = taglineSplit;
+    }
+  }
+  if (!Number.isFinite(secondary)) secondary = 0;
+
+  const contactWidth = contactChars > 0 ? Math.ceil(contactChars * secondary * EM.body) : 0;
+  const identityWidth = Math.max(1, Math.floor(room - contactWidth));
+
+  // ---- Company name: the strongest element ----------------------------------
+  let name: BandLayout['name'] = null;
+  if (plan.name) {
+    const oneLine = Math.min(nameTarget, identityWidth / (plan.name.length * EM.heading));
+    name = { lines: [plan.name], size: oneLine };
+    const split = balancedSplit(plan.name);
+    if (split && oneLine < nameTarget * 0.7) {
+      const heightLeft = inner - (plan.tagline ? taglineGap + taglineLines.length * 1.2 * secondary : 0);
+      const twoLine = Math.min(nameTarget * 0.8, identityWidth / (longest(split) * EM.heading), heightLeft / 2.16);
+      if (twoLine > oneLine * 1.15) name = { lines: split, size: twoLine };
+    }
+  }
+
+  let taglineSize = secondary;
+  // Secondary to the name, always.
+  if (name) taglineSize = Math.min(taglineSize, name.size * 0.62);
+
+  // The identity block must fit the footer's height.
+  const blockHeight =
+    (name ? name.size * 1.08 * name.lines.length : 0) +
+    (name && plan.tagline ? taglineGap : 0) +
+    (plan.tagline ? taglineSize * 1.2 * taglineLines.length : 0);
+  if (blockHeight > inner) {
+    const scale = inner / blockHeight;
+    if (name) name.size *= scale;
+    taglineSize *= scale;
+  }
+
+  // Contact details stay readable but never outrank the tagline.
+  const contactSize = plan.tagline ? Math.min(secondary, Math.max(taglineSize, inner * 0.15)) : secondary;
+
   return {
     width,
     height: bandHeight,
-    padding,
+    fade,
+    paddingX,
+    paddingY,
+    inner,
     gap,
-    rule,
-    ground,
-    textColor: dark ? plan.theme.onDark : plan.theme.onLight,
-    accentText: dark ? plan.theme.accentOnDark : plan.theme.accentOnLight,
     logo,
+    identityWidth,
+    name: name ? { lines: name.lines, size: floorSize(name.size) } : null,
+    tagline: plan.tagline ? { lines: taglineLines, size: floorSize(taglineSize) } : null,
+    taglineGap,
+    contact: contactTexts.length > 0 ? { lines: contactTexts, size: floorSize(contactSize) } : null,
   };
 }
 
+function floorSize(size: number): number {
+  return Math.max(10, Math.floor(size));
+}
+
+function longest(lines: readonly string[]): number {
+  return Math.max(...lines.map((line) => line.length));
+}
+
+/** `text` split into two lines at the space nearest its middle; null for a single word. */
+function balancedSplit(text: string): [string, string] | null {
+  const middle = text.length / 2;
+  let best = -1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === ' ' && (best < 0 || Math.abs(index - middle) < Math.abs(best - middle))) best = index;
+  }
+  if (best < 0) return null;
+  return [text.slice(0, best), text.slice(best + 1)];
+}
+
 // ---------------------------------------------------------------------------
-// Stage 1 — band and text (satori + resvg)
+// Stage 1 — footer and text (satori + resvg)
 // ---------------------------------------------------------------------------
 
 /** Satori's element shape, built without JSX so this stays a plain .ts module. */
@@ -243,78 +599,65 @@ function el(type: string, style: Record<string, unknown>, children?: Node['props
   return { type, props: { style, ...(children === undefined ? {} : { children }) } };
 }
 
-/**
- * A single line's font size: as large as its share of the band allows, shrunk
- * until an average-width estimate fits the column. Text is never truncated —
- * exact contact details that are cut off are worse than smaller ones.
- */
-function fitFontSize(text: string, columnWidth: number, lineHeight: number, widthPerEm: number): number {
-  const byHeight = lineHeight * 0.7;
-  const byWidth = columnWidth / Math.max(1, text.length * widthPerEm);
-  return Math.max(10, Math.floor(Math.min(byHeight, byWidth)));
-}
-
-async function renderBand(band: BandLayout, plan: StudioOverlayPlan): Promise<Buffer> {
+async function renderBand(band: BandLayout, plan: StudioOverlayPlan, palette: FooterPalette): Promise<Buffer> {
   const heading = plan.theme.headingFont;
   const body = plan.theme.bodyFont;
-  const inner = band.height - band.rule - band.padding * 2;
 
-  const leftWidth = band.logo ? band.logo.width : 0;
-  const nameWidth = plan.name ? Math.round(band.width * (band.logo ? 0.28 : 0.42)) : 0;
-  const rightWidth =
-    band.width - band.padding * 2 - leftWidth - nameWidth - band.gap * ((band.logo ? 1 : 0) + (plan.name ? 1 : 0));
-
-  const lines: Array<{ text: string; family: string; weight: number; color: string; widthPerEm: number }> = [];
-  if (plan.tagline) {
-    lines.push({ text: plan.tagline, family: heading.family, weight: heaviestWeight(heading), color: band.accentText, widthPerEm: 0.62 });
-  }
-  if (plan.website) {
-    lines.push({ text: plan.website, family: body.family, weight: heaviestWeight(body), color: band.textColor, widthPerEm: 0.56 });
-  }
-  if (plan.phone) {
-    lines.push({ text: plan.phone, family: body.family, weight: heaviestWeight(body), color: band.textColor, widthPerEm: 0.56 });
-  }
-
-  const lineHeight = inner / Math.max(2, lines.length);
-
-  const children: Node[] = [];
+  const row: Node[] = [];
 
   // Space the logo will be composited into by sharp.
   if (band.logo) {
-    children.push(el('div', { display: 'flex', width: band.logo.width, height: inner, flexShrink: 0 }));
+    row.push(el('div', { display: 'flex', width: band.logo.width, height: band.inner, flexShrink: 0 }));
   }
 
-  if (plan.name) {
-    // One line or two, whichever lets the exact name be set larger. Satori wraps
-    // at word boundaries inside the fixed-width column.
-    const oneLine = fitFontSize(plan.name, nameWidth, inner * 0.6, 0.62);
-    const twoLines = plan.name.includes(' ')
-      ? fitFontSize(plan.name.slice(0, Math.ceil(plan.name.length / 2) + 2), nameWidth, inner * 0.46, 0.62)
-      : 0;
-    const size = Math.max(oneLine, twoLines);
-    children.push(
+  const textLines = (block: TextBlock, style: Record<string, unknown>, lineHeight: number) =>
+    block.lines.map((line) =>
+      el('div', { display: 'flex', fontSize: block.size, lineHeight, whiteSpace: 'nowrap', ...style }, line),
+    );
+
+  if (band.name || band.tagline) {
+    const stack: Node[] = [];
+    if (band.name) {
+      stack.push(
+        ...textLines(
+          band.name,
+          { fontFamily: heading.family, fontWeight: heaviestWeight(heading), color: palette.name },
+          1.08,
+        ),
+      );
+    }
+    if (band.tagline) {
+      stack.push(
+        el(
+          'div',
+          { display: 'flex', flexDirection: 'column', marginTop: band.name ? band.taglineGap : 0 },
+          textLines(
+            band.tagline,
+            { fontFamily: body.family, fontWeight: heaviestWeight(body), color: palette.tagline },
+            1.2,
+          ),
+        ),
+      );
+    }
+    row.push(
       el(
         'div',
         {
           display: 'flex',
-          alignItems: 'center',
-          width: nameWidth,
-          height: inner,
+          flexDirection: 'column',
+          justifyContent: 'center',
+          width: band.identityWidth,
+          height: band.inner,
           marginLeft: band.logo ? band.gap : 0,
-          flexShrink: 0,
-          fontFamily: heading.family,
-          fontWeight: heaviestWeight(heading),
-          fontSize: size,
-          color: band.textColor,
-          lineHeight: 1.1,
+          flexShrink: 1,
         },
-        plan.name,
+        stack,
       ),
     );
   }
 
-  if (lines.length > 0) {
-    children.push(
+  if (band.contact) {
+    row.push(
       el(
         'div',
         {
@@ -323,23 +666,14 @@ async function renderBand(band: BandLayout, plan: StudioOverlayPlan): Promise<Bu
           justifyContent: 'center',
           alignItems: 'flex-end',
           marginLeft: 'auto',
-          width: Math.max(1, rightWidth),
-          height: inner,
+          paddingLeft: band.gap,
+          height: band.inner,
+          flexShrink: 0,
         },
-        lines.map((line) =>
-          el(
-            'div',
-            {
-              display: 'flex',
-              fontFamily: line.family,
-              fontWeight: line.weight,
-              fontSize: fitFontSize(line.text, rightWidth, lineHeight, line.widthPerEm),
-              color: line.color,
-              lineHeight: 1.15,
-              whiteSpace: 'nowrap',
-            },
-            line.text,
-          ),
+        textLines(
+          band.contact,
+          { fontFamily: body.family, fontWeight: lightestWeight(body), color: palette.contact },
+          1.3,
         ),
       ),
     );
@@ -347,15 +681,15 @@ async function renderBand(band: BandLayout, plan: StudioOverlayPlan): Promise<Bu
 
   const tree = el(
     'div',
-    {
-      display: 'flex',
-      flexDirection: 'column',
-      width: band.width,
-      height: band.height,
-      backgroundColor: band.ground,
-    },
+    { display: 'flex', flexDirection: 'column', width: band.width, height: band.height },
     [
-      el('div', { display: 'flex', width: band.width, height: band.rule, backgroundColor: plan.theme.accent }),
+      // Feathered top edge: eased so the artwork fades into the footer without a seam.
+      el('div', {
+        display: 'flex',
+        width: band.width,
+        height: band.fade,
+        backgroundImage: `linear-gradient(to bottom, ${withAlpha(palette.ground, 0)} 0%, ${withAlpha(palette.ground, 0.35)} 40%, ${withAlpha(palette.ground, 0.82)} 75%, ${withAlpha(palette.ground, 1)} 100%)`,
+      }),
       el(
         'div',
         {
@@ -363,11 +697,12 @@ async function renderBand(band: BandLayout, plan: StudioOverlayPlan): Promise<Bu
           flexDirection: 'row',
           alignItems: 'center',
           width: band.width,
-          height: band.height - band.rule,
-          paddingLeft: band.padding,
-          paddingRight: band.padding,
+          height: band.height - band.fade,
+          paddingLeft: band.paddingX,
+          paddingRight: band.paddingX,
+          backgroundColor: palette.ground,
         },
-        children,
+        row,
       ),
     ],
   );

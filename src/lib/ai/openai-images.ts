@@ -98,6 +98,14 @@ function getClient(): OpenAI {
   return cachedClient;
 }
 
+/**
+ * Throws the operator-facing `config` error when no API key is configured.
+ * Called at the start of a request, before any Drive or database work.
+ */
+export function assertStudioImageConfigured(): void {
+  getClient();
+}
+
 export async function renderStudioImage(request: StudioImageRequest): Promise<StudioImageResult> {
   const client = getClient();
   const quality = getStudioImageQuality();

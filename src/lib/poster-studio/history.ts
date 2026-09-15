@@ -34,6 +34,9 @@ export interface StudioHistoryItem {
   /** Exact Brand Canvas elements the overlay drew — names only. */
   overlayElements: string[];
   logoBackground: 'ORIGINAL' | 'REMOVED' | null;
+  /** Footer choice, and the tone it was drawn in. Null when no overlay was drawn. */
+  footerBackground: 'AUTO' | 'LIGHT' | 'DARK' | null;
+  footerTone: 'AUTO' | 'LIGHT' | 'DARK' | null;
   parentGenerationId: string | null;
   clientId: string | null;
   clientName: string | null;
@@ -57,6 +60,8 @@ export const studioHistorySelect = {
   finalImageDriveFileId: true,
   overlayElements: true,
   logoBackground: true,
+  footerBackground: true,
+  footerTone: true,
   parentGenerationId: true,
   clientId: true,
   createdAt: true,
@@ -82,6 +87,8 @@ export function toStudioHistoryItem(row: HistoryRow): StudioHistoryItem {
     hasFinal: row.finalImageDriveFileId !== null,
     overlayElements: row.overlayElements,
     logoBackground: row.logoBackground,
+    footerBackground: row.footerBackground,
+    footerTone: row.footerTone,
     parentGenerationId: row.parentGenerationId,
     clientId: row.clientId,
     clientName: row.client?.companyName ?? null,

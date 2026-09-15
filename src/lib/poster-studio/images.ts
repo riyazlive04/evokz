@@ -112,6 +112,41 @@ export async function prepareStudioInputImage(
 }
 
 /**
+ * Long edge of the source artwork as Variation sends it to the model.
+ *
+ * The edit endpoint preserves the composition of the image it is given, and at
+ * full resolution no prompt wording moved it: live Variations kept the parent's
+ * subject, pose, headline block and layout. A reduced preview still carries the
+ * campaign's message, subject and mood — and its headline stays legible — but not
+ * the pixel-level layout, and in live testing the result became a genuinely
+ * different design. It also costs about a third of the image-input tokens.
+ */
+const VARIATION_SOURCE_LONG_EDGE = 512;
+
+/** The reduced copy of a Variation's source that is sent to the model. The stored input is unchanged. */
+export async function reduceVariationSource(image: { bytes: Buffer; mimeType: string }): Promise<{ bytes: Buffer; mimeType: string }> {
+  const bytes = await sharp(image.bytes)
+    .resize({ width: VARIATION_SOURCE_LONG_EDGE, height: VARIATION_SOURCE_LONG_EDGE, fit: 'inside', withoutEnlargement: true })
+    .png()
+    .toBuffer();
+  return { bytes, mimeType: 'image/png' };
+}
+
+/**
+ * Decoded size of an image the model returned, or null when the bytes are not
+ * an image sharp can read. Decoded rather than read from the header, so a
+ * truncated or corrupt response is caught before it is stored.
+ */
+export async function readStudioImageSize(bytes: Buffer): Promise<{ width: number; height: number } | null> {
+  try {
+    const { info } = await sharp(bytes).raw().toBuffer({ resolveWithObject: true });
+    return info.width > 0 && info.height > 0 ? { width: info.width, height: info.height } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resized WebP copy of a stored studio image for the browser.
  *
  * Quality steps up with width: a history thumbnail is glanced at, the canvas
