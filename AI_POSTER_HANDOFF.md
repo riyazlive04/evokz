@@ -7,6 +7,7 @@ Also on this branch:
 - **Phase 2 — AI content calendar generation** (§18): content only. Includes the first campaign calendar UI at `/admin/clients/[clientId]/campaigns/[campaignId]`. No poster generation, template mapping, approval workflow or WhatsApp changes.
 - **Phase 3 — campaign template mapping** (§19, `vertical-phase3.md`): Auto Map with preview, manual and bulk mapping, mixed mode, inactive-template handling. No poster generation.
 - **Phase 4 — rolling campaign poster generation** (§20, `vertical-phase4.md`): posters for the next N days through this studio's pipeline, versioned per day. No WhatsApp or delivery changes.
+- **Phase 5 — campaign review and approval** (§21, `vertical-phase5.md`): the review queue, approve / reject with a reason, fix-after-rejection, bulk approval and campaign readiness. Still nothing is delivered.
 
 ## 1. What it does
 
@@ -676,3 +677,16 @@ Phase 1 and f5053c4 suites still pass: `check:campaign` 55, `check:campaign-db` 
   - Deleting a History item a campaign version uses is refused with a clear message.
   - The Phase 1 version rule now allows `PIPELINE` versions to link a studio row.
 - **Tests:** `check:campaign-posters` (55) and `check:campaign-posters-db` (80). The local browser check passes 39 / 39.
+
+## 21. Campaign automation — Phase 5: campaign review and approval
+
+**Status:** posters can be reviewed, approved, sent back and fixed. The full record is [`vertical-phase5.md`](vertical-phase5.md). Nothing is delivered and nothing is sent; delivery is Phase 6.
+
+- **No second approval system, and no migration.** Approval stays on `PosterVersion` (`approvalStatus`, `reviewedAt`, `reviewNote`), moved only by §17's `reviewPosterVersion`, and the day's state stays §20's derived `derivePosterState`. The rejection reason is stored in the existing `reviewNote`.
+- **Code:** `src/lib/campaign/review.ts` (pure rules), `src/lib/campaign/review-service.ts`, `src/components/campaign/CampaignReviewQueue.tsx` and `CampaignDayDetail.tsx` (shared with the Phase 4 card, which lost its own version dialog).
+- **Approve** applies only to the day's active, current, PENDING version. Outdated, rejected, generating, missing, a non-active version and a closed campaign are each refused with a named reason. Approving an already-approved day is a no-op.
+- **Reject** takes a reason from a fixed catalogue (Wrong layout, Content issue, Branding issue, Image quality, Template mismatch, Other — which requires detail) plus optional detail, stored as `"Branding issue — the logo sits over the headline"`. Nothing is deleted: the version, its Drive files and history are kept, and the day keeps it as active so it can be fixed. An APPROVED poster passes through PENDING, since §17 allows no direct transition.
+- **Fixing** is **Edit in Poster Studio** (a `POSTER_STUDIO` version) or **Regenerate** (a `PIPELINE` version, behind a confirm that names the AI cost). Either way the new version is active and PENDING; the rejected one is untouched.
+- **Bulk approval** plans first — "Selected: N · Can approve: X · Skipped: Y" — never approves an invalid day, reports the rest grouped by reason, and re-checks each day at the write so a changed day becomes a conflict rather than an approval.
+- **Readiness** (`campaignReadiness`): content and templates campaign-wide, posters and approvals window-only, `deliveryReady` through §17's `evaluateDeliveryReadiness`, and `windowReady` false whenever any blocker exists. The client dashboard's "Needs attention" links to `?review=<filter>`.
+- **Tests:** `check:campaign-review` (46) and `check:campaign-review-db` (63). The local browser check passes 38 / 38.

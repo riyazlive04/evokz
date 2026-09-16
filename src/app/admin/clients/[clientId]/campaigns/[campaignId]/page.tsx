@@ -1,12 +1,13 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { AlertTriangle, ArrowLeft, CalendarRange, CheckCircle2, CircleDashed, ImageOff, Images, LayoutTemplate, PencilLine } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CalendarRange, CheckCircle2, CircleDashed, ClipboardCheck, ImageOff, Images, LayoutTemplate, PencilLine } from 'lucide-react';
 
 import { PageHeader } from '@/components/admin/PageHeader';
 import { StatTile } from '@/components/admin/StatTile';
 import { CampaignCalendar, type CampaignDayView } from '@/components/campaign/CampaignCalendar';
 import { CampaignPosterGeneration, type PosterDayView } from '@/components/campaign/CampaignPosterGeneration';
+import { CampaignReviewQueue, type ReviewDayView } from '@/components/campaign/CampaignReviewQueue';
 import {
   CampaignTemplateMapping,
   type MappingDayView,
@@ -19,6 +20,8 @@ import { resolveContentStrategy, SUGGESTED_TEMPLATE_TYPES } from '@/lib/campaign
 import { campaignAllowsChanges, isVersionCurrent } from '@/lib/campaign/model';
 import { POSTER_STATE_LABELS } from '@/lib/campaign/poster-generation';
 import { eligibilityFor, loadPosterOverview } from '@/lib/campaign/poster-generation-service';
+import { APPROVAL_REFUSAL_MESSAGES, approvalRefusal, describeReadiness, isReviewFilter } from '@/lib/campaign/review';
+import { buildReview } from '@/lib/campaign/review-service';
 import { aspectFit, describeAspect } from '@/lib/campaign/template-mapping';
 import { prisma } from '@/lib/prisma';
 import { describeDeliveryDays, formatDisplayDate, getAppTimeZone } from '@/lib/time';
@@ -28,17 +31,23 @@ export const dynamic = 'force-dynamic';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Campaign calendar (Phase 2 content, Phase 3 template mapping, Phase 4 posters).
+ * Campaign calendar (Phase 2 content, Phase 3 mapping, Phase 4 posters, Phase 5
+ * review and approval).
  *
- * Every day of the campaign with its content state and its template, and the
- * posters of the rolling window. Content work happens in `CampaignCalendar`,
- * mapping in `CampaignTemplateMapping`, posters in `CampaignPosterGeneration`.
- * Nothing on this page sends a message.
+ * Every day of the campaign with its content, template and poster. Review and
+ * approval happen in `CampaignReviewQueue`, generation in
+ * `CampaignPosterGeneration`, mapping in `CampaignTemplateMapping`, content in
+ * `CampaignCalendar`. Nothing on this page sends a message.
+ *
+ * `?review=<filter>` opens the queue on one filter, which is what the client
+ * page's attention counts link to.
  */
 export default async function CampaignCalendarPage({
   params,
+  searchParams,
 }: {
   params: { clientId: string; campaignId: string };
+  searchParams?: { review?: string | string[] };
 }) {
   if (!UUID_PATTERN.test(params.clientId) || !UUID_PATTERN.test(params.campaignId)) notFound();
 
@@ -127,6 +136,31 @@ export default async function CampaignCalendarPage({
     posters.studioAspect ? null : `This client's ${posters.targetAspectLabel} output is not a Poster Studio format (9:16, 1:1 or 16:9).`,
   ].filter((blocker): blocker is string => blocker !== null);
   const windowLabel = `${formatDisplayDate(posters.window.start, timeZone)} → ${formatDisplayDate(new Date(posters.window.end.getTime() - 1), timeZone)} · ${posters.studioAspect ?? posters.targetAspectLabel} posters · ${posters.campaign.approvalPolicy === 'AUTO_APPROVE' ? 'approved automatically' : 'manual approval'}`;
+
+  // ---- Review and approval (Phase 5), from the overview already loaded --------
+  const review = buildReview(posters);
+  const requestedFilter = typeof searchParams?.review === 'string' ? searchParams.review : '';
+  const reviewDays: ReviewDayView[] = review.days.map((day) => ({
+    dayId: day.dayId,
+    dayNumber: day.dayNumber,
+    dateLabel: dateFormat.format(day.dateLabel),
+    headline: day.headline,
+    contentTypeLabel: day.contentTypeLabel,
+    templateLabel: day.templateLabel,
+    templateSource: day.templateSource,
+    state: day.state,
+    stateLabel: day.stateLabel,
+    generationId: day.generationId,
+    versionNumber: day.versionNumber,
+    versionCount: day.versionCount,
+    rejection: day.rejection,
+    warning: day.warning,
+    canApprove: day.canApprove,
+    approvalRefusal: day.canApprove ? null : (APPROVAL_REFUSAL_MESSAGES[approvalRefusal(day, campaign.status) ?? 'no-poster'] ?? null),
+    inWindow: day.inWindow,
+    unmapped: day.unmapped,
+    activeVersionId: day.activeVersion?.id ?? null,
+  }));
 
   // ---- Template mapping --------------------------------------------------------
   const templateLabels = new Map(mapping.context.templates.map((template) => [template.id, template.label]));
@@ -236,6 +270,31 @@ export default async function CampaignCalendarPage({
           tone={postersOutdated > 0 ? 'amber' : 'slate'}
         />
       </section>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ClipboardCheck className="h-4 w-4 text-brand-to" />
+            Campaign review
+          </CardTitle>
+          <CardDescription>
+            Every day&apos;s content, template and poster in one queue, with the decisions: approve the poster that
+            represents the day, or send it back with a reason and edit or regenerate it. An outdated, rejected or failed
+            poster is never approved. Nothing is delivered from here — delivery is not implemented.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CampaignReviewQueue
+            campaignId={campaign.id}
+            closed={!campaignAllowsChanges(campaign.status)}
+            days={reviewDays}
+            summary={review.summary}
+            readiness={{ ...review.readiness, description: describeReadiness(review.readiness, posters.window.days) }}
+            windowDays={posters.window.days}
+            initialFilter={isReviewFilter(requestedFilter) ? requestedFilter : 'all'}
+          />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

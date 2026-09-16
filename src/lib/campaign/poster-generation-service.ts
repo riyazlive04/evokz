@@ -141,6 +141,8 @@ export interface PosterVersionSummary {
   source: PosterVersionSource;
   contentRevision: number;
   approvalStatus: PosterApprovalStatus;
+  /** The review decision's note — Phase 5 stores the rejection reason here. */
+  reviewNote: string | null;
   studioGenerationId: string | null;
   templateId: string | null;
   createdAt: Date;
@@ -241,7 +243,7 @@ export async function loadPosterOverview(db: CampaignDb, campaignId: string, opt
           errorMessage: true,
           _count: { select: { posterVersions: true } },
           activePosterVersion: {
-            select: { id: true, versionNumber: true, source: true, contentRevision: true, approvalStatus: true, studioGenerationId: true, templateId: true, createdAt: true },
+            select: { id: true, versionNumber: true, source: true, contentRevision: true, approvalStatus: true, reviewNote: true, studioGenerationId: true, templateId: true, createdAt: true },
           },
         },
       },
@@ -731,6 +733,7 @@ export async function listCampaignDayPosterVersions(db: CampaignDb, dayId: strin
           source: true,
           contentRevision: true,
           approvalStatus: true,
+          reviewNote: true,
           studioGenerationId: true,
           templateId: true,
           createdAt: true,
@@ -761,8 +764,11 @@ export async function listCampaignDayPosterVersions(db: CampaignDb, dayId: strin
 }
 
 /**
- * Approves the day's active poster. Refused for an outdated poster — its content
- * no longer matches the day, so approving it would approve the wrong words.
+ * Approves the day's active poster — the one version that represents the day.
+ *
+ * Refused for an outdated poster (its content no longer matches the day) and
+ * for a rejected one (it was sent back; edit or regenerate first). Approving an
+ * already approved poster changes nothing, so a bulk run is safe to repeat.
  */
 export async function approveCampaignDayPoster(db: CampaignDb, dayId: string, versionId: string): Promise<void> {
   const day = await db.contentCalendar.findUnique({
@@ -771,7 +777,7 @@ export async function approveCampaignDayPoster(db: CampaignDb, dayId: string, ve
       contentRevision: true,
       activePosterVersionId: true,
       campaign: { select: { status: true } },
-      activePosterVersion: { select: { contentRevision: true } },
+      activePosterVersion: { select: { contentRevision: true, approvalStatus: true } },
     },
   });
   if (!day?.campaign) throw new CampaignDomainError('not-found', 'Campaign day does not exist.');
@@ -781,6 +787,10 @@ export async function approveCampaignDayPoster(db: CampaignDb, dayId: string, ve
   }
   if (!isVersionCurrent(day.activePosterVersion, day)) {
     throw new CampaignDomainError('invalid-transition', 'This poster is outdated — regenerate it before approving.');
+  }
+  if (day.activePosterVersion.approvalStatus === 'APPROVED') return;
+  if (day.activePosterVersion.approvalStatus === 'REJECTED') {
+    throw new CampaignDomainError('invalid-transition', 'This poster was rejected — edit or regenerate it before approving.');
   }
   await reviewPosterVersion(db, versionId, 'APPROVED');
 }

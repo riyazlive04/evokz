@@ -10,12 +10,11 @@ import {
   approveCampaignDayPosterAction,
   changeCampaignStatusAction,
   generateCampaignDayPosterAction,
-  loadCampaignDayPostersAction,
   planPosterBatchAction,
 } from '@/app/admin/campaigns/actions';
+import { CampaignDayDetail } from '@/components/campaign/CampaignDayDetail';
 import { badgeVariants } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { useAction } from '@/hooks/use-action';
 import type { PosterState } from '@/lib/campaign/poster-generation';
@@ -132,7 +131,7 @@ export function CampaignPosterGeneration({
   const [attentionOnly, setAttentionOnly] = React.useState(false);
   const [confirmRegenerate, setConfirmRegenerate] = React.useState<string | null>(null);
   const [confirmStatus, setConfirmStatus] = React.useState(false);
-  const [viewing, setViewing] = React.useState<PosterDayView | null>(null);
+  const [viewing, setViewing] = React.useState<string | null>(null);
   const [fromText, setFromText] = React.useState('');
   const [toText, setToText] = React.useState('');
   const stopRequested = React.useRef(false);
@@ -442,7 +441,7 @@ export function CampaignPosterGeneration({
                 )
               )}
               {day.versionCount > 0 && (
-                <Button size="sm" variant="ghost" onClick={() => setViewing(day)}>
+                <Button size="sm" variant="ghost" onClick={() => setViewing(day.id)}>
                   <Eye className="h-3.5 w-3.5" />
                   View
                 </Button>
@@ -475,101 +474,7 @@ export function CampaignPosterGeneration({
         {visible.length === 0 && <li className="px-3 py-6 text-center text-[12px] text-muted-foreground">{attentionOnly ? 'Nothing needs attention in the next days.' : 'No campaign days fall in this window.'}</li>}
       </ol>
 
-      <PosterVersionsDialog day={viewing} onClose={() => setViewing(null)} />
+      <CampaignDayDetail dayId={viewing} onClose={() => setViewing(null)} onChanged={() => router.refresh()} />
     </div>
-  );
-}
-
-type VersionListing = Extract<Awaited<ReturnType<typeof loadCampaignDayPostersAction>>, { ok: true }>['data'];
-
-/** A day's poster history: the active poster large, every version listed, raw and final one click away. */
-function PosterVersionsDialog({ day, onClose }: { day: PosterDayView | null; onClose: () => void }) {
-  const load = useAction(loadCampaignDayPostersAction);
-  const [listing, setListing] = React.useState<VersionListing | null>(null);
-  const [selected, setSelected] = React.useState<string | null>(null);
-  const { run } = load;
-
-  React.useEffect(() => {
-    setListing(null);
-    setSelected(null);
-    if (!day) return;
-    void run(day.id).then((result) => {
-      if (result.ok) {
-        setListing(result.data);
-        setSelected(result.data.activeVersionId ?? result.data.versions[0]?.id ?? null);
-      }
-    });
-  }, [day, run]);
-
-  const version = listing?.versions.find((candidate) => candidate.id === selected) ?? null;
-
-  return (
-    <Dialog open={day !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
-        {day && (
-          <>
-            <DialogHeader>
-              <DialogTitle>Day {day.dayNumber} · posters</DialogTitle>
-              <DialogDescription>Every version is kept. Only the active one represents the day.</DialogDescription>
-            </DialogHeader>
-            {load.pending && <p className="flex items-center gap-2 text-[12px] text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Loading…</p>}
-            {load.error && <p role="alert" className="text-[12px] text-danger-ink">{load.error}</p>}
-            {listing && (
-              <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_14rem]">
-                <div className="space-y-2">
-                  {version?.studioGenerationId ? (
-                    <>
-                      {/* A fixed box while the image loads from Drive, so the dialog does not collapse around it. */}
-                      <div className="flex h-[min(60vh,32rem)] max-w-full items-center justify-center overflow-hidden rounded-md border border-border bg-muted">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          key={version.id}
-                          src={studioImageUrl(version.studioGenerationId, { width: 720 })}
-                          alt={`Day ${day.dayNumber} v${version.versionNumber}`}
-                          className="h-full w-auto max-w-full object-contain"
-                        />
-                      </div>
-                      <p className="flex flex-wrap gap-3 text-[11px]">
-                        <a className="underline underline-offset-2" href={studioImageUrl(version.studioGenerationId, { width: 2048 })} target="_blank" rel="noreferrer">
-                          Final poster
-                        </a>
-                        <a className="underline underline-offset-2" href={studioImageUrl(version.studioGenerationId, { variant: 'raw', width: 2048 })} target="_blank" rel="noreferrer">
-                          Raw artwork
-                        </a>
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-[12px] text-muted-foreground">No preview for this version.</p>
-                  )}
-                </div>
-                <ol className="space-y-1.5">
-                  {listing.versions.map((row) => (
-                    <li key={row.id}>
-                      <button
-                        type="button"
-                        onClick={() => setSelected(row.id)}
-                        aria-pressed={row.id === selected}
-                        className={cn('w-full rounded-md border px-2 py-1.5 text-left text-[11px]', row.id === selected ? 'border-primary bg-primary/10' : 'border-border hover:bg-accent/60')}
-                      >
-                        <span className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-semibold text-foreground">v{row.versionNumber}</span>
-                          {row.active && <Tag variant="emerald">Active</Tag>}
-                          <Tag variant={row.approvalStatus === 'APPROVED' ? 'emerald' : row.approvalStatus === 'REJECTED' ? 'destructive' : 'slate'}>{row.approvalStatus.toLowerCase()}</Tag>
-                          {!row.current && <Tag variant="amber">Outdated</Tag>}
-                        </span>
-                        <span className="block text-muted-foreground">
-                          {row.source === 'POSTER_STUDIO' ? 'Edited in Poster Studio' : row.source === 'PIPELINE' ? 'Generated' : 'Uploaded'} · {new Date(row.createdAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}
-                          {row.templateLabel ? ` · ${row.templateLabel}` : ''}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
-          </>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }

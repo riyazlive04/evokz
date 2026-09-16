@@ -25,13 +25,19 @@ import {
 import {
   approveCampaignDayPoster,
   generateCampaignDayPoster,
-  listCampaignDayPosterVersions,
   loadPosterOverview,
   planPosterBatch,
   saveStudioPosterToCampaignDay,
   type GenerateDayPosterResult,
   type PosterBatchPlan,
 } from '@/lib/campaign/poster-generation-service';
+import { MAX_REJECTION_DETAIL } from '@/lib/campaign/review';
+import {
+  approveCampaignDayPosters,
+  loadCampaignDayReview,
+  rejectCampaignDayPoster,
+  type BulkApprovalResult,
+} from '@/lib/campaign/review-service';
 import type { AutoMapOutcome, MappingSource } from '@/lib/campaign/template-mapping';
 import {
   applyAutoMap,
@@ -46,7 +52,7 @@ import { prisma } from '@/lib/prisma';
 
 /**
  * Campaign calendar actions (Phase 2 content, Phase 3 template mapping, Phase 4
- * rolling poster generation).
+ * rolling poster generation, Phase 5 review and approval).
  *
  * Thin wrappers over `src/lib/campaign`: parse the wire input, call one service,
  * map failures to operator copy. Behind the admin session like every other
@@ -414,21 +420,6 @@ export async function approveCampaignDayPosterAction(dayId: string, versionId: s
   }
 }
 
-export async function loadCampaignDayPostersAction(dayId: string) {
-  try {
-    const listing = await listCampaignDayPosterVersions(prisma, uuid.parse(dayId));
-    return {
-      ok: true as const,
-      data: {
-        ...listing,
-        versions: listing.versions.map((version) => ({ ...version, createdAt: version.createdAt.toISOString() })),
-      },
-    };
-  } catch (error) {
-    return toFailure(error, 'Loading the poster versions');
-  }
-}
-
 /** Saves a Poster Studio poster (usually an Edit of the day's poster) as the day's new active version. */
 export async function saveStudioPosterToCampaignDayAction(
   dayId: string,
@@ -454,5 +445,69 @@ export async function changeCampaignStatusAction(
     return { ok: true, data: result };
   } catch (error) {
     return toFailure(error, 'Changing the campaign status');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Review and approval (Phase 5). Reviews posters; never sends or deletes anything.
+// ---------------------------------------------------------------------------
+
+const rejectionSchema = z.object({
+  reason: z.string().trim().min(1, 'Choose a reason for sending this poster back.'),
+  detail: z.string().trim().max(MAX_REJECTION_DETAIL).optional(),
+});
+
+/**
+ * Sends the day's active poster back with a reason. Nothing is deleted: the
+ * version and its files stay, and the day keeps it until a new version is made.
+ */
+export async function rejectCampaignDayPosterAction(
+  dayId: string,
+  versionId: string,
+  input: z.input<typeof rejectionSchema>,
+): Promise<ActionResult<{ note: string }>> {
+  try {
+    const data = rejectionSchema.parse(input);
+    const result = await rejectCampaignDayPoster(prisma, uuid.parse(dayId), uuid.parse(versionId), data);
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Rejecting the poster');
+  }
+}
+
+/** Approves the active poster of every selected day that may be approved, and reports the rest. */
+export async function approveCampaignPostersAction(
+  campaignId: string,
+  dayIds: string[],
+): Promise<ActionResult<BulkApprovalResult>> {
+  try {
+    const ids = z.array(uuid).min(1, 'Select at least one day.').max(730).parse(dayIds);
+    const result = await approveCampaignDayPosters(prisma, uuid.parse(campaignId), ids);
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Approving the selected posters');
+  }
+}
+
+/** One day's content, template, poster and version history — the review detail. */
+export async function loadCampaignDayReviewAction(dayId: string) {
+  try {
+    const detail = await loadCampaignDayReview(prisma, uuid.parse(dayId));
+    return {
+      ok: true as const,
+      data: {
+        ...detail,
+        scheduledDate: detail.scheduledDate.toISOString(),
+        versions: detail.versions.map((version) => ({
+          ...version,
+          createdAt: version.createdAt.toISOString(),
+          reviewedAt: version.reviewedAt?.toISOString() ?? null,
+        })),
+      },
+    };
+  } catch (error) {
+    return toFailure(error, 'Loading the day');
   }
 }

@@ -39,6 +39,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { LEGACY_CALENDAR } from '@/lib/calendar-scope';
+import { loadCampaignReview } from '@/lib/campaign/review-service';
 import { optionalEnv } from '@/lib/env';
 import {
   describeImageSize,
@@ -194,6 +195,26 @@ export default async function ClientDetailPage({
   };
   for (const group of statusGroups) {
     statusCounts[group.deliveryStatus] = group._count._all;
+  }
+
+  // Unresolved review work per campaign (Phase 5), so the card links straight to
+  // the filtered queue instead of leaving an operator to scan 365 days. One
+  // overview per campaign, and a client holds very few.
+  const campaignAttention = new Map<string, { needsReview: number; rejected: number; outdated: number; failed: number; unmapped: number; attention: number }>();
+  for (const campaign of campaigns) {
+    try {
+      const review = await loadCampaignReview(prisma, campaign.id);
+      campaignAttention.set(campaign.id, {
+        needsReview: review.summary.needsReview,
+        rejected: review.summary.rejected,
+        outdated: review.summary.outdated,
+        failed: review.summary.failed,
+        unmapped: review.summary.unmapped,
+        attention: review.summary.attention,
+      });
+    } catch (error) {
+      console.error('[client-page] could not load the review summary for', campaign.id, error);
+    }
   }
 
   const calendarCount = Object.values(statusCounts).reduce((sum, n) => sum + n, 0);
@@ -503,8 +524,9 @@ export default async function ClientDetailPage({
             Campaigns
           </CardTitle>
           <CardDescription>
-            AI content calendars: each day is an editable slot with a topic, headline, caption and photo brief.
-            Content only — no posters are generated and nothing is sent from here.
+            AI content calendars: each day is an editable slot with a topic, headline, caption and photo brief, its
+            mapped template and its poster. Open a campaign to generate, review and approve posters. Nothing is sent
+            from here.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -514,11 +536,21 @@ export default async function ClientDetailPage({
                 const count = (status: string) =>
                   campaignContent.find((row) => row.campaignId === campaign.id && row.contentStatus === status)?._count
                     ._all ?? 0;
+                const attention = campaignAttention.get(campaign.id);
+                const attentionLinks = attention
+                  ? ([
+                      ['needs-review', 'need review', attention.needsReview],
+                      ['rejected', 'rejected', attention.rejected],
+                      ['outdated', 'outdated', attention.outdated],
+                      ['failed', 'failed', attention.failed],
+                      ['unmapped', 'unmapped', attention.unmapped],
+                    ] as const).filter(([, , value]) => value > 0)
+                  : [];
                 return (
-                  <li key={campaign.id}>
+                  <li key={campaign.id} className="space-y-1 px-3 py-2.5">
                     <Link
                       href={`/admin/clients/${client.id}/campaigns/${campaign.id}`}
-                      className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-accent"
+                      className="-mx-3 -my-2.5 flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-accent"
                     >
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium text-foreground">{campaign.name}</span>
@@ -536,6 +568,22 @@ export default async function ClientDetailPage({
                         <Badge variant="slate">{campaign.status}</Badge>
                       </div>
                     </Link>
+
+                    {/* Unresolved review work, each count a link into that filter. */}
+                    {attention && attention.attention > 0 && (
+                      <p className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[11px]">
+                        <span className="font-semibold uppercase tracking-widest text-warning-ink">Needs attention</span>
+                        {attentionLinks.map(([filter, label, value]) => (
+                          <Link
+                            key={filter}
+                            href={`/admin/clients/${client.id}/campaigns/${campaign.id}?review=${filter}`}
+                            className="text-warning-ink underline underline-offset-2 hover:text-foreground"
+                          >
+                            {value} {label}
+                          </Link>
+                        ))}
+                      </p>
+                    )}
                   </li>
                 );
               })}
