@@ -227,6 +227,34 @@ export function deliveryInstant(scheduledDate: Date, deliveryTime: string, timeZ
   return new Date(midnight.getTime() + minutes * 60_000);
 }
 
+/**
+ * How far past its nominal time a delivery may be spread. Ten minutes.
+ *
+ * Campaigns configure a delivery time by hand, and operators pick round numbers:
+ * a fleet on "09:00" would otherwise hand the provider every message in the same
+ * second. The legacy sweep solves the same problem with a random
+ * `WHATSAPP_SEND_DELAY_*` jitter; campaigns cannot use a random one, because a
+ * booking is a stored instant that must not move every time the page reloads.
+ */
+export const DELIVERY_SPREAD_SECONDS = 10 * 60;
+
+/**
+ * A stable offset in [0, DELIVERY_SPREAD_SECONDS) for one delivery.
+ *
+ * Derived from the day's id, so it is the same on every run — rescheduling,
+ * reconciling or reloading never moves a booking — and effectively uniform
+ * across days, so one campaign's days and several campaigns on the same minute
+ * both spread out. FNV-1a: not a hash for security, just for distribution.
+ */
+export function deliverySpreadSeconds(key: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash % DELIVERY_SPREAD_SECONDS;
+}
+
 /** Whether the moment has arrived. Past days are due — they are simply late. */
 export function isDue(scheduledFor: Date, now: Date = new Date()): boolean {
   return scheduledFor.getTime() <= now.getTime();

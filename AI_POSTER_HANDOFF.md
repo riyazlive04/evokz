@@ -9,6 +9,7 @@ Also on this branch:
 - **Phase 4 — rolling campaign poster generation** (§20, `vertical-phase4.md`): posters for the next N days through this studio's pipeline, versioned per day. No WhatsApp or delivery changes.
 - **Phase 5 — campaign review and approval** (§21, `vertical-phase5.md`): the review queue, approve / reject with a reason, fix-after-rejection, bulk approval and campaign readiness. Still nothing is delivered.
 - **Phase 6 — campaign WhatsApp delivery** (§22, `vertical-phase6.md`): approved posters delivered to the client's own WhatsApp number on the campaign's schedule, once each, through the existing Evolution integration.
+- **Phase 7 — campaign operations and reliability** (§23, `vertical-phase7.md`): server-side poster generation that survives a closed tab, campaign health and a needs-attention queue, per-campaign estimated AI cost, delivery rate control, and security/performance hardening. No migration.
 
 ## 1. What it does
 
@@ -706,4 +707,18 @@ Phase 1 and f5053c4 suites still pass: `check:campaign` 55, `check:campaign-db` 
 - **Scheduling** reuses `/api/cron` (Bearer `CRON_SECRET`, fails closed) as a fourth sweep phase. `Campaign.deliveryTime` resolved in the app timezone; a day whose local date passed is SKIPPED, not sent late.
 - **Retries** are bounded at 3 with 1/5-minute backoff. A timeout is treated as **permanent** — it may already have been queued, and a duplicate cannot be recalled.
 - **Tests:** `check:campaign-delivery` (84) and `check:campaign-delivery-db` (93). The local browser check passes 75 / 75.
-- ⚠️ **The Prisma schema-engine binary is blocked by a Windows Application Control policy on this machine**, so `prisma migrate deploy` / `migrate diff` cannot run here. This migration was applied with `psql` and its `_prisma_migrations` row written by hand (same name and SHA-256 checksum). `prisma generate` and the query engine are unaffected.
+- ⚠️ **The Prisma schema-engine binary is blocked by a Windows Application Control policy on this machine**, so `prisma migrate deploy` / `migrate diff` cannot run here. This migration was applied with `psql` and its `_prisma_migrations` row written by hand (same name and SHA-256 checksum). `prisma generate` and the query engine are unaffected. **Phase 7 added no migration and did not repeat that workaround.**
+
+## 23. Campaign automation — Phase 7: operations and reliability
+
+**Status:** the pipeline is operable. The full record is [`vertical-phase7.md`](vertical-phase7.md). **No migration** — every feature is built from columns that already existed, so the blocked schema-engine was never needed.
+
+- **Server-side generation, no new infrastructure.** `PosterGenerationStatus.QUEUED` was already a durable state with a claim token, so Phase 7 is a worker over it: `queueCampaignPosters` marks days QUEUED and returns (no spend, tab may close); `runQueuedCampaignGenerations` drains them as cron sweep phase 4. Per-day work is still §20's `generateCampaignDayPoster`, so every claim, idempotency and stale-recovery property is unchanged. Two default-off flags (`acceptQueued`) let only the worker take a queued day.
+- **Bounded:** `CAMPAIGN_GENERATION_LIMIT` (4/tick) and `CAMPAIGN_GENERATION_CONCURRENCY` (1, capped at 4).
+- **Cost, from the existing ledger.** `UsageEvent.calendarId` → `ContentCalendar.campaignId` gives per-campaign spend with no new column. Always labelled **Estimated**; a row recorded before `PRICE_OPENAI_IMAGE_*` were set is reported as *unpriced*, never as free.
+- **Campaign health + needs-attention queue** (`src/lib/campaign/operations.ts`, `CampaignHealthPanel.tsx`): counters and grouped blockers, each linking to the day that needs the decision.
+- **Rejection → regeneration:** the rejected version's own review note becomes one sanitised instruction in the brief (uuids, links, emails and long digit runs stripped, 200 chars). Only that note; nothing regenerates automatically.
+- **Delivery rate control:** a deterministic per-day spread up to 10 minutes, so a fleet sharing one delivery minute does not burst. Stable across runs, so reconciling never moves a booking.
+- **Security hardening:** constant-time cron compare, a warning on the log-leaking `?token=` fallback, media tokens redacted out of stored failures, and `(campaignId, dayId)` scoping on the three delivery actions. The review of Phases 1–6 found no actual vulnerability.
+- **Performance:** lazy delivery thumbnails, the client page's per-campaign N+1 replaced with one query, and the campaign page's three overviews parallelised.
+- **Tests:** `check:campaign-operations` (50) and `check:campaign-operations-db` (90); Phase 6's DB suite is now 96. Local browser checks pass 52 / 52 (Phase 7) and 75 / 75 (Phase 6).

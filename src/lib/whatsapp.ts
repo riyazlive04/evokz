@@ -253,10 +253,26 @@ async function readBody(response: Response, host: string): Promise<string> {
  * the provider call (Drive reads, database errors) into the same column.
  */
 export function redactWhatsAppSecrets(message: string): string {
-  const secrets = [process.env.EVOLUTION_API_KEY, process.env.SESSION_SECRET, process.env.CRON_SECRET].filter(
-    (value): value is string => typeof value === 'string' && value.length > 6,
+  const secrets = [
+    process.env.EVOLUTION_API_KEY,
+    process.env.SESSION_SECRET,
+    process.env.CRON_SECRET,
+    process.env.OPENAI_API_KEY,
+  ].filter((value): value is string => typeof value === 'string' && value.length > 6);
+
+  const withoutSecrets = secrets.reduce((acc, secret) => acc.split(secret).join('«redacted»'), message);
+
+  /*
+   * Signed media links, too. They are not environment secrets, but a gateway
+   * that echoes the request URL back in an error body would otherwise persist a
+   * live, replayable poster token into `CampaignDelivery.failureReason` — which
+   * the console then renders. The token is worthless to an operator reading a
+   * failure, so it goes.
+   */
+  return withoutSecrets.replace(
+    /\/api\/campaign-media\/[0-9a-fA-F-]{36}~\d+~[0-9a-f]+/g,
+    '/api/campaign-media/«redacted»',
   );
-  return secrets.reduce((acc, secret) => acc.split(secret).join('«redacted»'), message);
 }
 
 function hostOf(url: string): string {

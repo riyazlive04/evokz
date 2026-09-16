@@ -4,13 +4,14 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-import { AlertTriangle, Check, Eye, ImageOff, Loader2, Pause, Pencil, Play, RefreshCw, Search, Sparkles, Square, X } from 'lucide-react';
+import { AlertTriangle, Check, Eye, ImageOff, Loader2, Pause, Pencil, Play, RefreshCw, Search, Sparkles, Square, X, ServerCog } from 'lucide-react';
 
 import {
   approveCampaignDayPosterAction,
   changeCampaignStatusAction,
   generateCampaignDayPosterAction,
   planPosterBatchAction,
+  queueCampaignPostersAction,
 } from '@/app/admin/campaigns/actions';
 import { CampaignDayDetail } from '@/components/campaign/CampaignDayDetail';
 import { badgeVariants } from '@/components/ui/badge';
@@ -125,6 +126,8 @@ export function CampaignPosterGeneration({
   const generate = useAction(generateCampaignDayPosterAction);
   const approve = useAction(approveCampaignDayPosterAction);
   const statusAction = useAction(changeCampaignStatusAction);
+  const queueAction = useAction(queueCampaignPostersAction);
+  const [queueNotice, setQueueNotice] = React.useState<string | null>(null);
 
   const [plan, setPlan] = React.useState<PendingPlan | null>(null);
   const [run, setRun] = React.useState<RunState | null>(null);
@@ -277,6 +280,8 @@ export function CampaignPosterGeneration({
         </div>
       )}
 
+      {queueNotice && <p className="text-[12px] text-muted-foreground">{queueNotice}</p>}
+
       {/* ---- Actions ---- */}
       {!closed && (
         <div className="space-y-2">
@@ -287,6 +292,33 @@ export function CampaignPosterGeneration({
             </Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => void preparePlan(`Generate missing (next ${windowDays} days)`, { mode: 'missing' })}>
               Generate Missing
+            </Button>
+            {/*
+              Hand the batch to the server instead of running it here (Phase 7).
+              The days are marked QUEUED and the cron sweep generates them, so
+              this tab may be closed — which is the whole point of the button.
+            */}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy || queueAction.pending}
+              onClick={async () => {
+                const result = await queueAction.run(campaignId, { mode: 'upcoming' });
+                if (result.ok) {
+                  const count = result.data.queued.length;
+                  setQueueNotice(
+                    count > 0
+                      ? `Queued ${count} day${count === 1 ? '' : 's'}. The server will generate them — you can close this page.`
+                      : result.data.alreadyQueued.length > 0
+                        ? `${result.data.alreadyQueued.length} day(s) are already queued.`
+                        : 'Nothing eligible to queue.',
+                  );
+                  router.refresh();
+                }
+              }}
+            >
+              {queueAction.pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ServerCog className="h-4 w-4" />}
+              Queue on server
             </Button>
             <Button size="sm" variant={attentionOnly ? 'secondary' : 'outline'} disabled={running} onClick={() => setAttentionOnly((value) => !value)}>
               <Search className="h-4 w-4" />

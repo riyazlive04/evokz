@@ -32,6 +32,8 @@
     "check:campaign-review-db": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-campaign-review-db.ts",
     "check:campaign-delivery": "tsx --tsconfig scripts/tsconfig.json scripts/check-campaign-delivery.ts",
     "check:campaign-delivery-db": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-campaign-delivery-db.ts",
+    "check:campaign-operations": "tsx --tsconfig scripts/tsconfig.json scripts/check-campaign-operations.ts",
+    "check:campaign-operations-db": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/check-campaign-operations-db.ts",
     "measure": "tsx --tsconfig scripts/tsconfig.json scripts/measure-reference.ts",
     "sheet": "tsx --tsconfig scripts/tsconfig.json scripts/build-vertical-sheet.ts",
     "layout:apply": "tsx --env-file=.env --tsconfig scripts/tsconfig.json scripts/apply-authored-layout.ts",

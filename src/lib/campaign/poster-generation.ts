@@ -169,6 +169,15 @@ export interface PosterEligibilityInput {
   generationStartedAt: Date | null;
   dayRevision: number;
   activeVersion: { contentRevision: number } | null;
+  /**
+   * The caller is the background worker draining the queue (Phase 7), so a day
+   * sitting in QUEUED is work to pick up rather than work in progress.
+   *
+   * Only relaxes the QUEUED case: a live GENERATING claim still blocks, which is
+   * what stops two workers taking the same day. Default false, so every
+   * interactive path behaves exactly as before.
+   */
+  acceptQueued?: boolean;
 }
 
 export type PosterEligibility =
@@ -206,7 +215,8 @@ export function evaluatePosterEligibility(input: PosterEligibilityInput): Poster
   if (input.campaignStatus !== 'ACTIVE') {
     return blocked('campaign-not-active', `The campaign is ${input.campaignStatus.toLowerCase()} — activate it to generate posters.`);
   }
-  if (isGenerationInProgress(input.generationStatus, input.generationStartedAt, input.now)) {
+  const queuedForThisWorker = input.acceptQueued === true && input.generationStatus === 'QUEUED';
+  if (!queuedForThisWorker && isGenerationInProgress(input.generationStatus, input.generationStartedAt, input.now)) {
     return blocked('generating', 'A poster is being generated for this day.');
   }
   if (input.scheduledDate.getTime() < input.window.start.getTime()) {
@@ -388,6 +398,47 @@ export interface CampaignPosterContent {
   supportingText: string | null;
   cta: string | null;
   imagePrompt: string;
+  /**
+   * The review note on the poster this one replaces, when that poster was
+   * rejected (Phase 7 §15). Only the note being fixed — never a history.
+   */
+  previousRejection?: string | null;
+}
+
+/** The longest rejection guidance that may reach the model. */
+export const MAX_REJECTION_GUIDANCE = 200;
+
+/**
+ * Turns an operator's rejection note into one instruction for the next attempt,
+ * or null when there is nothing safe or useful to say.
+ *
+ * **Sanitised on the way out, because this is free text an operator typed.** A
+ * note may contain anything they had to hand — a Drive link, a day id pasted
+ * from a URL, a phone number — and none of that belongs in a prompt. Identifiers
+ * and links are stripped rather than the note rejected, so a useful comment with
+ * a stray id still helps.
+ *
+ * Only the note on the version being replaced is ever used: not earlier
+ * rejections, not the approval history, not who reviewed it.
+ */
+export function rejectionGuidance(note: string | null | undefined): string | null {
+  if (!note) return null;
+
+  const cleaned = note
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '') // uuids
+    .replace(/https?:\/\/\S+/gi, '') // links, including Drive
+    .replace(/\b[\w.-]+@[\w.-]+\.\w+\b/g, '') // email addresses
+    .replace(/\b\d{7,}\b/g, '') // phone numbers and long id runs
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Punctuation alone is not a review comment.
+  if (cleaned.replace(/[^\p{L}\p{N}]/gu, '').length < 3) return null;
+
+  const trimmed =
+    cleaned.length <= MAX_REJECTION_GUIDANCE ? cleaned : `${cleaned.slice(0, MAX_REJECTION_GUIDANCE - 1).trimEnd()}…`;
+  return `The previous version of this poster was rejected in review for: ${trimmed}. Fix that specifically, and do not repeat it.`;
 }
 
 /**
@@ -417,6 +468,8 @@ export function buildCampaignPosterBrief(content: CampaignPosterContent): string
     headline || supporting || cta
       ? 'Use exactly the headline, supporting text and call to action above as the poster’s wording, and no other text.'
       : null,
+    // Last, so it reads as a correction to everything above it.
+    rejectionGuidance(content.previousRejection),
   ].filter((line): line is string => Boolean(line));
 
   const brief = lines.join('\n');

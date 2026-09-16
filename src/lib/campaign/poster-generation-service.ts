@@ -344,10 +344,17 @@ export async function loadPosterOverview(db: CampaignDb, campaignId: string, opt
 }
 
 /** One day's eligibility under one request — what a per-day Generate or Regenerate button would do. */
-export function eligibilityFor(overview: PosterOverview, day: PosterDay, mode: PosterRequestMode, explicit: boolean): PosterEligibility {
+export function eligibilityFor(
+  overview: PosterOverview,
+  day: PosterDay,
+  mode: PosterRequestMode,
+  explicit: boolean,
+  options: { acceptQueued?: boolean } = {},
+): PosterEligibility {
   return evaluatePosterEligibility({
     mode,
     explicit,
+    acceptQueued: options.acceptQueued,
     now: overview.now,
     window: overview.window,
     campaignStatus: overview.campaign.status,
@@ -446,6 +453,11 @@ export interface GenerateDayPosterOptions extends PosterLoadOptions {
   /** The operator named this day or its range; the rolling window does not apply. */
   explicit?: boolean;
   deps?: PosterGenerationDeps;
+  /**
+   * Take a day that is already QUEUED (Phase 7). Set only by the background
+   * worker: an interactive caller must leave a queued day to the queue.
+   */
+  acceptQueued?: boolean;
 }
 
 /**
@@ -474,7 +486,9 @@ export async function generateCampaignDayPoster(
   const day = overview.days.find((candidate) => candidate.id === dayId);
   if (!day) throw new CampaignDomainError('not-found', 'That day is not part of this campaign.');
 
-  const eligibility = eligibilityFor(overview, day, options.mode, options.explicit ?? false);
+  const eligibility = eligibilityFor(overview, day, options.mode, options.explicit ?? false, {
+    acceptQueued: options.acceptQueued,
+  });
   if (!eligibility.eligible) {
     return { outcome: 'skipped', dayNumber: day.dayNumber, reason: eligibility.reason, message: eligibility.message };
   }
@@ -489,7 +503,7 @@ export async function generateCampaignDayPoster(
   }
 
   const startedAt = options.now ?? new Date();
-  if (!(await claimDay(db, campaignId, day, startedAt))) {
+  if (!(await claimDay(db, campaignId, day, startedAt, { acceptQueued: options.acceptQueued }))) {
     return { outcome: 'skipped', dayNumber: day.dayNumber, reason: 'conflict', message: 'This day changed or started generating meanwhile. Refresh and try again.' };
   }
 
@@ -521,7 +535,17 @@ export async function generateCampaignDayPoster(
       );
     }
 
-    const brief = buildCampaignPosterBrief(day);
+    /*
+     * Regenerating a rejected poster carries the reviewer's reason into the new
+     * attempt (Phase 7 §15) — but only when the version being replaced is the
+     * one that was rejected, and only that note. An approved or merely outdated
+     * poster contributes nothing, and no earlier rejection is ever resurfaced.
+     */
+    const brief = buildCampaignPosterBrief({
+      ...day,
+      previousRejection:
+        day.activeVersion?.approvalStatus === 'REJECTED' ? day.activeVersion.reviewNote : null,
+    });
     const sentPrompt = buildGeneratePrompt({
       brief,
       aspectRatio,
@@ -639,7 +663,13 @@ export async function generateCampaignDayPoster(
  * transition table. The first update restates what eligibility was decided on,
  * so a concurrent change or claim makes it match no row.
  */
-async function claimDay(db: CampaignDb, campaignId: string, day: PosterDay, startedAt: Date): Promise<boolean> {
+async function claimDay(
+  db: CampaignDb,
+  campaignId: string,
+  day: PosterDay,
+  startedAt: Date,
+  options: { acceptQueued?: boolean } = {},
+): Promise<boolean> {
   let from: PosterGenerationStatus = day.generationStatus ?? 'NOT_REQUESTED';
   if (from === 'GENERATING') {
     const released = await db.contentCalendar.updateMany({
@@ -649,7 +679,21 @@ async function claimDay(db: CampaignDb, campaignId: string, day: PosterDay, star
     if (released.count === 0) return false;
     from = 'FAILED';
   }
-  if (from === 'QUEUED') return false;
+  if (from === 'QUEUED') {
+    /*
+     * A day already QUEUED is a request waiting for a worker (Phase 7). Only the
+     * background worker may take it — `acceptQueued` is how it says so — and it
+     * takes it with the same conditional update everything else uses, so two
+     * workers still cannot claim the same day. An interactive caller refuses, as
+     * it always has, because the queue is about to run it anyway.
+     */
+    if (!options.acceptQueued) return false;
+    const claimed = await db.contentCalendar.updateMany({
+      where: { id: day.id, campaignId, generationStatus: 'QUEUED', campaign: { status: 'ACTIVE' } },
+      data: { generationStatus: 'GENERATING', posterGenerationStartedAt: startedAt },
+    });
+    return claimed.count === 1;
+  }
 
   const queued = await db.contentCalendar.updateMany({
     where: {

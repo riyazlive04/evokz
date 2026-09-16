@@ -121,7 +121,7 @@ export function CampaignDeliveryQueue({
   ];
 
   async function runSendNow(dayId: string) {
-    const result = await sendNow.run(dayId);
+    const result = await sendNow.run(campaignId, dayId);
     if (result.ok) {
       setNotice(
         result.data.ok
@@ -237,6 +237,12 @@ export function CampaignDeliveryQueue({
                       <img
                         src={studioImageUrl(day.generationId, { width: 96 })}
                         alt=""
+                        /*
+                         * Lazy, and load-bearing: every thumbnail is a Drive
+                         * download plus a re-encode on the server. Eager loading
+                         * a 365-day campaign would ask for 365 of them at once.
+                         */
+                        loading="lazy"
                         className="h-full w-full object-cover"
                       />
                     ) : (
@@ -279,7 +285,7 @@ export function CampaignDeliveryQueue({
                       variant="ghost"
                       disabled={cancel.pending}
                       onClick={async () => {
-                        const result = await cancel.run(day.dayId);
+                        const result = await cancel.run(campaignId, day.dayId);
                         if (result.ok) router.refresh();
                       }}
                     >
@@ -293,7 +299,7 @@ export function CampaignDeliveryQueue({
                       variant="outline"
                       disabled={retry.pending}
                       onClick={async () => {
-                        const result = await retry.run(day.dayId);
+                        const result = await retry.run(campaignId, day.dayId);
                         if (result.ok) router.refresh();
                       }}
                     >

@@ -6,6 +6,7 @@ import {
   canRetryDelivery,
   DELIVERY_STATUS_LABELS,
   deliveryInstant,
+  deliverySpreadSeconds,
   evaluateDeliveryEligibility,
   isDue,
   isMissed,
@@ -146,6 +147,17 @@ interface CandidateSource {
   } | null;
 }
 
+/**
+ * When a day should go out: its configured moment plus a stable per-day spread,
+ * so a fleet sharing one delivery time does not hand the provider everything in
+ * the same second (Phase 7 §7). The offset is derived from the day id, so it
+ * never moves between runs.
+ */
+function scheduledInstantFor(dayId: string, scheduledDate: Date, deliveryTime: string, timeZone: string): Date {
+  const base = deliveryInstant(scheduledDate, deliveryTime, timeZone);
+  return new Date(base.getTime() + deliverySpreadSeconds(dayId) * 1000);
+}
+
 async function loadDeliveryDay(db: CampaignDb, dayId: string): Promise<DeliveryDayRow> {
   const day = await db.contentCalendar.findUnique({ where: { id: dayId }, select: deliveryDaySelect });
   if (!day) throw new CampaignDomainError('not-found', 'Campaign day does not exist.');
@@ -225,7 +237,7 @@ export async function scheduleCampaignDeliveries(
   const groups = new Map<DeliveryRefusal, { reason: DeliveryRefusal; message: string; dayNumbers: number[] }>();
 
   for (const day of days) {
-    const scheduledFor = deliveryInstant(day.scheduledDate, campaign.deliveryTime, deps.timeZone);
+    const scheduledFor = scheduledInstantFor(day.id, day.scheduledDate, campaign.deliveryTime, deps.timeZone);
     const existing = day.delivery;
 
     // ---- Keep an existing booking consistent (§8, §17) ---------------------
@@ -363,7 +375,7 @@ export async function sendCampaignDelivery(
   if (!delivery) {
     // Send Now on an unbooked day books it first, through the same rules.
     if (!options.manual) return refuse('not-due', 'This day has no delivery booked.');
-    const scheduledFor = deliveryInstant(day.scheduledDate, day.campaign!.deliveryTime, deps.timeZone);
+    const scheduledFor = scheduledInstantFor(day.id, day.scheduledDate, day.campaign!.deliveryTime, deps.timeZone);
     try {
       const created = await db.campaignDelivery.create({
         data: {
@@ -647,7 +659,7 @@ export async function rescheduleCampaignDelivery(
   const eligibility = evaluateDeliveryEligibility({ ...candidateFrom(day, deps), delivery: null }, deps.now());
   if (!eligibility.eligible) throw new CampaignDomainError('invalid-transition', eligibility.message);
 
-  const scheduledFor = deliveryInstant(day.scheduledDate, day.campaign!.deliveryTime, deps.timeZone);
+  const scheduledFor = scheduledInstantFor(day.id, day.scheduledDate, day.campaign!.deliveryTime, deps.timeZone);
   await db.campaignDelivery.upsert({
     where: { calendarDayId: dayId },
     create: {

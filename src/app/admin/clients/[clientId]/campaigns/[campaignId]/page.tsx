@@ -1,13 +1,14 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { AlertTriangle, ArrowLeft, CalendarRange, CheckCircle2, CircleDashed, ClipboardCheck, ImageOff, Images, LayoutTemplate, PencilLine, Send } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowLeft, CalendarRange, CheckCircle2, CircleDashed, ClipboardCheck, ImageOff, Images, LayoutTemplate, PencilLine, Send } from 'lucide-react';
 
 import { PageHeader } from '@/components/admin/PageHeader';
 import { StatTile } from '@/components/admin/StatTile';
 import { CampaignCalendar, type CampaignDayView } from '@/components/campaign/CampaignCalendar';
 import { CampaignPosterGeneration, type PosterDayView } from '@/components/campaign/CampaignPosterGeneration';
 import { CampaignDeliveryQueue, type DeliveryDayViewModel } from '@/components/campaign/CampaignDeliveryQueue';
+import { CampaignHealthPanel, type HealthRow, type UsageView } from '@/components/campaign/CampaignHealthPanel';
 import { CampaignReviewQueue, type ReviewDayView } from '@/components/campaign/CampaignReviewQueue';
 import {
   CampaignTemplateMapping,
@@ -24,6 +25,8 @@ import { eligibilityFor, loadPosterOverview } from '@/lib/campaign/poster-genera
 import { APPROVAL_REFUSAL_MESSAGES, approvalRefusal, describeReadiness, isReviewFilter } from '@/lib/campaign/review';
 import { describeDelivery, isDeliveryFilter } from '@/lib/campaign/delivery';
 import { defaultDeliveryDeps, loadCampaignDeliveryOverview } from '@/lib/campaign/delivery-service';
+import { loadCampaignHealth } from '@/lib/campaign/operations';
+import { formatInr, formatUsd, microsToInr, microsToUsd } from '@/lib/pricing';
 import { buildReview } from '@/lib/campaign/review-service';
 import { aspectFit, describeAspect } from '@/lib/campaign/template-mapping';
 import { prisma } from '@/lib/prisma';
@@ -102,8 +105,16 @@ export default async function CampaignCalendarPage({
   const { strategy, source } = resolveContentStrategy(campaign.category.contentStrategy);
   const dateFormat = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone });
 
-  // ---- Posters (Phase 4), which also carries the template mapping (Phase 3) ---
-  const posters = await loadPosterOverview(prisma, campaign.id, { timeZone });
+  /*
+   * Posters (Phase 4, which also carries the Phase 3 template mapping), delivery
+   * (Phase 6) and health (Phase 7) are mutually independent reads of the same
+   * campaign, so they run together rather than one after another (Phase 7 §22).
+   */
+  const [posters, delivery, health] = await Promise.all([
+    loadPosterOverview(prisma, campaign.id, { timeZone }),
+    loadCampaignDeliveryOverview(prisma, campaign.id, defaultDeliveryDeps({ timeZone })),
+    loadCampaignHealth(prisma, campaign.id, { timeZone }),
+  ]);
   const mapping = posters.mapping;
 
   const quietReasons = new Set(['campaign-not-active', 'campaign-closed', 'unsupported-aspect', 'brand-canvas-unavailable', 'already-generated']);
@@ -144,6 +155,22 @@ export default async function CampaignCalendarPage({
   ].filter((blocker): blocker is string => blocker !== null);
   const windowLabel = `${formatDisplayDate(posters.window.start, timeZone)} → ${formatDisplayDate(new Date(posters.window.end.getTime() - 1), timeZone)} · ${posters.studioAspect ?? posters.targetAspectLabel} posters · ${posters.campaign.approvalPolicy === 'AUTO_APPROVE' ? 'approved automatically' : 'manual approval'}`;
 
+  // ---- Health and the needs-attention queue (Phase 7) --------------------------
+  const basePath = `/admin/clients/${campaign.client.id}/campaigns/${campaign.id}`;
+  const healthRows: HealthRow[] = [
+    { label: 'Content', done: health.content.done, total: health.content.total, href: '?review=all', note: health.content.needsReview > 0 ? `${health.content.needsReview} need review` : undefined },
+    { label: 'Templates', done: health.templates.done, total: health.templates.total, href: '?review=unmapped', note: health.templates.unmapped > 0 ? `${health.templates.unmapped} unmapped` : undefined },
+    { label: 'Posters', done: health.posters.done, total: health.posters.total, href: '?review=all', note: `next ${posters.window.days} days` },
+    { label: 'Approved', done: health.posters.approved, total: health.posters.total, href: '?review=needs-review', note: health.posters.needsApproval > 0 ? `${health.posters.needsApproval} awaiting review` : undefined },
+    { label: 'Delivered', done: health.delivery.sent, total: health.delivery.total, href: '?delivery=sent', note: health.delivery.failed > 0 ? `${health.delivery.failed} failed` : undefined },
+  ];
+  const usageView: UsageView = {
+    generations: health.usage.generations,
+    estimatedCost: health.usage.costUsdMicros > 0 ? `${formatUsd(microsToUsd(health.usage.costUsdMicros))} · ${formatInr(microsToInr(health.usage.costUsdMicros))}` : null,
+    unpriced: health.usage.unpriced,
+    messages: health.usage.messages,
+  };
+
   // ---- Review and approval (Phase 5), from the overview already loaded --------
   const review = buildReview(posters);
   const requestedFilter = typeof searchParams?.review === 'string' ? searchParams.review : '';
@@ -171,8 +198,7 @@ export default async function CampaignCalendarPage({
 
   // ---- Delivery (Phase 6) ------------------------------------------------------
   // Read-only: this page never books or sends. The queue's own buttons do, and
-  // each goes through the server-side gate.
-  const delivery = await loadCampaignDeliveryOverview(prisma, campaign.id, defaultDeliveryDeps({ timeZone }));
+  // each goes through the server-side gate. Loaded above, with the rest.
   const requestedDeliveryFilter = typeof searchParams?.delivery === 'string' ? searchParams.delivery : '';
   const deliveryDays: DeliveryDayViewModel[] = delivery.days.map((day) => ({
     dayId: day.dayId,
@@ -305,6 +331,29 @@ export default async function CampaignCalendarPage({
           tone={postersOutdated > 0 ? 'amber' : 'slate'}
         />
       </section>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Activity className="h-4 w-4 text-brand-to" />
+            Campaign health
+          </CardTitle>
+          <CardDescription>
+            Where this campaign stands, and everything that needs a decision — each one a link to the day that needs it.
+            AI spend is estimated from recorded tokens and the configured rate card, never from a provider invoice.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CampaignHealthPanel
+            rows={healthRows}
+            usage={usageView}
+            attention={health.attention}
+            attentionTotal={health.attention.length}
+            basePath={basePath}
+            queued={health.posters.queued}
+          />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

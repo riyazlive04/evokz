@@ -121,7 +121,7 @@ async function suite(): Promise<void> {
   const { loadStudioBrandCanvas } = await import('@/lib/poster-studio/brand-context');
   const { startOfZonedDay } = await import('@/lib/time');
   const { WhatsAppError } = await import('@/lib/whatsapp');
-  const { deliveryInstant } = await import('@/lib/campaign/delivery');
+  const { deliveryInstant, deliverySpreadSeconds } = await import('@/lib/campaign/delivery');
   const { CampaignDomainError, changeCampaignStatus, createCampaign, updateCampaignDayContent } = service;
   type Deps = import('@/lib/campaign/poster-generation-service').PosterGenerationDeps;
   type DeliveryDeps = import('@/lib/campaign/delivery-service').DeliveryDeps;
@@ -278,9 +278,15 @@ async function suite(): Promise<void> {
     t('a booking pins the exact approved version', first?.posterVersionId === (await dayRow(1)).activePosterVersionId);
     t('a booking starts SCHEDULED with no attempts', first?.status === 'SCHEDULED' && first.attempts === 0 && first.sentAt === null);
 
-    // Day 1 is today; its moment is today's deliveryTime in the app timezone.
-    const expected = deliveryInstant((await dayRow(1)).scheduledDate, '09:00', TZ);
-    t('the moment is the day at the campaign delivery time, in the app timezone', first?.scheduledFor.getTime() === expected.getTime(), `${first?.scheduledFor.toISOString()} vs ${expected.toISOString()}`);
+    /*
+     * Day 1 is today; its moment is today's deliveryTime in the app timezone,
+     * plus the deterministic per-day spread added in Phase 7 so a fleet sharing
+     * one delivery minute does not burst.
+     */
+    const base = deliveryInstant((await dayRow(1)).scheduledDate, '09:00', TZ);
+    const offset = (first!.scheduledFor.getTime() - base.getTime()) / 1000;
+    t('the moment is the day at the campaign delivery time, in the app timezone', offset >= 0 && offset < 600, `${first?.scheduledFor.toISOString()} is base + ${offset}s`);
+    t('…offset by exactly the deterministic spread for this day', offset === deliverySpreadSeconds(first!.calendarDayId));
 
     const again = await delivery.scheduleCampaignDeliveries(tx, campaignId, deliveryDeps());
     t('re-running books nothing new', again.scheduled.length === 0);
@@ -360,7 +366,7 @@ async function suite(): Promise<void> {
     const paused = await delivery.sendCampaignDelivery(tx, (await dayRow(1)).id, deliveryDeps(), { manual: true });
     t('Send Now is refused while paused', !paused.ok && paused.reason === 'campaign-not-active');
 
-    clock = deliveryInstant((await dayRow(1)).scheduledDate, '09:00', TZ);
+    clock = (await deliveryOf(1))!.scheduledFor;
     const sweep = await delivery.runDueCampaignDeliveries(tx, deliveryDeps());
     t('the sweep sends nothing for a paused campaign', sweep.sent.length === 0);
     t('no provider call was made while paused', sent.length === before);
@@ -376,7 +382,7 @@ async function suite(): Promise<void> {
   {
     const usageBefore = await tx.usageEvent.count({ where: { provider: 'EVOLUTION' } });
     const day1 = await dayRow(1);
-    clock = deliveryInstant(day1.scheduledDate, '09:00', TZ);
+    clock = (await deliveryOf(1))!.scheduledFor;
 
     const result = await delivery.sendCampaignDelivery(tx, day1.id, deliveryDeps());
     t('the day is sent', result.ok && result.dayNumber === 1, snapshot(result));
@@ -444,7 +450,7 @@ async function suite(): Promise<void> {
   // =======================================================================
   {
     const day3 = await dayRow(3);
-    clock = deliveryInstant(day3.scheduledDate, '09:00', TZ);
+    clock = (await deliveryOf(3))!.scheduledFor;
 
     nextFailure = new WhatsAppError('provider', 'evolution.invalid responded 503 Service Unavailable: busy', true, 503);
     const failed = await delivery.sendCampaignDelivery(tx, day3.id, deliveryDeps(), { manual: true });
@@ -505,7 +511,7 @@ async function suite(): Promise<void> {
     t('the new version is active and not approved', afterRegen.activePosterVersionId !== pinned);
 
     const before = sent.length;
-    clock = deliveryInstant(afterRegen.scheduledDate, '09:00', TZ);
+    clock = (await deliveryOf(5))?.scheduledFor ?? deliveryInstant(afterRegen.scheduledDate, '09:00', TZ);
     const result = await delivery.sendCampaignDelivery(tx, day5.id, deliveryDeps(), { manual: true });
     t('the stale booking refuses rather than sending either version', !result.ok && (result.reason === 'version-changed' || result.reason === 'awaiting-approval'), snapshot(result));
     t('nothing went out', sent.length === before);
@@ -539,12 +545,13 @@ async function suite(): Promise<void> {
 
     const before = sent.length;
     // Just before day 1's moment: nothing is due.
-    clock = new Date(deliveryInstant(d1.scheduledDate, '18:30', TZ).getTime() - 60_000);
+    const d1Booking = await tx.campaignDelivery.findUniqueOrThrow({ where: { calendarDayId: d1.id } });
+    clock = new Date(d1Booking.scheduledFor.getTime() - 60_000);
     const early = await delivery.runDueCampaignDeliveries(tx, deliveryDeps());
     t('nothing is sent before its moment', early.sent.length === 0 && sent.length === before);
 
     // At day 1's moment: exactly day 1 goes.
-    clock = deliveryInstant(d1.scheduledDate, '18:30', TZ);
+    clock = d1Booking.scheduledFor;
     const due = await delivery.runDueCampaignDeliveries(tx, deliveryDeps());
     t('the day whose moment arrived is sent', due.sent.includes(1), snapshot(due.sent));
     t('exactly one message went out', sent.length === before + 1);
@@ -555,7 +562,7 @@ async function suite(): Promise<void> {
     t('a second sweep in the same minute sends nothing', again.sent.length === 0 && sent.length === before + 1);
 
     // A day whose local date has passed is skipped, not sent late.
-    clock = new Date(deliveryInstant(d2.scheduledDate, '18:30', TZ).getTime() + 36 * 3_600_000);
+    clock = new Date((await tx.campaignDelivery.findUniqueOrThrow({ where: { calendarDayId: d2.id } })).scheduledFor.getTime() + 36 * 3_600_000);
     await delivery.scheduleCampaignDeliveries(tx, futureCampaign, deliveryDeps());
     const missed = await tx.campaignDelivery.findUniqueOrThrow({ where: { calendarDayId: d2.id } });
     t('a delivery whose day has passed is SKIPPED, not sent late', missed.status === 'SKIPPED', missed.status);
@@ -567,18 +574,26 @@ async function suite(): Promise<void> {
   // =======================================================================
   {
     const day6 = await dayRow(6); // still rejected
-    const refused = await asAction(() => campaignActions.sendCampaignDayNowAction(day6.id));
+    const refused = await asAction(() => campaignActions.sendCampaignDayNowAction(campaignId, day6.id));
     t('the Send Now action refuses a rejected poster', refused.ok && !refused.data.ok && refused.data.reason === 'poster-rejected');
 
     const day3 = await dayRow(3); // already SENT
-    const cancelled = await asAction(() => campaignActions.cancelCampaignDeliveryAction(day3.id));
+    const cancelled = await asAction(() => campaignActions.cancelCampaignDeliveryAction(campaignId, day3.id));
     t('cancelling a sent day is refused', !cancelled.ok);
 
     const scheduleResult = await asAction(() => campaignActions.scheduleCampaignDeliveriesAction(campaignId));
     t('the schedule action returns a plan and sends nothing', scheduleResult.ok);
 
-    const badId = await asAction(() => campaignActions.sendCampaignDayNowAction('not-a-uuid'));
+    const badId = await asAction(() => campaignActions.sendCampaignDayNowAction(campaignId, 'not-a-uuid'));
     t('a malformed id is rejected by the action', !badId.ok);
+
+    // Phase 7: a day from another campaign cannot be delivered through this one.
+    const otherCampaign = await readyCampaign((await makeClient('Other tenant')).id);
+    const otherDay = (await service.findCampaignDay(tx, otherCampaign, 1))!;
+    const crossed = await asAction(() => campaignActions.sendCampaignDayNowAction(campaignId, otherDay.id));
+    t("another campaign's day is refused by the send action", !crossed.ok && /not part of this campaign/i.test(crossed.ok ? '' : crossed.error));
+    const crossedCancel = await asAction(() => campaignActions.cancelCampaignDeliveryAction(campaignId, otherDay.id));
+    t("…and by the cancel action", !crossedCancel.ok);
   }
 
   // =======================================================================

@@ -40,6 +40,11 @@ import {
   type ScheduleOutcome,
   type SendOutcome,
 } from '@/lib/campaign/delivery-service';
+import {
+  cancelQueuedGeneration,
+  queueCampaignPosters,
+  type QueueOutcome,
+} from '@/lib/campaign/generation-queue';
 import { MAX_REJECTION_DETAIL } from '@/lib/campaign/review';
 import {
   approveCampaignDayPosters,
@@ -546,15 +551,38 @@ export async function scheduleCampaignDeliveriesAction(
 }
 
 /**
+ * Confirms a day belongs to the campaign the caller named (Phase 7).
+ *
+ * The console has one shared login, so this is not an authorization boundary —
+ * it is blast radius. `sendCampaignDayNowAction` is the one action that puts a
+ * message on a real client's phone, and taking the pair makes a stale tab or a
+ * mistyped id unable to deliver another client's day. Poster generation has
+ * required the pair since Phase 4; delivery now matches it.
+ */
+async function assertDayInCampaign(campaignId: string, dayId: string): Promise<void> {
+  const day = await prisma.contentCalendar.findFirst({
+    where: { id: dayId, campaignId },
+    select: { id: true },
+  });
+  if (!day) throw new CampaignDomainError('not-found', 'That day is not part of this campaign.');
+}
+
+/**
  * Send Now for one day.
  *
  * The only gate this relaxes is the scheduled moment. Approval, the active
  * version, campaign status, the recipient and the one-delivery-per-day
  * constraint all still apply, server-side.
  */
-export async function sendCampaignDayNowAction(dayId: string): Promise<ActionResult<SendOutcome>> {
+export async function sendCampaignDayNowAction(
+  campaignId: string,
+  dayId: string,
+): Promise<ActionResult<SendOutcome>> {
   try {
-    const outcome = await sendCampaignDelivery(prisma, uuid.parse(dayId), defaultDeliveryDeps(), { manual: true });
+    const campaign = uuid.parse(campaignId);
+    const day = uuid.parse(dayId);
+    await assertDayInCampaign(campaign, day);
+    const outcome = await sendCampaignDelivery(prisma, day, defaultDeliveryDeps(), { manual: true });
     revalidateAdmin();
     // A refusal is a result, not an error: the caller shows the reason.
     return { ok: true, data: outcome };
@@ -564,9 +592,12 @@ export async function sendCampaignDayNowAction(dayId: string): Promise<ActionRes
 }
 
 /** Puts a failed, cancelled or skipped day back in the queue at its own time. */
-export async function retryCampaignDeliveryAction(dayId: string): Promise<ActionResult<null>> {
+export async function retryCampaignDeliveryAction(campaignId: string, dayId: string): Promise<ActionResult<null>> {
   try {
-    await rescheduleCampaignDelivery(prisma, uuid.parse(dayId));
+    const campaign = uuid.parse(campaignId);
+    const day = uuid.parse(dayId);
+    await assertDayInCampaign(campaign, day);
+    await rescheduleCampaignDelivery(prisma, day);
     revalidateAdmin();
     return { ok: true, data: null };
   } catch (error) {
@@ -575,12 +606,57 @@ export async function retryCampaignDeliveryAction(dayId: string): Promise<Action
 }
 
 /** Withdraws a booking that has not gone out. A sent day is never touched. */
-export async function cancelCampaignDeliveryAction(dayId: string): Promise<ActionResult<null>> {
+export async function cancelCampaignDeliveryAction(campaignId: string, dayId: string): Promise<ActionResult<null>> {
   try {
-    await cancelCampaignDelivery(prisma, uuid.parse(dayId));
+    const campaign = uuid.parse(campaignId);
+    const day = uuid.parse(dayId);
+    await assertDayInCampaign(campaign, day);
+    await cancelCampaignDelivery(prisma, day);
     revalidateAdmin();
     return { ok: true, data: null };
   } catch (error) {
     return toFailure(error, 'Cancelling the delivery');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Server-side poster generation (Phase 7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Queues a batch for the server to generate, and returns immediately.
+ *
+ * Nothing is rendered and nothing is billed here: the days are marked QUEUED and
+ * the cron sweep does the work, so the operator may close the tab. Queueing
+ * twice is safe — a day already waiting is reported, not queued again.
+ */
+export async function queueCampaignPostersAction(
+  campaignId: string,
+  request: { mode: 'upcoming' | 'missing' | 'regenerate'; fromDay?: number; toDay?: number },
+): Promise<ActionResult<QueueOutcome>> {
+  try {
+    const parsed = z
+      .object({
+        mode: z.enum(['upcoming', 'missing', 'regenerate']),
+        fromDay: z.number().int().min(1).max(730).optional(),
+        toDay: z.number().int().min(1).max(730).optional(),
+      })
+      .parse(request);
+    const outcome = await queueCampaignPosters(prisma, uuid.parse(campaignId), parsed);
+    revalidateAdmin();
+    return { ok: true, data: outcome };
+  } catch (error) {
+    return toFailure(error, 'Queueing the posters');
+  }
+}
+
+/** Withdraws queued days no worker has taken yet. Work in flight is left alone. */
+export async function cancelQueuedGenerationAction(campaignId: string): Promise<ActionResult<{ cancelled: number }>> {
+  try {
+    const cancelled = await cancelQueuedGeneration(prisma, uuid.parse(campaignId));
+    revalidateAdmin();
+    return { ok: true, data: { cancelled } };
+  } catch (error) {
+    return toFailure(error, 'Cancelling the queued generation');
   }
 }

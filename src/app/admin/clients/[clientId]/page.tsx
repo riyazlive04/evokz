@@ -39,7 +39,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { LEGACY_CALENDAR } from '@/lib/calendar-scope';
-import { loadCampaignReview } from '@/lib/campaign/review-service';
+import { loadClientCampaignAttention, type CampaignAttentionSummary } from '@/lib/campaign/operations';
 import { optionalEnv } from '@/lib/env';
 import {
   describeImageSize,
@@ -197,24 +197,22 @@ export default async function ClientDetailPage({
     statusCounts[group.deliveryStatus] = group._count._all;
   }
 
-  // Unresolved review work per campaign (Phase 5), so the card links straight to
-  // the filtered queue instead of leaving an operator to scan 365 days. One
-  // overview per campaign, and a client holds very few.
-  const campaignAttention = new Map<string, { needsReview: number; rejected: number; outdated: number; failed: number; unmapped: number; attention: number }>();
-  for (const campaign of campaigns) {
-    try {
-      const review = await loadCampaignReview(prisma, campaign.id);
-      campaignAttention.set(campaign.id, {
-        needsReview: review.summary.needsReview,
-        rejected: review.summary.rejected,
-        outdated: review.summary.outdated,
-        failed: review.summary.failed,
-        unmapped: review.summary.unmapped,
-        attention: review.summary.attention,
-      });
-    } catch (error) {
-      console.error('[client-page] could not load the review summary for', campaign.id, error);
-    }
+  /*
+   * Unresolved review work per campaign (Phase 5), so the card links straight to
+   * the filtered queue instead of leaving an operator to scan 365 days.
+   *
+   * One query for every campaign this client has (Phase 7). This used to run a
+   * full poster overview per campaign, serially — all days, all active versions,
+   * the whole template set and five eligibility evaluations per day — to print
+   * six integers. `loadClientCampaignAttention` derives the same numbers from
+   * the same `derivePosterState`, so a count here still cannot disagree with the
+   * queue it links to.
+   */
+  let campaignAttention = new Map<string, CampaignAttentionSummary>();
+  try {
+    campaignAttention = await loadClientCampaignAttention(prisma, client.id);
+  } catch (error) {
+    console.error('[client-page] could not load campaign attention counts', error);
   }
 
   const calendarCount = Object.values(statusCounts).reduce((sum, n) => sum + n, 0);
