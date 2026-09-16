@@ -520,7 +520,8 @@ model Campaign {
   /// for the next N days, not for the whole campaign. Not implemented yet.
   generationWindowDays Int                    @default(14)
 
-  days ContentCalendar[]
+  days       ContentCalendar[]
+  deliveries CampaignDelivery[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -690,6 +691,9 @@ model ContentCalendar {
   /// deleting the day itself still cascades.
   activePosterVersionId String?                 @unique
   activePosterVersion   PosterVersion?          @relation("ActivePosterVersion", fields: [activePosterVersionId, id], references: [id, calendarDayId], onDelete: NoAction, onUpdate: NoAction)
+  /// This day's one delivery record (Phase 6). At most one, ever — see
+  /// `CampaignDelivery.calendarDayId`.
+  delivery              CampaignDelivery?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -959,6 +963,9 @@ model PosterVersion {
   /// version's own day and `activePosterVersionId @unique` to one row, so it
   /// holds zero or one day.
   activeForDay ContentCalendar[] @relation("ActivePosterVersion")
+  /// Deliveries that reference this exact version (Phase 6). A list only
+  /// because the FK is not unique; in practice a day has at most one delivery.
+  deliveries   CampaignDelivery[]
 
   createdAt DateTime @default(now())
 
@@ -968,4 +975,93 @@ model PosterVersion {
   @@index([templateId])
   @@index([studioGenerationId])
   @@index([parentVersionId])
+}
+
+// ---------------------------------------------------------------------------
+// Campaign delivery (Phase 6)
+// ---------------------------------------------------------------------------
+
+/// A campaign day's delivery lifecycle.
+///
+/// There is no DELIVERED: Evolution GO returns an acknowledgement that the
+/// message was accepted, and this deployment receives no delivery receipts or
+/// webhooks, so "the recipient's phone got it" is not observable. SENT is the
+/// honest terminal success — the provider accepted the message.
+enum CampaignDeliveryStatus {
+  SCHEDULED // Booked for `scheduledFor`; nothing sent
+  SENDING // Claimed by one worker, provider call in flight
+  SENT // The provider accepted it. Terminal.
+  FAILED // The attempt failed; retryable unless `failurePermanent`
+  CANCELLED // Withdrawn before sending (campaign paused, version replaced)
+  SKIPPED // Its moment passed while it was ineligible. Terminal.
+}
+
+/// One campaign day's delivery to the client's WhatsApp number.
+///
+/// **One row per day, forever** — `calendarDayId` is unique, and that single
+/// constraint is the idempotency mechanism: a duplicate cron sweep, a second
+/// tab, a retry or a restart cannot create a second delivery for a day, and a
+/// row that reaches SENT is never sent again.
+///
+/// **The version is pinned, not looked up.** `posterVersionId` records the
+/// exact version that was approved when the delivery was booked. The sender
+/// re-checks that it is still the day's active version before calling the
+/// provider, so a poster regenerated after scheduling can never be sent in
+/// place of the approved one — the delivery is cancelled instead.
+///
+/// Recipient is deliberately absent: it is always the owning client's own
+/// `Client.whatsappNumber`, resolved at send time, exactly as the legacy
+/// dispatch sweep does. There is no audience or contact model in this product.
+model CampaignDelivery {
+  id String @id @default(uuid())
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  /// The day being delivered. Unique: see the note above.
+  calendarDayId String          @unique
+  calendarDay   ContentCalendar @relation(fields: [calendarDayId], references: [id], onDelete: Cascade)
+
+  /// The exact approved version this delivery is for. Cascade rather than
+  /// Restrict so deleting a day cannot deadlock against its own delivery row;
+  /// versions are never deleted in normal operation.
+  posterVersionId String
+  posterVersion   PosterVersion @relation(fields: [posterVersionId], references: [id], onDelete: Cascade)
+
+  status CampaignDeliveryStatus @default(SCHEDULED)
+  /// The instant it should go out: the day's date at the campaign's
+  /// `deliveryTime`, resolved in the app timezone.
+  scheduledFor DateTime
+
+  /// Provider calls made, including the one in flight. Bounded by
+  /// `MAX_DELIVERY_ATTEMPTS` in src/lib/campaign/delivery.ts.
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime?
+  /// Identifies the attempt holding the SENDING claim, so a finished attempt
+  /// cannot overwrite a newer one and a crashed attempt can be recognised as
+  /// stale. Mirrors `ContentCalendar.posterGenerationStartedAt` (Phase 4).
+  sendingStartedAt DateTime?
+
+  /// When the provider accepted the message.
+  sentAt DateTime?
+  /// The provider's message id, when it returns one. Null is normal: Evolution
+  /// GO does not always include one, and nothing depends on it.
+  providerMessageId String?
+
+  /// Operator-readable reason for the last failure or skip. Credentials are
+  /// redacted before this is written.
+  failureReason String? @db.Text
+  /// True when retrying would fail the same way (bad recipient, auth, config,
+  /// or an ambiguous timeout that may already have been sent). Blocks both the
+  /// automatic retry and the operator's Retry button.
+  failurePermanent Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Drives the sweep: "which deliveries are due now".
+  @@index([status, scheduledFor])
+  // Drives the campaign delivery dashboard.
+  @@index([campaignId, status])
+  @@index([posterVersionId])
 }

@@ -45,6 +45,11 @@ async function handle(request: NextRequest): Promise<NextResponse> {
       delivered: summary.delivered,
       failed: summary.failed,
       skipped: summary.skipped,
+      // Campaign delivery is its own queue; its counts would otherwise be
+      // invisible in a scheduler log that only reports the legacy totals.
+      campaignSent: summary.campaignSent,
+      campaignFailed: summary.campaignFailed,
+      campaignSkipped: summary.campaignSkipped,
       // Per-item detail stays terse: this response goes into scheduler logs.
       items: summary.items.map((item) => ({
         calendarId: item.calendarId,

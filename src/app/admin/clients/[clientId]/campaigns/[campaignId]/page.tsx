@@ -1,12 +1,13 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { AlertTriangle, ArrowLeft, CalendarRange, CheckCircle2, CircleDashed, ClipboardCheck, ImageOff, Images, LayoutTemplate, PencilLine } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CalendarRange, CheckCircle2, CircleDashed, ClipboardCheck, ImageOff, Images, LayoutTemplate, PencilLine, Send } from 'lucide-react';
 
 import { PageHeader } from '@/components/admin/PageHeader';
 import { StatTile } from '@/components/admin/StatTile';
 import { CampaignCalendar, type CampaignDayView } from '@/components/campaign/CampaignCalendar';
 import { CampaignPosterGeneration, type PosterDayView } from '@/components/campaign/CampaignPosterGeneration';
+import { CampaignDeliveryQueue, type DeliveryDayViewModel } from '@/components/campaign/CampaignDeliveryQueue';
 import { CampaignReviewQueue, type ReviewDayView } from '@/components/campaign/CampaignReviewQueue';
 import {
   CampaignTemplateMapping,
@@ -21,10 +22,12 @@ import { campaignAllowsChanges, isVersionCurrent } from '@/lib/campaign/model';
 import { POSTER_STATE_LABELS } from '@/lib/campaign/poster-generation';
 import { eligibilityFor, loadPosterOverview } from '@/lib/campaign/poster-generation-service';
 import { APPROVAL_REFUSAL_MESSAGES, approvalRefusal, describeReadiness, isReviewFilter } from '@/lib/campaign/review';
+import { describeDelivery, isDeliveryFilter } from '@/lib/campaign/delivery';
+import { defaultDeliveryDeps, loadCampaignDeliveryOverview } from '@/lib/campaign/delivery-service';
 import { buildReview } from '@/lib/campaign/review-service';
 import { aspectFit, describeAspect } from '@/lib/campaign/template-mapping';
 import { prisma } from '@/lib/prisma';
-import { describeDeliveryDays, formatDisplayDate, getAppTimeZone } from '@/lib/time';
+import { describeDeliveryDays, formatDisplayDate, formatDisplayDateTime, getAppTimeZone } from '@/lib/time';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,22 +35,26 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 /**
  * Campaign calendar (Phase 2 content, Phase 3 mapping, Phase 4 posters, Phase 5
- * review and approval).
+ * review and approval, Phase 6 delivery).
  *
- * Every day of the campaign with its content, template and poster. Review and
- * approval happen in `CampaignReviewQueue`, generation in
+ * Every day of the campaign with its content, template, poster and delivery.
+ * Review and approval happen in `CampaignReviewQueue`, generation in
  * `CampaignPosterGeneration`, mapping in `CampaignTemplateMapping`, content in
- * `CampaignCalendar`. Nothing on this page sends a message.
+ * `CampaignCalendar`, delivery in `CampaignDeliveryQueue`.
  *
- * `?review=<filter>` opens the queue on one filter, which is what the client
- * page's attention counts link to.
+ * This page itself sends nothing and books nothing: it only reads. The delivery
+ * queue's own buttons call server actions, and each of those re-runs the whole
+ * eligibility gate server-side before anything leaves.
+ *
+ * `?review=<filter>` and `?delivery=<filter>` open a queue on one filter, which
+ * is what the client page's attention counts link to.
  */
 export default async function CampaignCalendarPage({
   params,
   searchParams,
 }: {
   params: { clientId: string; campaignId: string };
-  searchParams?: { review?: string | string[] };
+  searchParams?: { review?: string | string[]; delivery?: string | string[] };
 }) {
   if (!UUID_PATTERN.test(params.clientId) || !UUID_PATTERN.test(params.campaignId)) notFound();
 
@@ -160,6 +167,34 @@ export default async function CampaignCalendarPage({
     inWindow: day.inWindow,
     unmapped: day.unmapped,
     activeVersionId: day.activeVersion?.id ?? null,
+  }));
+
+  // ---- Delivery (Phase 6) ------------------------------------------------------
+  // Read-only: this page never books or sends. The queue's own buttons do, and
+  // each goes through the server-side gate.
+  const delivery = await loadCampaignDeliveryOverview(prisma, campaign.id, defaultDeliveryDeps({ timeZone }));
+  const requestedDeliveryFilter = typeof searchParams?.delivery === 'string' ? searchParams.delivery : '';
+  const deliveryDays: DeliveryDayViewModel[] = delivery.days.map((day) => ({
+    dayId: day.dayId,
+    dayNumber: day.dayNumber,
+    dateLabel: dateFormat.format(day.scheduledDate),
+    headline: day.headline,
+    generationId: day.generationId,
+    versionNumber: day.versionNumber,
+    approvalStatus: day.approvalStatus,
+    status: day.status,
+    statusLabel: day.statusLabel,
+    scheduledForLabel: day.scheduledFor ? formatDisplayDateTime(day.scheduledFor, timeZone) : null,
+    attempts: day.attempts,
+    lastAttemptLabel: day.lastAttemptAt ? formatDisplayDateTime(day.lastAttemptAt, timeZone) : null,
+    sentAtLabel: day.sentAt ? formatDisplayDateTime(day.sentAt, timeZone) : null,
+    providerMessageId: day.providerMessageId,
+    failureReason: day.failureReason,
+    failurePermanent: day.failurePermanent,
+    refusal: day.refusal,
+    canSendNow: day.canSendNow,
+    canRetry: day.canRetry,
+    canCancel: day.canCancel,
   }));
 
   // ---- Template mapping --------------------------------------------------------
@@ -280,7 +315,7 @@ export default async function CampaignCalendarPage({
           <CardDescription>
             Every day&apos;s content, template and poster in one queue, with the decisions: approve the poster that
             represents the day, or send it back with a reason and edit or regenerate it. An outdated, rejected or failed
-            poster is never approved. Nothing is delivered from here — delivery is not implemented.
+            poster is never approved. Approving makes a day deliverable; the delivery card below is what sends it.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -292,6 +327,33 @@ export default async function CampaignCalendarPage({
             readiness={{ ...review.readiness, description: describeReadiness(review.readiness, posters.window.days) }}
             windowDays={posters.window.days}
             initialFilter={isReviewFilter(requestedFilter) ? requestedFilter : 'all'}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Send className="h-4 w-4 text-brand-to" />
+            Delivery
+          </CardTitle>
+          <CardDescription>
+            {describeDelivery(delivery.summary)} Only an approved, current poster is ever sent, each day is sent at most
+            once, and the campaign must be active. Every button here is checked again on the server before anything
+            leaves.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CampaignDeliveryQueue
+            campaignId={campaign.id}
+            days={deliveryDays}
+            summary={delivery.summary}
+            recipient={delivery.recipient}
+            whatsappConfigured={delivery.whatsappConfigured}
+            mediaConfigured={delivery.mediaConfigured}
+            deliveryTime={delivery.campaign.deliveryTime}
+            campaignActive={campaign.status === 'ACTIVE'}
+            initialFilter={isDeliveryFilter(requestedDeliveryFilter) ? requestedDeliveryFilter : 'all'}
           />
         </CardContent>
       </Card>

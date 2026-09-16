@@ -31,6 +31,15 @@ import {
   type GenerateDayPosterResult,
   type PosterBatchPlan,
 } from '@/lib/campaign/poster-generation-service';
+import {
+  cancelCampaignDelivery,
+  defaultDeliveryDeps,
+  rescheduleCampaignDelivery,
+  scheduleCampaignDeliveries,
+  sendCampaignDelivery,
+  type ScheduleOutcome,
+  type SendOutcome,
+} from '@/lib/campaign/delivery-service';
 import { MAX_REJECTION_DETAIL } from '@/lib/campaign/review';
 import {
   approveCampaignDayPosters,
@@ -52,16 +61,17 @@ import { prisma } from '@/lib/prisma';
 
 /**
  * Campaign calendar actions (Phase 2 content, Phase 3 template mapping, Phase 4
- * rolling poster generation, Phase 5 review and approval).
+ * rolling poster generation, Phase 5 review and approval, Phase 6 delivery).
  *
  * Thin wrappers over `src/lib/campaign`: parse the wire input, call one service,
  * map failures to operator copy. Behind the admin session like every other
  * action (`src/middleware.ts` gates `/admin/*`, which is where these POST).
  *
  * Only the Phase 4 poster actions render posters or write poster versions, and
- * none of these sends anything. The legacy calendar tools refuse campaign
- * clients (src/lib/calendar-scope.ts) — these are the campaign-specific actions
- * that explicitly target campaign days.
+ * only the Phase 6 delivery actions at the end of this file can send anything.
+ * The legacy calendar tools refuse campaign clients
+ * (src/lib/calendar-scope.ts) — these are the campaign-specific actions that
+ * explicitly target campaign days.
  */
 
 const uuid = z.string().uuid();
@@ -509,5 +519,68 @@ export async function loadCampaignDayReviewAction(dayId: string) {
     };
   } catch (error) {
     return toFailure(error, 'Loading the day');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Delivery (Phase 6)
+//
+// These are the only actions in this file that can put a message on the wire.
+// None of them decides whether a day may be sent: every one calls the delivery
+// service, which re-reads the campaign, the day and the active version from the
+// database and re-runs the full gate after claiming the row. An action cannot
+// bypass approval, and neither can a hand-made request to it.
+// ---------------------------------------------------------------------------
+
+/** Books deliveries for every day whose approved poster is ready. Sends nothing. */
+export async function scheduleCampaignDeliveriesAction(
+  campaignId: string,
+): Promise<ActionResult<ScheduleOutcome>> {
+  try {
+    const outcome = await scheduleCampaignDeliveries(prisma, uuid.parse(campaignId));
+    revalidateAdmin();
+    return { ok: true, data: outcome };
+  } catch (error) {
+    return toFailure(error, 'Scheduling delivery');
+  }
+}
+
+/**
+ * Send Now for one day.
+ *
+ * The only gate this relaxes is the scheduled moment. Approval, the active
+ * version, campaign status, the recipient and the one-delivery-per-day
+ * constraint all still apply, server-side.
+ */
+export async function sendCampaignDayNowAction(dayId: string): Promise<ActionResult<SendOutcome>> {
+  try {
+    const outcome = await sendCampaignDelivery(prisma, uuid.parse(dayId), defaultDeliveryDeps(), { manual: true });
+    revalidateAdmin();
+    // A refusal is a result, not an error: the caller shows the reason.
+    return { ok: true, data: outcome };
+  } catch (error) {
+    return toFailure(error, 'Sending the poster');
+  }
+}
+
+/** Puts a failed, cancelled or skipped day back in the queue at its own time. */
+export async function retryCampaignDeliveryAction(dayId: string): Promise<ActionResult<null>> {
+  try {
+    await rescheduleCampaignDelivery(prisma, uuid.parse(dayId));
+    revalidateAdmin();
+    return { ok: true, data: null };
+  } catch (error) {
+    return toFailure(error, 'Rescheduling the delivery');
+  }
+}
+
+/** Withdraws a booking that has not gone out. A sent day is never touched. */
+export async function cancelCampaignDeliveryAction(dayId: string): Promise<ActionResult<null>> {
+  try {
+    await cancelCampaignDelivery(prisma, uuid.parse(dayId));
+    revalidateAdmin();
+    return { ok: true, data: null };
+  } catch (error) {
+    return toFailure(error, 'Cancelling the delivery');
   }
 }

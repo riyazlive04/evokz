@@ -8,6 +8,7 @@ Also on this branch:
 - **Phase 3 — campaign template mapping** (§19, `vertical-phase3.md`): Auto Map with preview, manual and bulk mapping, mixed mode, inactive-template handling. No poster generation.
 - **Phase 4 — rolling campaign poster generation** (§20, `vertical-phase4.md`): posters for the next N days through this studio's pipeline, versioned per day. No WhatsApp or delivery changes.
 - **Phase 5 — campaign review and approval** (§21, `vertical-phase5.md`): the review queue, approve / reject with a reason, fix-after-rejection, bulk approval and campaign readiness. Still nothing is delivered.
+- **Phase 6 — campaign WhatsApp delivery** (§22, `vertical-phase6.md`): approved posters delivered to the client's own WhatsApp number on the campaign's schedule, once each, through the existing Evolution integration.
 
 ## 1. What it does
 
@@ -690,3 +691,19 @@ Phase 1 and f5053c4 suites still pass: `check:campaign` 55, `check:campaign-db` 
 - **Bulk approval** plans first — "Selected: N · Can approve: X · Skipped: Y" — never approves an invalid day, reports the rest grouped by reason, and re-checks each day at the write so a changed day becomes a conflict rather than an approval.
 - **Readiness** (`campaignReadiness`): content and templates campaign-wide, posters and approvals window-only, `deliveryReady` through §17's `evaluateDeliveryReadiness`, and `windowReady` false whenever any blocker exists. The client dashboard's "Needs attention" links to `?review=<filter>`.
 - **Tests:** `check:campaign-review` (46) and `check:campaign-review-db` (63). The local browser check passes 38 / 38.
+
+## 22. Campaign automation — Phase 6: campaign WhatsApp delivery
+
+**Status:** approved campaign posters are delivered over WhatsApp. The full record is [`vertical-phase6.md`](vertical-phase6.md). No message has ever been sent from this work — every test drives a local mock gateway.
+
+- **One Evolution integration, two callers.** The transport moved to `src/lib/whatsapp.ts`; `ai-pipeline.ts`'s `broadcastWhatsAppMedia` is now a thin wrapper over it that preserves the legacy contract exactly (tolerates an unreadable 2xx body, discards the message id, re-throws as `PipelineStageError('broadcast', …)` with the same text). No second integration exists.
+- **Recipient: `Client.whatsappNumber`** — the business's own number, the same destination the legacy sweep uses. This product has **no** contacts, audience or consent model, and none was invented; the UI says so plainly. A customer broadcast would be a blocking architectural gap.
+- **Migration `20260916120000_campaign_delivery`** (additive): `CampaignDeliveryStatus` and `CampaignDelivery`. A new table rather than the legacy columns, which are legacy-scoped and carry no version, attempts, message id or schedule.
+- **Idempotency is the schema.** `CampaignDelivery.calendarDayId` is UNIQUE — one delivery per day, ever — plus a conditional-update claim, a terminal `SENT`, and a settle guarded on the claim.
+- **The gate is server-side and runs twice**: once before claiming, then again on the claimed row immediately before the provider call. `manual: true` (Send Now) relaxes only the scheduled moment.
+- **The version is pinned**, not looked up: a poster regenerated after booking cancels the booking rather than sending either version.
+- **Media** is a signed, 30-minute link to `/api/campaign-media/<token>` that streams the bytes through the service account. Drive files stay unpublished; `PUBLIC_BASE_URL` must be set or delivery refuses.
+- **Scheduling** reuses `/api/cron` (Bearer `CRON_SECRET`, fails closed) as a fourth sweep phase. `Campaign.deliveryTime` resolved in the app timezone; a day whose local date passed is SKIPPED, not sent late.
+- **Retries** are bounded at 3 with 1/5-minute backoff. A timeout is treated as **permanent** — it may already have been queued, and a duplicate cannot be recalled.
+- **Tests:** `check:campaign-delivery` (84) and `check:campaign-delivery-db` (93). The local browser check passes 75 / 75.
+- ⚠️ **The Prisma schema-engine binary is blocked by a Windows Application Control policy on this machine**, so `prisma migrate deploy` / `migrate diff` cannot run here. This migration was applied with `psql` and its `_prisma_migrations` row written by hand (same name and SHA-256 checksum). `prisma generate` and the query engine are unaffected.

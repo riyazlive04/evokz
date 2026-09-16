@@ -97,18 +97,24 @@ export const config = {
    * Everything except:
    *   api/webhooks/razorpay — verifies its own HMAC signature over the raw body
    *   api/cron              — verifies its own Bearer token and fails closed
+   *   api/campaign-media    — verifies its own signed, expiring media token
    *   api/health            — carries nothing worth authenticating for
    *   login                 — the unauthenticated entry point itself
    *   _next/static, _next/image, favicon.ico — build output, no data in them
    *
-   * The first two API exclusions authenticate their callers already, and neither
-   * can present a session cookie: Razorpay and the system cron are machines. So
-   * is the container's health check, and it has no credential to offer at all —
-   * which is why `api/health` is built to be safe without one rather than given
-   * a token to hold. It returns counts, timestamps and a one-word state, and no
-   * error text; see the route for what that rules out and why.
+   * The first three API exclusions authenticate their callers already, and none
+   * of them can present a session cookie: Razorpay, the system cron and the
+   * WhatsApp provider fetching a poster are machines. So is the container's
+   * health check, and it has no credential to offer at all — which is why
+   * `api/health` is built to be safe without one rather than given a token to
+   * hold. It returns counts, timestamps and a one-word state, and no error text;
+   * see the route for what that rules out and why.
+   *
+   * `api/campaign-media` is the narrowest of the three: a token names one poster
+   * version, expires in minutes, and is refused unless that version is actually
+   * being delivered. See `src/lib/campaign/delivery-media.ts`.
    */
   matcher: [
-    '/((?!api/webhooks/razorpay|api/cron|api/health|login|_next/static|_next/image|favicon.ico).*)',
+    '/((?!api/webhooks/razorpay|api/cron|api/campaign-media|api/health|login|_next/static|_next/image|favicon.ico).*)',
   ],
 };

@@ -26,6 +26,7 @@ import { describeCopyShape } from '@/lib/types/layout-spec';
 import { describePlateCopyShape } from '@/lib/types/plate-spec';
 import { pickForDay } from '@/lib/types/poster';
 import { recordCutoutUsage, recordImageUsage, recordWhatsAppUsage } from '@/lib/usage';
+import { sendWhatsAppMedia, WhatsAppError } from '@/lib/whatsapp';
 
 /**
  * The central transaction router for one ContentCalendar row.
@@ -1000,41 +1001,37 @@ interface BroadcastInput {
 /**
  * Sends the creative over WhatsApp via Evolution GO.
  *
- * Note this differs from the blueprint, which specifies the Evolution **Node
- * v2** contract (`POST /message/sendMedia/{instance}` with
- * `{media, mediatype}`). Evolution GO exposes `POST /send/media` with
- * `{url, type}` and takes no instance path segment — the instance is selected
- * by the API key, so each instance's own token must be used here. The global
- * admin key is rejected with 401 on this route.
+ * The transport lives in `src/lib/whatsapp.ts`, which is the one Evolution
+ * integration in the codebase; campaign delivery (Phase 6) is its other caller.
+ * This wrapper keeps the legacy contract unchanged:
+ *
+ * - `tolerateUnreadableBody` preserves the long-standing behaviour of treating
+ *   an empty or non-JSON 2xx as delivered;
+ * - the provider's message id is discarded, because no legacy column holds one;
+ * - failures are re-thrown as `PipelineStageError` on the `broadcast` stage,
+ *   with the message text unchanged, so `ContentCalendar.errorMessage` reads
+ *   exactly as it always has;
+ * - nothing is retried. A timeout here is ambiguous — the message may already
+ *   have been queued — so a retry risks double-sending to the client's
+ *   WhatsApp. The row is left FAILED for an operator to re-send.
  */
 async function broadcastWhatsAppMedia(input: BroadcastInput): Promise<void> {
-  const baseUrl = requireEnv('EVOLUTION_API_URL').replace(/\/+$/, '');
-  const apiKey = requireEnv('EVOLUTION_API_KEY');
-  const timeoutMs = intEnv('EVOLUTION_TIMEOUT_MS', 60_000);
-
-  const url = `${baseUrl}/send/media`;
-
-  await fetchJson<unknown>(url, {
-    method: 'POST',
-    headers: {
-      apikey: apiKey,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({
-      number: input.number,
-      url: input.media,
-      type: 'image',
-      caption: input.caption,
-      filename: input.fileName,
-    }),
-    timeoutMs,
-    stage: 'broadcast',
-    // Deliberately not retried: a timeout here is ambiguous — the message may
-    // already have been queued — so a retry risks double-sending to the
-    // client's WhatsApp. The row is left FAILED for an operator to re-send.
-    tolerateEmptyBody: true,
-  });
+  try {
+    await sendWhatsAppMedia(
+      {
+        number: input.number,
+        mediaUrl: input.media,
+        caption: input.caption,
+        fileName: input.fileName,
+      },
+      { tolerateUnreadableBody: true },
+    );
+  } catch (error) {
+    if (error instanceof WhatsAppError) {
+      throw new PipelineStageError('broadcast', error.message, { cause: error });
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

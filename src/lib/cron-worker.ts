@@ -2,6 +2,11 @@ import { DeliveryStatus } from '@prisma/client';
 
 import { describeError, runCreativePipeline, type PipelineOutcome } from '@/lib/ai-pipeline';
 import { LEGACY_CALENDAR } from '@/lib/calendar-scope';
+import {
+  defaultDeliveryDeps,
+  runDueCampaignDeliveries,
+  type SweepResult,
+} from '@/lib/campaign/delivery-service';
 import { intEnv } from '@/lib/env';
 import { prisma } from '@/lib/prisma';
 import { nextSendDelay } from '@/lib/send-jitter';
@@ -36,10 +41,13 @@ import { buildMinuteWindow, getAppTimeZone, zonedDayRange } from '@/lib/time';
  * marked for the backlog and rendered by it in the same sweep, so there is exactly
  * one path that calls the pipeline and exactly one claim guarding it.
  *
- * **Legacy rows only.** Every selection and every claim below carries
- * `LEGACY_CALENDAR`: campaign days (`campaignId` set) are delivered through
- * their active poster version, which this sweep does not know about yet. See
- * src/lib/calendar-scope.ts.
+ * **Legacy rows only, in phases 1–3.** Every selection and every claim in them
+ * carries `LEGACY_CALENDAR`: campaign days (`campaignId` set) are never rendered
+ * or broadcast by the legacy pipeline. See src/lib/calendar-scope.ts.
+ *
+ * **Phase 4 is campaign delivery** (Phase 6 of the campaign work). It is a
+ * separate queue over `CampaignDelivery` rows, reached only through
+ * `runDueCampaignDeliveries`, and it writes no legacy column. The two never meet.
  */
 
 export interface DispatchQueueItem {
@@ -85,6 +93,16 @@ export interface DispatchSummary {
    * nothing in the sweep output to say why.
    */
   awaitingApproval: number;
+  /**
+   * Campaign days delivered this sweep (Phase 6).
+   *
+   * Counted separately from the legacy numbers above, because campaign delivery
+   * is a different queue with its own records: these come from
+   * `CampaignDelivery` rows, never from `ContentCalendar.deliveryStatus`.
+   */
+  campaignSent: number;
+  campaignFailed: number;
+  campaignSkipped: number;
   items: Array<DispatchQueueItem & { outcome: PipelineOutcome }>;
 }
 
@@ -351,6 +369,23 @@ export async function executeIntervalDispatch(
     }),
   );
 
+  // ---- Phase 4: campaign deliveries that are due (Phase 6 feature) ---------
+  //
+  // A separate queue from everything above: campaign days are excluded from all
+  // three legacy phases by `LEGACY_CALENDAR`, and this one reads `CampaignDelivery`
+  // rows instead of `ContentCalendar.deliveryStatus`. It never touches a legacy
+  // row, and the legacy phases never touch a campaign one.
+  //
+  // Failures here are contained: `runDueCampaignDeliveries` records each one on
+  // its own delivery row and carries on, so a failure on day 5 cannot stop day 6,
+  // and a throw cannot lose the legacy work already done above.
+  let campaignDeliveries: SweepResult = { considered: 0, sent: [], failed: [], skipped: [] };
+  try {
+    campaignDeliveries = await runDueCampaignDeliveries(prisma, defaultDeliveryDeps({ now: () => now }));
+  } catch (error) {
+    console.error('[ace:cron] campaign delivery sweep failed', error instanceof Error ? error.message : error);
+  }
+
   const items = [...sentItems, ...releasedItems, ...preGeneratedItems];
 
   const delivered = items.filter(
@@ -384,6 +419,9 @@ export async function executeIntervalDispatch(
       (item) => item.outcome.ok && item.outcome.heldForApproval === true,
     ).length,
     awaitingApproval,
+    campaignSent: campaignDeliveries.sent.length,
+    campaignFailed: campaignDeliveries.failed.length,
+    campaignSkipped: campaignDeliveries.skipped.length,
     items,
   };
 }
