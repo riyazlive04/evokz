@@ -279,6 +279,17 @@ model CategoryTemplate {
   /// prompt every time a campaign poster is generated from it. Null means none.
   prompt       String?
 
+  // ---- Template elements (clone mode) ---------------------------------------
+  /// Every element of the template the admin can change, read once from the image
+  /// — `TemplateElementsDoc` in src/lib/types/template-elements.ts. Null until read.
+  elements          Json?
+  /// When `elements` was last read successfully.
+  elementsReadAt    DateTime?
+  /// Why the last read failed, shown on the template card. Null after a good read.
+  elementsError     String?                  @db.Text
+  /// Studio generations that cloned this template.
+  studioGenerations PosterStudioGeneration[]
+
   /// Days pinned to this template: by name in an imported sheet, or as a
   /// campaign day's selected template.
   calendarDays     ContentCalendar[] @relation("SelectedTemplate")
@@ -572,6 +583,9 @@ model ContentCalendar {
   // (src/lib/types/poster.ts). Null on rows seeded before the poster layer
   // existed — `ensurePosterCopy` backfills them on first render.
   posterCopy         Json?
+  /// Clone mode: this day's values for its template's elements —
+  /// `DayPosterElementsDoc` in src/lib/types/template-elements.ts.
+  posterElements     Json?
   /// The reference template this day's poster must be laid out from.
   ///
   /// Set only by a human — an imported sheet naming it, never a render. That is
@@ -641,42 +655,42 @@ model ContentCalendar {
   /// Owning campaign. The composite key makes a day's campaign belong to the
   /// same client as the day, so the client-scoped dispatch sweep can never meet
   /// a row whose campaign is someone else's.
-  campaignId            String?
-  campaign              Campaign?               @relation(fields: [campaignId, clientId], references: [id, clientId], onDelete: Cascade)
+  campaignId                String?
+  campaign                  Campaign?               @relation(fields: [campaignId, clientId], references: [id, clientId], onDelete: Cascade)
   /// Pillar key from the campaign vertical's content strategy, e.g. "educational".
-  contentType           String?
-  headline              String?                 @db.Text
-  supportingText        String?                 @db.Text
-  cta                   String?
+  contentType               String?
+  headline                  String?                 @db.Text
+  supportingText            String?                 @db.Text
+  cta                       String?
   /// The AUTO mapper's template for this day. Never set by a human; the
   /// operator's choice is `posterTemplateId`, which wins when both are set.
-  suggestedTemplateId   String?
-  suggestedTemplate     CategoryTemplate?       @relation("SuggestedTemplate", fields: [suggestedTemplateId], references: [id], onDelete: SetNull)
+  suggestedTemplateId       String?
+  suggestedTemplate         CategoryTemplate?       @relation("SuggestedTemplate", fields: [suggestedTemplateId], references: [id], onDelete: SetNull)
   /// When an operator last set this campaign day's selected template
   /// (`posterTemplateId`, a MANUAL mapping). Null when there is none, or it
   /// predates Phase 3. Who is not recorded: the console has one shared login.
-  templateSelectedAt    DateTime?
+  templateSelectedAt        DateTime?
   /// When the AUTO mapper last wrote `suggestedTemplateId`. Null when there is
   /// no suggestion, or it predates Phase 3.
-  templateSuggestedAt   DateTime?
+  templateSuggestedAt       DateTime?
   /// The content generator's layout hint for this day, a key from
   /// `SUGGESTED_TEMPLATE_TYPES` (e.g. "tips-list", "quote"). A hint for the future
   /// template mapper, not a template: `suggestedTemplateId` stays untouched.
-  suggestedTemplateType String?
+  suggestedTemplateType     String?
   /// Whether this slot has content, and whether it needs a human look.
   /// Null on legacy rows. See `CampaignContentStatus`.
-  contentStatus         CampaignContentStatus?
+  contentStatus             CampaignContentStatus?
   /// Deterministic validation findings behind NEEDS_REVIEW, e.g. "Headline
   /// repeats day 12". Operator-readable sentences; cleared by a manual edit.
-  contentIssues         String[]                @default([])
+  contentIssues             String[]                @default([])
   /// Counts changes to this day's poster inputs (topic, content type, headline,
   /// supporting text, CTA, prompts, effective template). A poster version made
   /// from an older revision is stale. Caption and hashtags travel with the
   /// WhatsApp message rather than the image, so they do not bump it.
-  contentRevision       Int                     @default(1)
+  contentRevision           Int                     @default(1)
   /// Last poster generation attempt for this slot. Null on legacy rows, whose
   /// generation is described by `deliveryStatus` and `generationQueuedAt`.
-  generationStatus      PosterGenerationStatus?
+  generationStatus          PosterGenerationStatus?
   /// When the current or last campaign poster generation attempt started (Phase
   /// 4). Identifies the attempt that holds the GENERATING claim, so a finished
   /// attempt cannot overwrite a newer one, and lets an attempt interrupted by a
@@ -684,8 +698,8 @@ model ContentCalendar {
   posterGenerationStartedAt DateTime?
   /// Allocator for `PosterVersion.versionNumber`: incremented atomically in the
   /// transaction that inserts a version, so numbers are never reused.
-  lastPosterVersion     Int                     @default(0)
-  posterVersions        PosterVersion[]         @relation("DayPosterVersions")
+  lastPosterVersion         Int                     @default(0)
+  posterVersions            PosterVersion[]         @relation("DayPosterVersions")
   /// The one version that represents this day. Only it may be delivered.
   ///
   /// A pointer rather than a status on each version, so "at most one ACTIVE"
@@ -693,11 +707,11 @@ model ContentCalendar {
   /// The composite key (version id, this day's id) makes it impossible to point
   /// at another day's version. NoAction: an active version cannot be deleted;
   /// deleting the day itself still cascades.
-  activePosterVersionId String?                 @unique
-  activePosterVersion   PosterVersion?          @relation("ActivePosterVersion", fields: [activePosterVersionId, id], references: [id, calendarDayId], onDelete: NoAction, onUpdate: NoAction)
+  activePosterVersionId     String?                 @unique
+  activePosterVersion       PosterVersion?          @relation("ActivePosterVersion", fields: [activePosterVersionId, id], references: [id, calendarDayId], onDelete: NoAction, onUpdate: NoAction)
   /// This day's one delivery record (Phase 6). At most one, ever — see
   /// `CampaignDelivery.calendarDayId`.
-  delivery              CampaignDelivery?
+  delivery                  CampaignDelivery?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -810,6 +824,7 @@ enum PosterStudioMode {
   GENERATE // A new poster from a brief, optionally guided by a reference image
   EDIT // A targeted change to an existing image
   VARIATION // A new design derived from an existing image
+  CLONE // The campaign template itself, with only its words, photo and identity changed
 }
 
 /// Which version of a client's Brand Canvas logo a studio poster drew.
@@ -906,6 +921,10 @@ model PosterStudioGeneration {
   // SetNull, matching UsageEvent: a removed client's drafts stay reviewable.
   client   Client? @relation(fields: [clientId], references: [id], onDelete: SetNull)
 
+  /// CLONE mode: the campaign template this poster was cloned from.
+  sourceTemplateId String?
+  sourceTemplate   CategoryTemplate? @relation(fields: [sourceTemplateId], references: [id], onDelete: SetNull)
+
   /// Campaign poster versions made from this generation (future integration).
   campaignPosterVersions PosterVersion[]
 
@@ -962,11 +981,15 @@ model PosterVersion {
   reviewedAt     DateTime?
   reviewNote     String?              @db.Text
 
+  /// Clone mode: the automatic read-back of the rendered text —
+  /// `TextCheckResult` in src/lib/types/template-elements.ts. Null when not checked.
+  textCheck Json?
+
   /// Back-relation of `ContentCalendar.activePosterVersion`. A list only to
   /// satisfy Prisma's composite-key rules: the composite key limits it to this
   /// version's own day and `activePosterVersionId @unique` to one row, so it
   /// holds zero or one day.
-  activeForDay ContentCalendar[] @relation("ActivePosterVersion")
+  activeForDay ContentCalendar[]  @relation("ActivePosterVersion")
   /// Deliveries that reference this exact version (Phase 6). A list only
   /// because the FK is not unique; in practice a day has at most one delivery.
   deliveries   CampaignDelivery[]
@@ -1032,29 +1055,29 @@ model CampaignDelivery {
   posterVersionId String
   posterVersion   PosterVersion @relation(fields: [posterVersionId], references: [id], onDelete: Cascade)
 
-  status CampaignDeliveryStatus @default(SCHEDULED)
+  status       CampaignDeliveryStatus @default(SCHEDULED)
   /// The instant it should go out: the day's date at the campaign's
   /// `deliveryTime`, resolved in the app timezone.
   scheduledFor DateTime
 
   /// Provider calls made, including the one in flight. Bounded by
   /// `MAX_DELIVERY_ATTEMPTS` in src/lib/campaign/delivery.ts.
-  attempts      Int       @default(0)
-  lastAttemptAt DateTime?
+  attempts         Int       @default(0)
+  lastAttemptAt    DateTime?
   /// Identifies the attempt holding the SENDING claim, so a finished attempt
   /// cannot overwrite a newer one and a crashed attempt can be recognised as
   /// stale. Mirrors `ContentCalendar.posterGenerationStartedAt` (Phase 4).
   sendingStartedAt DateTime?
 
   /// When the provider accepted the message.
-  sentAt DateTime?
+  sentAt            DateTime?
   /// The provider's message id, when it returns one. Null is normal: Evolution
   /// GO does not always include one, and nothing depends on it.
   providerMessageId String?
 
   /// Operator-readable reason for the last failure or skip. Credentials are
   /// redacted before this is written.
-  failureReason String? @db.Text
+  failureReason    String? @db.Text
   /// True when retrying would fail the same way (bad recipient, auth, config,
   /// or an ambiguous timeout that may already have been sent). Blocks both the
   /// automatic retry and the operator's Retry button.

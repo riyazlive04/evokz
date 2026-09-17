@@ -14,7 +14,7 @@ import {
  * This exists because Next.js publishes Server Action IDs inside the public
  * client bundle: without a check that runs *before* the action does, every
  * mutation in `src/app/admin/dashboard/actions.ts` is invocable by anyone who
- * loads the page — including the ones that spend OpenAI/fal.ai credit and send
+ * loads the page — including the ones that spend OpenAI credit and send
  * WhatsApp messages to real client numbers. Server actions POST to the route
  * they were rendered from, so covering `/admin/*` here covers them too.
  *

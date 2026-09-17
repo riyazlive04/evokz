@@ -4,7 +4,7 @@ import { PageHeader } from '@/components/admin/PageHeader';
 import { PlanManager, type PlanRow } from '@/components/admin/PlanManager';
 import { DatabaseErrorState } from '@/components/admin/SystemNotices';
 import { Card, CardContent } from '@/components/ui/card';
-import { describeError } from '@/lib/ai-pipeline';
+import { describeError } from '@/lib/errors';
 import { prisma } from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
@@ -23,7 +23,7 @@ export default async function AdminPlansPage() {
         icon={Layers}
         eyebrow="Configuration"
         title="Plan subscription manager"
-        description="Campaign packages. Duration drives each client's end date at onboarding and caps how many ContentCalendar days can be seeded. The fee is the full-campaign price and feeds the margin column on the dashboard's spend panel — leave it blank and margin reads as unknown rather than zero."
+        description="Campaign packages. Duration drives each client's end date at onboarding and is the default length of a new campaign. The fee is the full-campaign price and feeds the margin column on the dashboard's spend panel — leave it blank and margin reads as unknown rather than zero."
       />
 
       <Card>

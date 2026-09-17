@@ -20,14 +20,6 @@ import { templateThumbnail } from '@/lib/template-image';
  * Query parameters:
  *   w     thumbnail width, 1–1600 (default 640)
  *   full  serve the stored file untouched, for a proper look at a reference
- *   plate serve the template's clean plate instead of the reference
- *
- * The plate is served through the same route rather than its own because it is
- * the same thing under the same rule: an unpublished Drive object belonging to
- * one template, readable only by an operator with a session. `templateThumbnail`
- * re-encodes to WebP, which carries the alpha the plate path depends on — the
- * region editor draws its boxes over the holes, so a thumbnail that flattened
- * them onto white would hide exactly what an operator is placing type around.
  */
 
 // Buffers, sharp and the Drive SDK: Node, not edge.
@@ -50,23 +42,13 @@ export async function GET(
 
   const template = await prisma.categoryTemplate.findUnique({
     where: { id: params.templateId },
-    select: { gDriveFileId: true, mimeType: true, plateDriveFileId: true },
+    select: { gDriveFileId: true, mimeType: true },
   });
 
   if (!template) return new NextResponse('Not found', { status: 404 });
 
-  const wantsPlate = request.nextUrl.searchParams.get('plate') === '1';
-  // 404 rather than falling back to the reference. A silent substitution would
-  // show the region editor the poster's own words where it promised the erased
-  // artwork, which is the one image an operator must not confuse for the other.
-  if (wantsPlate && !template.plateDriveFileId) {
-    return new NextResponse('Not found', { status: 404 });
-  }
-
-  const fileId = wantsPlate ? (template.plateDriveFileId as string) : template.gDriveFileId;
-  // Plates are always stored as uploaded, and `uploadTemplatePlate` accepts
-  // nothing but PNG.
-  const storedMimeType = wantsPlate ? 'image/png' : template.mimeType;
+  const fileId = template.gDriveFileId;
+  const storedMimeType = template.mimeType;
 
   const requested = Number.parseInt(request.nextUrl.searchParams.get('w') ?? '', 10);
   const width =
@@ -91,20 +73,11 @@ export async function GET(
          * one, which mints a new id and therefore a new URL. Without this every
          * scroll back to page one is twenty-four Drive round-trips.
          *
-         * **A plate is the exception, and must never be cached that way.**
-         * "Replace plate" writes a new Drive file onto the same template id, so
-         * the URL outlives the bytes — and re-exporting a plate to nudge one
-         * mask is the commonest edit there is. Cached immutably, the operator
-         * would nudge a mask, re-upload, and see the plate they had, with the
-         * region editor drawing boxes over holes that had moved.
-         *
-         * Private in both cases, because the response is only authorised for the
-         * operator who requested it. A shared cache holding these would hand a
+         * Private, because the response is only authorised for the operator who
+         * requested it. A shared cache holding these would hand a
          * non-member the exact bytes the unpublished upload exists to withhold.
          */
-        'Cache-Control': wantsPlate
-          ? 'private, no-cache'
-          : 'private, max-age=86400, immutable',
+        'Cache-Control': 'private, max-age=86400, immutable',
       },
     });
   } catch (error) {

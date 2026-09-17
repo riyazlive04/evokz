@@ -2,9 +2,9 @@
  * Typed, lazily-validated environment access.
  *
  * Deliberately *not* validated at module load: a missing Evolution API key must
- * not stop the admin dashboard from rendering, and a missing FAL key must fail
- * inside the pipeline's try/catch so the failure lands in
- * `ContentCalendar.errorMessage` instead of crashing the process.
+ * not stop the admin dashboard from rendering, and a missing credential must
+ * fail inside the step that needs it, where the failure is recorded, instead of
+ * crashing the process.
  */
 
 export class MissingEnvError extends Error {
@@ -46,7 +46,7 @@ export function intEnv(key: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-/** Every credential the pipeline needs at runtime, in dependency order. */
+/** Every credential the console needs at runtime, in dependency order. */
 const INTEGRATION_KEYS = [
   'DATABASE_URL',
   'OPENAI_API_KEY',
@@ -54,7 +54,6 @@ const INTEGRATION_KEYS = [
   'GOOGLE_SERVICE_ACCOUNT_EMAIL',
   'GOOGLE_PRIVATE_KEY',
   'GOOGLE_DRIVE_PARENT_FOLDER_ID',
-  'FAL_KEY',
   'EVOLUTION_API_URL',
   'EVOLUTION_API_KEY',
   'CRON_SECRET',
@@ -65,11 +64,8 @@ const INTEGRATION_KEYS = [
  * operator can tell a config gap from a code bug at a glance.
  *
  * `satisfied` lets a caller suppress a variable it knows is covered by something
- * outside the environment. The console stores an operator-supplied fal.ai key in
- * the database, and while one exists `FAL_KEY` is not merely optional but unread,
- * so listing it would be a permanent false alarm on a correctly configured box.
- * A parameter rather than a database read here, because this module is imported
- * from places that have no Prisma and must not grow one.
+ * outside the environment. A parameter rather than a database read here, because
+ * this module is imported from places that have no Prisma and must not grow one.
  */
 export function findUnsetIntegrationKeys(satisfied: readonly string[] = []): string[] {
   return INTEGRATION_KEYS.filter((key) => {

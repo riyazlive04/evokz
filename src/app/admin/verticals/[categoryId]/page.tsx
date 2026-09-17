@@ -2,15 +2,9 @@ import type { CampaignStatus } from '@prisma/client';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import { ArrowLeft, FolderOpen, Layers, ListChecks } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Layers } from 'lucide-react';
 
 import { PageHeader } from '@/components/admin/PageHeader';
-import { ContentStrategyEditor } from '@/components/campaign/ContentStrategyEditor';
-import {
-  DEFAULT_CONTENT_STRATEGY,
-  formatContentStrategyText,
-  resolveContentStrategy,
-} from '@/lib/campaign/content-strategy';
 import {
   VerticalTemplatePanel,
   type VerticalTemplateRow,
@@ -18,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { prisma } from '@/lib/prisma';
+import { templateElementsState } from '@/lib/templates/elements-view';
 
 /**
  * Reference-template library for one vertical.
@@ -29,6 +24,18 @@ import { prisma } from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Seconds a request from this page may run, which on Vercel includes every
+ * Server Action the page calls.
+ *
+ * An upload reads the template's elements with a vision model before it returns,
+ * and so does "Read now" on a card: ten seconds to a minute each, one file per
+ * call. The platform default would cut that read off part-way — after the file is
+ * already in Drive — and the admin would see a failed upload for a template that
+ * was stored.
+ */
+export const maxDuration = 300;
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -36,8 +43,8 @@ const UUID_PATTERN =
  * Templates listed at once.
  *
  * The cap is a hundred per vertical, and every card carries a Drive-hosted image
- * and its own prompt box — a hundred of those is a great deal of DOM for a
- * surface an admin works through a screenful at a time.
+ * and its element reading — a hundred of those is a great deal of DOM and
+ * payload for a surface an admin works through a screenful at a time.
  */
 const TEMPLATES_PER_PAGE = 24;
 
@@ -62,7 +69,6 @@ export default async function VerticalDetailPage({
     select: {
       id: true,
       name: true,
-      contentStrategy: true,
       _count: { select: { clients: true, templates: true } },
       templates: {
         orderBy: { createdAt: 'desc' },
@@ -73,8 +79,14 @@ export default async function VerticalDetailPage({
           label: true,
           width: true,
           height: true,
-          prompt: true,
           isActive: true,
+          // The reading itself, not just a flag: the card summarises it and its
+          // dialog draws every element over the image. At most 40 elements each.
+          // `prompt` is deliberately not loaded — the template prompt box is
+          // retired from this page, and its column is kept only as data.
+          elements: true,
+          elementsReadAt: true,
+          elementsError: true,
         },
       },
     },
@@ -82,9 +94,9 @@ export default async function VerticalDetailPage({
 
   if (!category) notFound();
 
-  // Campaign days using each template on this page, as the campaign calendar
-  // counts them: a manual selection, or an AUTO suggestion under AUTO mode, in
-  // a campaign that is still open.
+  // Campaign days using each template on this page, as a campaign resolves a
+  // day's template — the day's own template, or an AUTO suggestion on a campaign
+  // still in AUTO mode — in a campaign that is still open.
   const pageTemplateIds = category.templates.map((template) => template.id);
   const openStatuses: CampaignStatus[] = ['DRAFT', 'ACTIVE', 'PAUSED'];
   const [selectedCounts, suggestedCounts] = pageTemplateIds.length
@@ -120,8 +132,8 @@ export default async function VerticalDetailPage({
     viewUrl: `/api/templates/${template.id}/thumbnail?full=1`,
     width: template.width,
     height: template.height,
-    prompt: template.prompt,
     isActive: template.isActive,
+    elements: templateElementsState(template),
     campaignDays: campaignDaysFor(template.id),
   }));
 
@@ -150,34 +162,8 @@ export default async function VerticalDetailPage({
         icon={Layers}
         eyebrow="Configuration"
         title={category.name}
-        description="Reference posters for this vertical. Every active template can be used for campaign posters: the AI takes the template as its visual reference, together with the day's content and the template prompt on its card."
+        description="Reference posters for this vertical. Each upload is read once for the words, photo and business details it carries, and every active template can be used for campaign posters."
       />
-
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <ListChecks className="h-3.5 w-3.5 text-brand-to" />
-            Content strategy
-          </CardTitle>
-          <CardDescription className="text-[11px]">
-            The kinds of content AI campaign calendars for {category.name} clients are built from, and how
-            often each appears.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {(() => {
-            const { strategy, source } = resolveContentStrategy(category.contentStrategy);
-            return (
-              <ContentStrategyEditor
-                categoryId={category.id}
-                initialText={formatContentStrategyText(strategy)}
-                defaultText={formatContentStrategyText(DEFAULT_CONTENT_STRATEGY)}
-                usesDefault={source === 'default'}
-              />
-            );
-          })()}
-        </CardContent>
-      </Card>
 
       <Card>
         <CardHeader className="pb-3">

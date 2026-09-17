@@ -21,7 +21,6 @@ import {
   setClientActive,
   updateClientCronTime,
 } from '@/app/admin/dashboard/actions';
-import { SeedCalendarButton } from '@/components/admin/SeedCalendarButton';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -46,11 +45,10 @@ export interface ClientRow {
   endDateLabel: string;
   isActive: boolean;
   hasDriveFolder: boolean;
-  /** Narrowed server-side from `Client.brandGuideline`; gates the seed confirm. */
-  hasBrandTokens: boolean;
+  /** A demo tenant, badged so it is not mistaken for a paying client. */
+  isDemo: boolean;
+  /** Posters sent to this client, campaign and pre-campaign alike. */
   deliveredCount: number;
-  /** ContentCalendar rows that exist for this client, any status. */
-  calendarCount: number;
   totalDays: number;
 }
 
@@ -223,6 +221,7 @@ function ClientRowItem({ client }: { client: ClientRow }) {
             >
               {client.companyName}
             </Link>
+            {client.isDemo && <Badge variant="amber">Demo</Badge>}
             {client.hasDriveFolder ? (
               <FolderCheck
                 className="h-3.5 w-3.5 shrink-0 text-success-ink/70"
@@ -346,24 +345,16 @@ function ClientRowItem({ client }: { client: ClientRow }) {
       </TableRow>
 
       {(!client.hasDriveFolder ||
-        client.calendarCount < client.totalDays ||
         cronAction.error ||
         activeAction.error ||
         driveAction.error) && (
         <TableRow>
           <TableCell colSpan={7} className="pt-0">
             <div className="flex flex-wrap items-center gap-3">
-              <SeedCalendarButton
-                clientId={client.id}
-                companyName={client.companyName}
-                calendarCount={client.calendarCount}
-                totalDays={client.totalDays}
-                hasBrandTokens={client.hasBrandTokens}
-              />
               {!client.hasDriveFolder && (
                 <>
                   <span className="text-[11px] text-danger-ink">
-                    No Drive folder — the pipeline cannot deliver for this client.
+                    No Drive folder — posters cannot be stored for this client.
                   </span>
                   <Button
                     size="sm"

@@ -1,9 +1,11 @@
 /**
  * Database checks for campaign template mapping (Phase 3).
  *
- * Runs `src/lib/campaign/template-mapping-service.ts`, the Phase 3 campaign
- * server actions and the template delete guard against the development
- * database. No poster is generated and no provider is called.
+ * Runs `src/lib/campaign/template-mapping-service.ts` (the services behind how a
+ * campaign day resolves its template, which the campaign suites also use as
+ * fixtures), the template status action and the template delete guard against
+ * the development database. No poster is generated and no provider is called.
+ * The Auto Map / Manual Map screens and their actions are retired.
  *
  * How it stays harmless (the `check:calendar-scope` technique):
  *   - The app's shared Prisma client (`globalThis.prisma`) is replaced by a
@@ -92,13 +94,11 @@ async function asAction<T>(work: () => Promise<T>): Promise<T> {
 
 async function suite(): Promise<void> {
   const tx = facade;
-  const { SAMPLE_LAYOUT_SPEC } = await import('@/lib/poster/sample-layout');
   const { isVersionCurrent } = await import('@/lib/campaign/model');
   const service = await import('@/lib/campaign/service');
   const mapping = await import('@/lib/campaign/template-mapping-service');
   const campaignActions = await import('@/app/admin/campaigns/actions');
   const dashboardActions = await import('@/app/admin/dashboard/actions');
-  const { LEGACY_CALENDAR } = await import('@/lib/calendar-scope');
   const { CampaignDomainError, addPosterVersion, changeCampaignStatus, createCampaign, selectDayTemplate } = service;
 
   async function expectDomainError(name: string, code: string, work: () => Promise<unknown>) {
@@ -113,8 +113,6 @@ async function suite(): Promise<void> {
   const TZ = 'Asia/Kolkata';
   const start = new Date('2026-11-01T00:00:00+05:30');
   const base = Date.parse('2026-01-01T00:00:00Z');
-  const portrait = { ...SAMPLE_LAYOUT_SPEC, aspect: 9 / 16 } as unknown as Prisma.InputJsonValue;
-  const square = { ...SAMPLE_LAYOUT_SPEC, aspect: 1 } as unknown as Prisma.InputJsonValue;
 
   const plan30 = await tx.plan.create({ data: { name: 'check:map 30', durationDays: 30 } });
   const vertical = await tx.category.create({
@@ -143,7 +141,6 @@ async function suite(): Promise<void> {
         mimeType: 'image/png',
         width: 1080,
         height: 1920,
-        layoutSpec: portrait,
         layoutApprovedAt: new Date(base),
         createdAt: new Date(base + (order += 1) * 1000),
         ...data,
@@ -156,7 +153,7 @@ async function suite(): Promise<void> {
   // No approved layout. Created inactive so the rotation below stays A, B, C;
   // 'templates need no approval' activates it and uses it.
   const tDraft = await template('Draft', { layoutApprovedAt: null, isActive: false });
-  const tSquare = await template('Square', { layoutSpec: square, width: 1080, height: 1080 });
+  const tSquare = await template('Square', { width: 1080, height: 1080 });
   const tForeign = await template('Foreign', { categoryId: otherVertical.id });
   await template('Empty inactive', { categoryId: emptyVertical.id, isActive: false });
 
@@ -414,20 +411,8 @@ async function suite(): Promise<void> {
   section('server actions');
   // =======================================================================
   {
-    const preview = await asAction(() => campaignActions.previewAutoMapAction(campaignC, 'fill'));
-    t('previewAutoMapAction returns the plan', preview.ok && preview.data.entries.length === 30 && preview.data.counts.new === 30);
-    const apply = preview.ok ? await asAction(() => campaignActions.applyAutoMapAction(campaignC, { scope: 'fill', fingerprint: preview.data.fingerprint })) : null;
-    t('applyAutoMapAction applies it', apply?.ok === true && apply.data.daysWritten === 30);
-    const assign = await asAction(() => campaignActions.assignCampaignTemplatesAction(campaignC, { kind: 'range', fromDay: 1, toDay: 3, templateId: tB.id }));
-    t('assignCampaignTemplatesAction maps a range', assign.ok && assign.data.changedDays.join() === '1,2,3');
-    const refusedAction = await asAction(() => campaignActions.assignCampaignTemplatesAction(campaignC, { kind: 'days', dayNumbers: [4], templateId: tInactive.id }));
-    t('…and reports a refusal as operator copy', !refusedAction.ok && /inactive/.test(refusedAction.ok ? '' : refusedAction.error));
-    const saved = await asAction(() => campaignActions.setTemplatePromptAction(tB.id, '  Keep the curved footer.  '));
-    t('setTemplatePromptAction saves a trimmed prompt', saved.ok && saved.data.prompt === 'Keep the curved footer.' && (await tx.categoryTemplate.findUniqueOrThrow({ where: { id: tB.id } })).prompt === 'Keep the curved footer.');
-    const tooLong = await asAction(() => campaignActions.setTemplatePromptAction(tB.id, 'x'.repeat(1_001)));
-    t('a template prompt over 1000 characters is refused and nothing changes', !tooLong.ok && (await tx.categoryTemplate.findUniqueOrThrow({ where: { id: tB.id } })).prompt === 'Keep the curved footer.');
-    const cleared = await asAction(() => campaignActions.setTemplatePromptAction(tB.id, '   '));
-    t('a blank template prompt clears it', cleared.ok && cleared.data.prompt === null && (await tx.categoryTemplate.findUniqueOrThrow({ where: { id: tB.id } })).prompt === null);
+    // The Auto Map, Manual Map and template prompt actions are retired with
+    // their screens; the services above keep their own checks.
     const deactivate = await asAction(() => campaignActions.setTemplateActiveAction(tSquare.id, false));
     t('setTemplateActiveAction reports affected open-campaign days', deactivate.ok && deactivate.data.campaignDaysAffected >= 10);
     const selected = await day(campaignC, 10);
@@ -446,12 +431,7 @@ async function suite(): Promise<void> {
       return row.posterTemplateId === original.posterTemplateId && row.theme === original.theme && row.headline === original.headline;
     }));
     t('legacy rows are byte-identical after every mapping operation', snapshot(await legacyRows()) === legacyBefore);
-    const aRows = snapshot(await campaignRows(campaignA));
-    const approveAll = await asAction(() => dashboardActions.approveAllCreatives(clientA.id));
-    // A client whose calendar is all campaign days has nothing legacy to approve.
-    const nothingLegacy = approveAll.ok ? approveAll.data.approved === 0 : approveAll.error === 'Nothing is waiting for approval.';
-    t('legacy bulk approval still ignores mapped campaign days', nothingLegacy && snapshot(await campaignRows(campaignA)) === aRows, snapshot(approveAll));
-    t('legacy calendar scope still excludes campaign days', (await tx.contentCalendar.count({ where: { clientId: clientA.id, ...LEGACY_CALENDAR } })) === 0);
+    t('no calendar row of a campaign client is left without its campaign', (await tx.contentCalendar.count({ where: { clientId: clientA.id, campaignId: null } })) === 0);
   }
 }
 

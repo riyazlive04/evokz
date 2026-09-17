@@ -77,7 +77,7 @@ export default async function ClientBrandCanvasPage({
         <Button asChild variant="ghost" size="sm" className="-ml-2">
           <Link href={returnPath ?? `/admin/clients/${client.id}`}>
             <ArrowLeft className="h-4 w-4" />
-            {returnPath ? 'Back to demo workspace' : `Back to ${client.companyName}`}
+            {returnPath ? 'Back' : `Back to ${client.companyName}`}
           </Link>
         </Button>
 

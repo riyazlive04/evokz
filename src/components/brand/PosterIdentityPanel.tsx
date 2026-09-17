@@ -100,6 +100,19 @@ export function PosterIdentityPanel({
   const cutout = useAction(removeClientLogoBackground);
   const restore = useAction(revertClientLogoBackground);
 
+  /*
+   * Previews through the console's session-gated logo route, never the stored URL:
+   * a Drive `uc?export=download` link is a private download the browser refuses
+   * to draw (ORB), so the preview showed a broken image. The route reads the file
+   * server-side; `v` changes with the stored file so a new logo is not served
+   * from the route's short cache.
+   */
+  const logoVersion = encodeURIComponent(logoDriveFileId ?? logoUrl ?? '');
+  const logoPreviewUrl = logoUrl
+    ? `/api/poster-studio/clients/${clientId}/logo?background=${logoBackgroundRemoved ? 'REMOVED' : 'ORIGINAL'}&w=400&v=${logoVersion}`
+    : null;
+  const logoOriginalPreviewUrl = logoOriginalUrl ? `/api/poster-studio/clients/${clientId}/logo?background=ORIGINAL&w=96&v=${logoVersion}` : null;
+
   const fileRef = React.useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = React.useState<string | null>(null);
   const [urlDraft, setUrlDraft] = React.useState('');
@@ -245,12 +258,12 @@ export function PosterIdentityPanel({
                   : undefined
               }
             >
-              {logoUrl ? (
-                /* Arbitrary remote host (Drive or a client CDN) — a plain img avoids
-                   allowlisting every possible remote pattern in next.config. */
+              {logoPreviewUrl ? (
+                /* The session-gated logo route — a plain img, as next/image cannot
+                   fetch a response private to this admin's session. */
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={logoUrl}
+                  src={logoPreviewUrl}
                   alt={`${companyName} logo`}
                   className="max-h-full max-w-full object-contain"
                 />
@@ -267,13 +280,13 @@ export function PosterIdentityPanel({
                 {logoBackgroundRemoved ? (
                   <>
                     <div className="flex items-center gap-2">
-                      {logoOriginalUrl && (
+                      {logoOriginalPreviewUrl && (
                         /* The before, at thumbnail size. Small on purpose — it is
                            there to answer "did that work?" at a glance, and the
                            result above is the thing being judged. */
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={logoOriginalUrl}
+                          src={logoOriginalPreviewUrl}
                           alt="Logo before background removal"
                           title="Before"
                           className="h-8 w-8 shrink-0 rounded border border-border bg-muted object-contain p-0.5"

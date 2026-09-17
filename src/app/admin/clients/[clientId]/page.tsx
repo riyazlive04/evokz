@@ -1,33 +1,13 @@
-import { DeliveryStatus } from '@prisma/client';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-import {
-  AlertTriangle,
-  ArrowLeft,
-  CalendarClock,
-  CalendarRange,
-  CheckCircle2,
-  Clock,
-  Eye,
-  FolderOpen,
-  Palette,
-  ShieldAlert,
-  Sparkles,
-  Upload,
-} from 'lucide-react';
+import { ArrowLeft, CalendarRange, FolderOpen, Palette } from 'lucide-react';
 
-import { CalendarImportPanel } from '@/components/admin/CalendarImportPanel';
-import { ManualTemplateUploadDialog } from '@/components/admin/ManualTemplateUploadDialog';
+import { ClientAssignment } from '@/components/admin/ClientAssignment';
 import { ClientControls } from '@/components/admin/ClientControls';
-import { ClientDangerZone } from '@/components/admin/ClientDangerZone';
+import { ClearLegacyCalendarButton, ClientDangerZone } from '@/components/admin/ClientDangerZone';
 import { EditClientDialog } from '@/components/admin/EditClientDialog';
 import { PageHeader } from '@/components/admin/PageHeader';
-import { ClientAssignment } from '@/components/admin/ClientAssignment';
-import { QueueLedger, type QueueEntry } from '@/components/admin/QueueLedger';
-import { RetryFailedButton } from '@/components/admin/RetryFailedButton';
-import { SeedCalendarButton } from '@/components/admin/SeedCalendarButton';
-import { StatTile } from '@/components/admin/StatTile';
 import { CreateCampaignForm } from '@/components/campaign/CreateCampaignForm';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -38,22 +18,15 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { LEGACY_CALENDAR } from '@/lib/calendar-scope';
 import { loadClientCampaignAttention, type CampaignAttentionSummary } from '@/lib/campaign/operations';
 import { optionalEnv } from '@/lib/env';
-import {
-  describeImageSize,
-  photoIsUpscaledAt,
-  resolveImageSizePreset,
-} from '@/lib/image-sizes';
+import { describeImageSize, resolveImageSizePreset } from '@/lib/image-sizes';
 import { prisma } from '@/lib/prisma';
-import { queueSelect, toQueueEntry } from '@/lib/queue-entry';
 import {
   describeDeliveryDays,
   formatDisplayDate,
   formatDisplayDateTime,
   getAppTimeZone,
-  toTimeString,
   zonedDayRange,
 } from '@/lib/time';
 import { parseBrandGuideline } from '@/lib/types/brand';
@@ -63,9 +36,13 @@ export const dynamic = 'force-dynamic';
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const TIMELINE_LIMIT = 24;
-const FAILURE_LIMIT = 8;
-
+/**
+ * One client: who they are, the defaults their campaigns start from, and the
+ * campaigns themselves.
+ *
+ * Everything about posters and sending lives on a campaign's board — this page
+ * only lists campaigns and creates them.
+ */
 export default async function ClientDetailPage({
   params,
 }: {
@@ -77,7 +54,7 @@ export default async function ClientDetailPage({
 
   const timeZone = getAppTimeZone();
   const now = new Date();
-  const { start: todayStart, end: tomorrowStart } = zonedDayRange(now, timeZone);
+  const { end: tomorrowStart } = zonedDayRange(now, timeZone);
 
   const client = await prisma.client.findUnique({
     where: { id: params.clientId },
@@ -107,54 +84,7 @@ export default async function ClientDetailPage({
 
   if (!client) notFound();
 
-  const [
-    statusGroups,
-    awaitingApproval,
-    failureRecords,
-    upcomingRecords,
-    seededRows,
-    planOptions,
-    categoryOptions,
-    approvedTemplates,
-    campaigns,
-    campaignContent,
-    legacyDays,
-  ] = await Promise.all([
-    prisma.contentCalendar.groupBy({
-      by: ['deliveryStatus'],
-      where: { clientId: client.id },
-      _count: { _all: true },
-    }),
-    // Not derivable from the status groups: approval is a separate axis, and a
-    // GENERATED row is either mid-send-delay or waiting on a human with no way to
-    // tell the two apart from the status alone.
-    prisma.contentCalendar.count({
-      where: {
-        clientId: client.id,
-        deliveryStatus: DeliveryStatus.GENERATED,
-        approvedAt: null,
-      },
-    }),
-    prisma.contentCalendar.findMany({
-      where: { clientId: client.id, deliveryStatus: DeliveryStatus.FAILED },
-      orderBy: { updatedAt: 'desc' },
-      take: FAILURE_LIMIT,
-      select: queueSelect,
-    }),
-    prisma.contentCalendar.findMany({
-      where: { clientId: client.id, scheduledDate: { gte: todayStart } },
-      orderBy: [{ scheduledDate: 'asc' }, { dayNumber: 'asc' }],
-      take: TIMELINE_LIMIT,
-      select: queueSelect,
-    }),
-    // Day-number map for the bulk importer's dry run. Two integer columns over
-    // at most 365 rows, so it is cheaper than it looks and lets the panel show
-    // which days a sheet would create, replace, or bounce off.
-    prisma.contentCalendar.findMany({
-      where: { clientId: client.id },
-      orderBy: { dayNumber: 'asc' },
-      select: { dayNumber: true, deliveryStatus: true },
-    }),
+  const [planOptions, categoryOptions, campaigns, olderDayGroups] = await Promise.all([
     prisma.plan.findMany({
       orderBy: { durationDays: 'asc' },
       select: { id: true, name: true, durationDays: true },
@@ -163,50 +93,43 @@ export default async function ClientDetailPage({
       orderBy: { name: 'asc' },
       select: { id: true, name: true },
     }),
-    // The layouts a sheet may name for this client, served by
-    // @@index([categoryId, layoutApprovedAt]). Cheap, and it is what lets the
-    // importer reject a misspelt template before anything is written — and what
-    // fills the template column in the downloadable CSV with names that exist.
-    prisma.categoryTemplate.findMany({
-      where: { categoryId: client.categoryId, layoutApprovedAt: { not: null } },
-      orderBy: { label: 'asc' },
-      select: { id: true, label: true },
-    }),
     prisma.campaign.findMany({
       where: { clientId: client.id },
       orderBy: { createdAt: 'desc' },
       select: { id: true, name: true, status: true, startDate: true, endDate: true, durationDays: true },
     }),
+    // Calendar rows that belong to no campaign — left behind by the retired
+    // daily poster maker. They still hold their day numbers, and a client holds
+    // one calendar at a time, so a new campaign cannot reuse those numbers.
     prisma.contentCalendar.groupBy({
-      by: ['campaignId', 'contentStatus'],
-      where: { clientId: client.id, campaignId: { not: null } },
+      by: ['deliveryStatus'],
+      where: { clientId: client.id, campaignId: null },
       _count: { _all: true },
+      _min: { dayNumber: true },
     }),
-    // A campaign cannot be created over existing legacy days (one calendar per
-    // client); counted so the card can say why before the operator tries.
-    prisma.contentCalendar.count({ where: { clientId: client.id, ...LEGACY_CALENDAR } }),
   ]);
 
-  const statusCounts: Record<DeliveryStatus, number> = {
-    [DeliveryStatus.PENDING]: 0,
-    [DeliveryStatus.GENERATED]: 0,
-    [DeliveryStatus.DELIVERED]: 0,
-    [DeliveryStatus.FAILED]: 0,
-  };
-  for (const group of statusGroups) {
-    statusCounts[group.deliveryStatus] = group._count._all;
+  // Unsent older days (PENDING, FAILED) can be cleared; generated or delivered
+  // ones are history and stay, still holding their day numbers.
+  let clearableOlderDays = 0;
+  let keptOlderDays = 0;
+  let firstKeptDay: number | null = null;
+  for (const group of olderDayGroups) {
+    if (group.deliveryStatus === 'PENDING' || group.deliveryStatus === 'FAILED') {
+      clearableOlderDays += group._count._all;
+    } else {
+      keptOlderDays += group._count._all;
+      const lowest = group._min.dayNumber;
+      if (lowest !== null) firstKeptDay = Math.min(firstKeptDay ?? lowest, lowest);
+    }
   }
+  const olderDays = clearableOlderDays + keptOlderDays;
 
   /*
-   * Unresolved review work per campaign (Phase 5), so the card links straight to
-   * the filtered queue instead of leaving an operator to scan 365 days.
-   *
-   * One query for every campaign this client has (Phase 7). This used to run a
-   * full poster overview per campaign, serially — all days, all active versions,
-   * the whole template set and five eligibility evaluations per day — to print
-   * six integers. `loadClientCampaignAttention` derives the same numbers from
-   * the same `derivePosterState`, so a count here still cannot disagree with the
-   * queue it links to.
+   * Unresolved work per campaign, so each row links straight to the filtered
+   * board instead of leaving an operator to page through 365 days. One query for
+   * every campaign this client has, derived from the same poster states the
+   * board shows.
    */
   let campaignAttention = new Map<string, CampaignAttentionSummary>();
   try {
@@ -215,48 +138,7 @@ export default async function ClientDetailPage({
     console.error('[client-page] could not load campaign attention counts', error);
   }
 
-  const calendarCount = Object.values(statusCounts).reduce((sum, n) => sum + n, 0);
   const totalDays = client.plan.durationDays;
-
-  const seededDays = seededRows.map((row) => row.dayNumber);
-  // An import may rewrite PENDING and FAILED copy but not a day whose asset has
-  // already been rendered or sent — the creative on Drive would no longer match.
-  const lockedDays = seededRows
-    .filter(
-      (row) =>
-        row.deliveryStatus === DeliveryStatus.GENERATED ||
-        row.deliveryStatus === DeliveryStatus.DELIVERED,
-    )
-    .map((row) => row.dayNumber);
-
-  const delivered = statusCounts[DeliveryStatus.DELIVERED];
-  const progressPercent =
-    totalDays > 0 ? Math.min(100, Math.round((delivered / totalDays) * 100)) : 0;
-
-  // Campaign-over clients have nothing scheduled ahead of today; fall back to
-  // the tail of the calendar so the page is never empty for them.
-  let timeline: QueueEntry[] = upcomingRecords.map((entry) => toQueueEntry(entry, timeZone));
-  let timelineIsHistory = false;
-  if (timeline.length === 0 && calendarCount > 0) {
-    const recent = await prisma.contentCalendar.findMany({
-      where: { clientId: client.id },
-      orderBy: [{ scheduledDate: 'desc' }, { dayNumber: 'desc' }],
-      take: TIMELINE_LIMIT,
-      select: queueSelect,
-    });
-    timeline = recent.map((entry) => toQueueEntry(entry, timeZone));
-    timelineIsHistory = true;
-  }
-
-  /*
-   * Whether this client's delivery minute has already gone by today.
-   *
-   * Named once and used twice — for the manual uploader's date floor and for the
-   * sentence that explains it — because those two disagreeing is exactly the bug
-   * that would make the explanation worse than none at all.
-   */
-  const todayIsSpent = toTimeString(now, timeZone) >= client.cronTime;
-
   const brand = parseBrandGuideline(client.brandGuideline);
   const sizePreset = resolveImageSizePreset(
     client.imageSizePreset,
@@ -285,23 +167,13 @@ export default async function ClientDetailPage({
             </Badge>
           </span>
         }
-        description={`Onboarded ${formatDisplayDateTime(client.createdAt, timeZone)} · dispatching at ${client.cronTime} ${timeZone}`}
+        description={`Onboarded ${formatDisplayDateTime(client.createdAt, timeZone)} · new campaigns deliver at ${client.cronTime} ${timeZone}`}
       >
         <EditClientDialog
           clientId={client.id}
           companyName={client.companyName}
           whatsappNumber={client.whatsappNumber}
         />
-        <Button
-          asChild
-          variant={awaitingApproval > 0 ? 'default' : 'outline'}
-          size="sm"
-        >
-          <Link href={`/admin/clients/${client.id}/approvals`}>
-            <Eye className="h-4 w-4" />
-            {awaitingApproval > 0 ? `Approve ${awaitingApproval}` : 'Approvals'}
-          </Link>
-        </Button>
         <Button asChild variant="outline" size="sm">
           <Link href={`/admin/clients/${client.id}/brand`}>
             <Palette className="h-4 w-4" />
@@ -318,52 +190,14 @@ export default async function ClientDetailPage({
         )}
       </PageHeader>
 
-      {/* ---- Delivery counters ---- */}
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatTile
-          icon={CheckCircle2}
-          label="Delivered"
-          value={delivered}
-          hint={`of ${totalDays} campaign days`}
-          tone="emerald"
-        />
-        <StatTile
-          icon={Clock}
-          label="Pending"
-          value={statusCounts[DeliveryStatus.PENDING]}
-          hint="Queued, not yet generated"
-          tone="amber"
-        />
-        <StatTile
-          icon={Sparkles}
-          label="Generated"
-          value={statusCounts[DeliveryStatus.GENERATED]}
-          hint={
-            awaitingApproval > 0
-              ? `${awaitingApproval} waiting on approval`
-              : 'Asset in Drive, approved and scheduled'
-          }
-          tone={awaitingApproval > 0 ? 'amber' : 'brand'}
-          href={`/admin/clients/${client.id}/approvals`}
-        />
-        <StatTile
-          icon={AlertTriangle}
-          label="Failed"
-          value={statusCounts[DeliveryStatus.FAILED]}
-          hint="Awaiting manual intervention"
-          tone={statusCounts[DeliveryStatus.FAILED] > 0 ? 'red' : 'slate'}
-        />
-      </section>
-
       {/* ---- Identity + operations ---- */}
       <section className="grid gap-6 xl:grid-cols-[1fr_1.1fr]">
         <Card>
           <CardHeader>
             <CardTitle>Tenant record</CardTitle>
             <CardDescription>
-              Provisioning facts written at onboarding. Plan and vertical can be changed
-              from Operations — a shorter plan is refused while calendar days fall beyond
-              it.
+              Provisioning facts written at onboarding. The logo, contact details and colours
+              posters use are edited on the brand canvas.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -376,24 +210,20 @@ export default async function ClientDetailPage({
                 <span className="text-muted-foreground">({totalDays} days)</span>
               </Fact>
               <Fact label="Vertical">{client.category.name}</Fact>
-              <Fact label="Delivery minute">
+              <Fact label="Delivery time">
                 <span className="font-mono">{client.cronTime}</span>{' '}
                 <span className="text-muted-foreground">
                   · {describeDeliveryDays(client.deliveryDays)}
                 </span>
               </Fact>
-              <Fact label="Campaign start">
+              <Fact label="Plan window">
                 <span className="font-mono">
-                  {formatDisplayDate(client.startDate, timeZone)}
-                </span>
-              </Fact>
-              <Fact label="Campaign end">
-                <span className="font-mono">
+                  {formatDisplayDate(client.startDate, timeZone)} →{' '}
                   {formatDisplayDate(client.endDate, timeZone)}
                 </span>
               </Fact>
               <Fact
-                label="Output size"
+                label="Size without a template"
                 title={`${sizePreset.label} · ${describeImageSize(sizePreset)}`}
               >
                 {sizePreset.label}
@@ -403,9 +233,6 @@ export default async function ClientDetailPage({
                 <span className="font-mono text-[11px] text-muted-foreground">
                   {sizePreset.width}×{sizePreset.height}
                 </span>
-                {photoIsUpscaledAt(sizePreset) && (
-                  <span className="text-[11px] text-warning-ink"> · soft photo</span>
-                )}
               </Fact>
               <Fact label="Drive folder">
                 {client.gDriveFolderId ? (
@@ -420,18 +247,16 @@ export default async function ClientDetailPage({
                 {client.logoUrl ? (
                   <span className="text-success-ink">On file</span>
                 ) : (
-                  <span className="text-warning-ink">
-                    Wordmark fallback — add one on the brand canvas
-                  </span>
+                  <span className="text-warning-ink">Not set — add one on the brand canvas</span>
                 )}
               </Fact>
-              <Fact label="Contact bar">
+              <Fact label="Contact details">
                 <span className="font-mono text-[11px]">
                   {client.displayPhone ?? `+${client.whatsappNumber} (derived)`}
                   {client.websiteUrl ? ` · ${client.websiteUrl}` : ' · no website'}
                 </span>
               </Fact>
-              <Fact label="Brand tokens">
+              <Fact label="Brand colours">
                 {brand.colors.length > 0 ? (
                   <span className="flex items-center gap-2">
                     {brand.colors.length} colour{brand.colors.length === 1 ? '' : 's'}
@@ -447,7 +272,7 @@ export default async function ClientDetailPage({
                     </span>
                   </span>
                 ) : (
-                  <span className="text-warning-ink">Not extracted</span>
+                  <span className="text-muted-foreground">None — posters keep template colours</span>
                 )}
               </Fact>
             </dl>
@@ -458,26 +283,12 @@ export default async function ClientDetailPage({
           <CardHeader>
             <CardTitle>Operations</CardTitle>
             <CardDescription>
-              Calendar coverage is {calendarCount}/{totalDays} days seeded. Delivery progress
-              tracks DELIVERED rows against the plan duration.
+              Delivery time, weekdays, plan and vertical are the defaults a new campaign starts
+              from. A campaign keeps its own once it is created — pause or resume sending from
+              its board.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                <span>Delivery progress</span>
-                <span className="font-mono">
-                  {delivered}/{totalDays} sent · {progressPercent}%
-                </span>
-              </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-primary transition-all duration-500"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
-            </div>
-
             <ClientControls
               clientId={client.id}
               companyName={client.companyName}
@@ -496,25 +307,12 @@ export default async function ClientDetailPage({
               deliveryDays={client.deliveryDays}
               plans={planOptions}
               categories={categoryOptions}
-              hasCalendar={calendarCount > 0}
             />
-
-            {calendarCount < totalDays && (
-              <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
-                <SeedCalendarButton
-                  clientId={client.id}
-                  companyName={client.companyName}
-                  calendarCount={calendarCount}
-                  totalDays={totalDays}
-                  hasBrandTokens={brand.colors.length > 0}
-                />
-              </div>
-            )}
           </CardContent>
         </Card>
       </section>
 
-      {/* ---- Campaign calendars (content only) ---- */}
+      {/* ---- Campaigns ---- */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -522,32 +320,27 @@ export default async function ClientDetailPage({
             Campaigns
           </CardTitle>
           <CardDescription>
-            AI content calendars: each day is an editable slot with a topic, headline, caption and photo brief, its
-            mapped template and its poster. Open a campaign to generate, review and approve posters. Nothing is sent
-            from here.
+            A new campaign fills its days from {client.category.name}&apos;s active templates. Open
+            one to generate, approve, move and send its posters.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {campaigns.length > 0 && (
             <ul className="divide-y divide-border rounded-lg border border-border">
               {campaigns.map((campaign) => {
-                const count = (status: string) =>
-                  campaignContent.find((row) => row.campaignId === campaign.id && row.contentStatus === status)?._count
-                    ._all ?? 0;
                 const attention = campaignAttention.get(campaign.id);
+                const boardHref = `/admin/clients/${client.id}/campaigns/${campaign.id}`;
                 const attentionLinks = attention
                   ? ([
-                      ['needs-review', 'need review', attention.needsReview],
-                      ['rejected', 'rejected', attention.rejected],
-                      ['outdated', 'outdated', attention.outdated],
+                      ['needs-approval', 'need approval', attention.needsReview],
+                      ['attention', 'need attention', attention.rejected + attention.outdated],
                       ['failed', 'failed', attention.failed],
-                      ['unmapped', 'unmapped', attention.unmapped],
                     ] as const).filter(([, , value]) => value > 0)
                   : [];
                 return (
                   <li key={campaign.id} className="space-y-1 px-3 py-2.5">
                     <Link
-                      href={`/admin/clients/${client.id}/campaigns/${campaign.id}`}
+                      href={boardHref}
                       className="-mx-3 -my-2.5 flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-accent"
                     >
                       <span className="min-w-0">
@@ -557,24 +350,16 @@ export default async function ClientDetailPage({
                           {campaign.durationDays} days
                         </span>
                       </span>
-                      <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                        <span className="text-success-ink">{count('READY')} ready</span>
-                        {count('NEEDS_REVIEW') > 0 && (
-                          <span className="text-warning-ink">{count('NEEDS_REVIEW')} to review</span>
-                        )}
-                        <span className="text-muted-foreground">{count('NOT_GENERATED')} not generated</span>
-                        <Badge variant="slate">{campaign.status}</Badge>
-                      </div>
+                      <Badge variant="slate">{campaign.status}</Badge>
                     </Link>
 
-                    {/* Unresolved review work, each count a link into that filter. */}
-                    {attention && attention.attention > 0 && (
+                    {/* Unresolved work, each count a link into that board filter. */}
+                    {attentionLinks.length > 0 && (
                       <p className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[11px]">
-                        <span className="font-semibold uppercase tracking-widest text-warning-ink">Needs attention</span>
-                        {attentionLinks.map(([filter, label, value]) => (
+                        {attentionLinks.map(([status, label, value]) => (
                           <Link
-                            key={filter}
-                            href={`/admin/clients/${client.id}/campaigns/${campaign.id}?review=${filter}`}
+                            key={status}
+                            href={`${boardHref}?status=${status}`}
                             className="text-warning-ink underline underline-offset-2 hover:text-foreground"
                           >
                             {value} {label}
@@ -587,12 +372,19 @@ export default async function ClientDetailPage({
               })}
             </ul>
           )}
-          {legacyDays > 0 && (
+          {olderDays > 0 && (
             <p className="text-[11px] text-muted-foreground">
-              This client has {legacyDays} legacy calendar day(s). A client holds one calendar at a time, so a campaign
-              cannot use those day numbers until the legacy calendar is cleared.
+              {olderDays} older calendar day(s) from before campaigns still hold this client&apos;s day
+              numbers, so a new campaign cannot use those days.
+              {clearableOlderDays > 0 &&
+                ` ${clearableOlderDays} of them were never sent and can be cleared.`}
+              {keptOlderDays > 0 &&
+                (firstKeptDay === null || firstKeptDay <= 1
+                  ? ` ${keptOlderDays} were generated or delivered and must be kept as history. They include day 1, so no new campaign can be created for this client.`
+                  : ` ${keptOlderDays} were generated or delivered and must be kept as history. They start at day ${firstKeptDay}, so a new campaign can have at most ${firstKeptDay - 1} content day(s)${clearableOlderDays > 0 ? ' once the unsent days are cleared' : ''}.`)}
             </p>
           )}
+          <ClearLegacyCalendarButton clientId={client.id} clearableDays={clearableOlderDays} />
           <CreateCampaignForm
             clientId={client.id}
             defaultName={`${client.companyName} · ${client.plan.name}`}
@@ -602,112 +394,8 @@ export default async function ClientDetailPage({
         </CardContent>
       </Card>
 
-      {/* ---- Operator-authored content ---- */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Upload className="h-4 w-4 text-brand-to" />
-            Bulk content import
-          </CardTitle>
-          <CardDescription>
-            Two ways in, and they are not the same thing. <strong>Import a sheet</strong> to write
-            the theme, caption, hashtags and image prompt yourself instead of asking the generator
-            for them — those days still get a poster drawn for them here, from a template the sheet
-            names, so the vertical needs an approved layout. <strong>Upload templates</strong> is
-            the other one: finished posters made elsewhere, which are stored and scheduled as they
-            are. Nothing is drawn, no template is involved, and no approval is needed afterwards.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <CalendarImportPanel
-            clientId={client.id}
-            companyName={client.companyName}
-            totalDays={totalDays}
-            seededDays={seededDays}
-            lockedDays={lockedDays}
-            templates={approvedTemplates}
-            categoryName={client.category.name}
-            manualUploadAction={
-              <ManualTemplateUploadDialog
-                clientId={client.id}
-                companyName={client.companyName}
-                totalDays={totalDays}
-                seededDays={seededDays}
-                startDate={client.startDate.toISOString()}
-                endDate={client.endDate.toISOString()}
-                deliveryDays={client.deliveryDays}
-                timeZone={timeZone}
-                /*
-                 * The same floor `storeManualPoster` applies server-side: today,
-                 * unless this client's delivery minute has already gone by, in
-                 * which case tomorrow. Computed here rather than in the browser
-                 * because the app timezone is a server fact — a console open in
-                 * another zone would otherwise preview a day the sweep will
-                 * never look at.
-                 */
-                notBefore={(todayIsSpent ? tomorrowStart : todayStart).toISOString()}
-                cronTime={client.cronTime}
-                todayIsSpent={todayIsSpent}
-              />
-            }
-          />
-        </CardContent>
-      </Card>
-
-      {/* ---- Failures first: they need a human ---- */}
-      {failureRecords.length > 0 && (
-        <Card className="border-danger/25">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-danger-ink">
-              <ShieldAlert className="h-4 w-4" />
-              Failed deliveries
-            </CardTitle>
-            <CardDescription>
-              Re-send reuses the stored Drive asset when one exists; regenerate re-bills the
-              image stage.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <RetryFailedButton
-              clientId={client.id}
-              failedCount={statusCounts[DeliveryStatus.FAILED]}
-            />
-            <QueueLedger
-              entries={failureRecords.map((entry) => toQueueEntry(entry, timeZone))}
-            />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ---- Calendar timeline ---- */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <CalendarClock className="h-4 w-4 text-brand-to" />
-            {timelineIsHistory ? 'Recent calendar entries' : 'Upcoming calendar entries'}
-          </CardTitle>
-          <CardDescription>
-            {timelineIsHistory
-              ? `Nothing scheduled from today onward — showing the most recent ${timeline.length} of ${calendarCount} entries.`
-              : `Next ${timeline.length} of ${calendarCount} seeded entries, previewed from Google Drive.`}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <QueueLedger entries={timeline} />
-        </CardContent>
-      </Card>
-
       {/* ---- Destructive actions, last and visually separated ---- */}
-      <ClientDangerZone
-        clientId={client.id}
-        companyName={client.companyName}
-        clearableDays={
-          statusCounts[DeliveryStatus.PENDING] + statusCounts[DeliveryStatus.FAILED]
-        }
-        lockedDays={
-          statusCounts[DeliveryStatus.GENERATED] + statusCounts[DeliveryStatus.DELIVERED]
-        }
-      />
+      <ClientDangerZone clientId={client.id} companyName={client.companyName} />
     </>
   );
 }

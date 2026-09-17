@@ -21,8 +21,8 @@ import { describeCronTime } from '@/lib/time';
 /**
  * The mutating controls for a single client, laid out for the detail page.
  *
- * Same three server actions the client matrix drives inline; this variant has
- * room for labels, so it is the surface an operator reaches for deliberately.
+ * Same server actions the client matrix drives inline; this variant has room
+ * for labels, so it is the surface an operator reaches for deliberately.
  */
 /** Blank means "no cap", which is distinct from a ₹0 cap. */
 function parseBudget(raw: string): number | null {
@@ -181,7 +181,7 @@ export function ClientControls({
         </div>
 
         <div className="space-y-1.5">
-          <Label>Dispatch state</Label>
+          <Label>Client status</Label>
           <Button
             variant="outline"
             onClick={() => void activeAction.run(clientId, !isActive)}
@@ -194,7 +194,7 @@ export function ClientControls({
             ) : (
               <Play className="h-4 w-4" />
             )}
-            {isActive ? 'Pause campaign' : 'Resume campaign'}
+            {isActive ? 'Pause client' : 'Resume client'}
           </Button>
         </div>
 
@@ -272,7 +272,7 @@ export function ClientControls({
 
       <div className="max-w-sm space-y-1.5 border-t border-border pt-4">
         <div className="flex items-center gap-2">
-          <Label htmlFor="client-image-size">Creative output size</Label>
+          <Label htmlFor="client-image-size">Poster size without a template</Label>
           {imageSizeDirty && (
             <>
               <Button
@@ -313,14 +313,14 @@ export function ClientControls({
         />
 
         <p className="text-[10px] text-muted-foreground">
-          Applies from the next render on. Days already generated keep the asset they
-          were rendered at — regenerate those individually to re-shape them.
+          Campaign posters take their template&apos;s own shape. This size applies only to a
+          campaign day with no template, from its next poster on.
         </p>
       </div>
 
       {!hasDriveFolder && (
         <p className="text-[11px] text-danger-ink">
-          {companyName} has no Drive folder — the pipeline cannot deliver until one exists.
+          {companyName} has no Drive folder — posters cannot be stored until one exists.
         </p>
       )}
 

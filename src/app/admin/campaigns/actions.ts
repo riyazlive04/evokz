@@ -6,77 +6,49 @@ import { z } from 'zod';
 
 import type { ActionResult } from '@/app/admin/dashboard/actions';
 import { LlmError } from '@/lib/ai/openai';
-import {
-  generateCampaignContent,
-  regenerateCampaignDayContent,
-  type ContentChunkReport,
-  type GenerateCampaignContentResult,
-} from '@/lib/campaign/content-generation';
-import { parseContentStrategyText } from '@/lib/campaign/content-strategy';
-import {
-  CampaignDomainError,
-  changeCampaignStatus,
-  createCampaign,
-  markCampaignDayContentReviewed,
-  updateCampaignDayContent,
-  type CampaignDayContentPatch,
-  type DayEditResult,
-} from '@/lib/campaign/service';
+import { cloneTemplatesIntoCampaign } from '@/lib/campaign/clone-queue';
+import { describeBookingMoment } from '@/lib/campaign/board';
+import { changeCampaignStatusWithBookings } from '@/lib/campaign/board-service';
+import { CampaignDomainError, createCampaign } from '@/lib/campaign/service';
 import {
   approveCampaignDayPoster,
   generateCampaignDayPoster,
-  loadPosterOverview,
-  planPosterBatch,
   saveStudioPosterToCampaignDay,
   type GenerateDayPosterResult,
-  type PosterBatchPlan,
 } from '@/lib/campaign/poster-generation-service';
 import {
   cancelCampaignDelivery,
   defaultDeliveryDeps,
+  type BookingResult,
+  type DayBookingOutcome,
   rescheduleCampaignDelivery,
-  scheduleCampaignDeliveries,
   sendCampaignDelivery,
-  type ScheduleOutcome,
   type SendOutcome,
 } from '@/lib/campaign/delivery-service';
-import {
-  cancelQueuedGeneration,
-  queueCampaignPosters,
-  type QueueOutcome,
-} from '@/lib/campaign/generation-queue';
+import { cancelQueuedGeneration } from '@/lib/campaign/generation-queue';
 import { MAX_REJECTION_DETAIL } from '@/lib/campaign/review';
 import {
   approveCampaignDayPosters,
-  loadCampaignDayReview,
   rejectCampaignDayPoster,
   type BulkApprovalResult,
 } from '@/lib/campaign/review-service';
-import type { AutoMapOutcome, MappingSource } from '@/lib/campaign/template-mapping';
-import {
-  applyAutoMap,
-  assignManualTemplates,
-  changeTemplateMappingMode,
-  previewAutoMap,
-  setTemplateActive,
-  setTemplatePrompt,
-  type ManualMappingResult,
-} from '@/lib/campaign/template-mapping-service';
+import { setTemplateActive } from '@/lib/campaign/template-mapping-service';
 import { prisma } from '@/lib/prisma';
+import { getAppTimeZone } from '@/lib/time';
 
 /**
- * Campaign calendar actions (Phase 2 content, Phase 3 template mapping, Phase 4
- * rolling poster generation, Phase 5 review and approval, Phase 6 delivery).
+ * Campaign actions used by the campaign board, the client page, the vertical
+ * page and Poster Studio: create a campaign, activate or pause it, generate,
+ * approve and reject posters, and deliver them.
  *
  * Thin wrappers over `src/lib/campaign`: parse the wire input, call one service,
  * map failures to operator copy. Behind the admin session like every other
  * action (`src/middleware.ts` gates `/admin/*`, which is where these POST).
  *
- * Only the Phase 4 poster actions render posters or write poster versions, and
- * only the Phase 6 delivery actions at the end of this file can send anything.
- * The legacy calendar tools refuse campaign clients
- * (src/lib/calendar-scope.ts) — these are the campaign-specific actions that
- * explicitly target campaign days.
+ * Only the poster actions render posters or write poster versions, and only the
+ * delivery actions near the end of this file can send anything. The board's own
+ * actions (moves, Fill empty days, rewrite, bulk generate) live in
+ * `board-actions.ts` and `clone-actions.ts`.
  */
 
 const uuid = z.string().uuid();
@@ -107,13 +79,14 @@ const createInputSchema = z.object({
   /** A calendar date, YYYY-MM-DD, in the app timezone. */
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Choose a start date'),
   durationDays: z.number().int().min(1).max(730).optional(),
-  templateMappingMode: z.enum(['AUTO', 'MANUAL']),
+  /** Still accepted for compatibility; the form no longer asks, and new campaigns default to MANUAL. */
+  templateMappingMode: z.enum(['AUTO', 'MANUAL']).optional(),
 });
 
 export async function createCampaignAction(
   clientId: string,
   input: z.input<typeof createInputSchema>,
-): Promise<ActionResult<{ campaignId: string; dayCount: number }>> {
+): Promise<ActionResult<{ campaignId: string; dayCount: number; filledDays: number }>> {
   try {
     const data = createInputSchema.parse(input);
     // Midday UTC on that calendar date falls on the same local date in every
@@ -126,230 +99,27 @@ export async function createCampaignAction(
       durationDays: data.durationDays,
       templateMappingMode: data.templateMappingMode,
     });
+    // The days fill themselves with the vertical's read templates (no AI call).
+    // Best-effort: the campaign exists either way, and "Fill empty days" on the
+    // board runs the same fill again.
+    let filledDays = 0;
+    try {
+      filledDays = (await cloneTemplatesIntoCampaign(prisma, result.campaignId)).filled.length;
+    } catch (error) {
+      console.error(`[campaign:action] filling campaign=${result.campaignId} with templates failed:`, error instanceof Error ? error.message : error);
+    }
     revalidateAdmin();
-    return { ok: true, data: { campaignId: result.campaignId, dayCount: result.dayCount } };
+    return { ok: true, data: { campaignId: result.campaignId, dayCount: result.dayCount, filledDays } };
   } catch (error) {
     return toFailure(error, 'Creating the campaign');
   }
 }
 
-const generateInputSchema = z.object({
-  fromDay: z.number().int().min(1),
-  toDay: z.number().int().min(1),
-  mode: z.enum(['missing', 'overwrite']),
-});
-
-/**
- * Generates content for at most ONE chunk (30 days) of the range and returns
- * where to continue. The calendar calls it repeatedly, so a long campaign is a
- * series of short requests: each shows progress, each is saved as it lands, and
- * a failure costs one chunk.
- */
-export async function generateCampaignContentAction(
-  campaignId: string,
-  input: z.input<typeof generateInputSchema>,
-): Promise<ActionResult<GenerateCampaignContentResult>> {
-  try {
-    const data = generateInputSchema.parse(input);
-    const result = await generateCampaignContent(prisma, uuid.parse(campaignId), { ...data, maxChunks: 1 });
-    revalidateAdmin();
-    return { ok: true, data: result };
-  } catch (error) {
-    return toFailure(error, 'Generating content');
-  }
-}
-
-export async function regenerateCampaignDayAction(dayId: string): Promise<ActionResult<ContentChunkReport>> {
-  try {
-    const report = await regenerateCampaignDayContent(prisma, uuid.parse(dayId));
-    revalidateAdmin();
-    if (report.error) return failure(report.error);
-    if (report.written.length === 0) {
-      return failure(
-        report.changedMeanwhile.length > 0
-          ? 'The day was edited while its content was being written, so the edit was kept.'
-          : 'The model returned no usable content for this day. Try again.',
-      );
-    }
-    return { ok: true, data: report };
-  } catch (error) {
-    return toFailure(error, 'Regenerating the day');
-  }
-}
-
-export async function updateCampaignDayAction(
-  dayId: string,
-  patch: CampaignDayContentPatch,
-  expectedRevision: number,
-): Promise<ActionResult<DayEditResult>> {
-  try {
-    const result = await updateCampaignDayContent(prisma, uuid.parse(dayId), patch, {
-      expectedRevision: z.number().int().min(1).parse(expectedRevision),
-    });
-    revalidateAdmin();
-    return { ok: true, data: result };
-  } catch (error) {
-    return toFailure(error, 'Saving the day');
-  }
-}
-
-export async function markCampaignDayReviewedAction(dayId: string): Promise<ActionResult> {
-  try {
-    await markCampaignDayContentReviewed(prisma, uuid.parse(dayId));
-    revalidateAdmin();
-    return { ok: true, data: undefined };
-  } catch (error) {
-    return toFailure(error, 'Marking the day reviewed');
-  }
-}
-
-/** Saves a vertical's content strategy from the editor's text. Empty text restores the default. */
-export async function saveVerticalContentStrategyAction(
-  categoryId: string,
-  text: string,
-): Promise<ActionResult<{ pillars: number; usesDefault: boolean }>> {
-  try {
-    const id = uuid.parse(categoryId);
-    const trimmed = z.string().max(20_000).parse(text).trim();
-
-    if (!trimmed) {
-      await prisma.category.update({ where: { id }, data: { contentStrategy: Prisma.DbNull } });
-      revalidateAdmin();
-      return { ok: true, data: { pillars: 0, usesDefault: true } };
-    }
-
-    const parsed = parseContentStrategyText(trimmed);
-    if (!parsed.strategy) return failure(parsed.errors.slice(0, 3).join(' '));
-
-    await prisma.category.update({
-      where: { id },
-      data: { contentStrategy: parsed.strategy as unknown as Prisma.InputJsonValue },
-    });
-    revalidateAdmin();
-    return { ok: true, data: { pillars: parsed.strategy.pillars.length, usesDefault: false } };
-  } catch (error) {
-    return toFailure(error, 'Saving the content strategy');
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Template mapping (Phase 3). Maps templates to days; never generates a poster.
+// Templates
 // ---------------------------------------------------------------------------
 
-const scopeSchema = z.enum(['fill', 'rebalance']);
-
-export interface AutoMapPreviewEntry {
-  dayNumber: number;
-  outcome: AutoMapOutcome;
-  currentTemplateId: string | null;
-  currentSource: MappingSource | null;
-  templateId: string | null;
-  conflict: { title: string; detail: string } | null;
-  replacementTemplateId: string | null;
-  unmappedReason: string | null;
-  repeatsPreviousDay: boolean;
-}
-
-export interface AutoMapPreview {
-  scope: 'fill' | 'rebalance';
-  switchesMode: boolean;
-  fingerprint: string;
-  counts: Record<AutoMapOutcome, number> & { conflicts: number; changes: number };
-  entries: AutoMapPreviewEntry[];
-}
-
-/** What Auto Map would do. Writes nothing. */
-export async function previewAutoMapAction(
-  campaignId: string,
-  scope: 'fill' | 'rebalance',
-): Promise<ActionResult<AutoMapPreview>> {
-  try {
-    const { plan } = await previewAutoMap(prisma, uuid.parse(campaignId), { scope: scopeSchema.parse(scope) });
-    return {
-      ok: true,
-      data: {
-        scope: plan.scope,
-        switchesMode: plan.switchesMode,
-        fingerprint: plan.fingerprint,
-        counts: plan.counts,
-        entries: plan.entries.map((entry) => ({
-          dayNumber: entry.dayNumber,
-          outcome: entry.outcome,
-          currentTemplateId: entry.currentTemplateId,
-          currentSource: entry.currentSource,
-          templateId: entry.templateId,
-          conflict: entry.conflict ? { title: entry.conflict.title, detail: entry.conflict.detail } : null,
-          replacementTemplateId: entry.replacementTemplateId,
-          unmappedReason: entry.unmappedReason?.detail ?? null,
-          repeatsPreviousDay: entry.repeatsPreviousDay,
-        })),
-      },
-    };
-  } catch (error) {
-    return toFailure(error, 'Previewing Auto Map');
-  }
-}
-
-/** Applies the previewed plan, refused if the campaign changed since the preview. */
-export async function applyAutoMapAction(
-  campaignId: string,
-  input: { scope: 'fill' | 'rebalance'; fingerprint: string },
-): Promise<ActionResult<{ daysWritten: number; revisionsBumped: number; switchedToAuto: boolean }>> {
-  try {
-    const result = await applyAutoMap(prisma, uuid.parse(campaignId), {
-      scope: scopeSchema.parse(input.scope),
-      fingerprint: z.string().min(1).max(64).parse(input.fingerprint),
-    });
-    revalidateAdmin();
-    return {
-      ok: true,
-      data: { daysWritten: result.daysWritten, revisionsBumped: result.revisionsBumped, switchedToAuto: result.switchedToAuto },
-    };
-  } catch (error) {
-    return toFailure(error, 'Applying Auto Map');
-  }
-}
-
-const dayNumberSchema = z.number().int().min(1).max(730);
-const templateIdSchema = uuid.nullable();
-
-const assignmentSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('days'), dayNumbers: z.array(dayNumberSchema).min(1).max(730), templateId: templateIdSchema }),
-  z.object({ kind: z.literal('range'), fromDay: dayNumberSchema, toDay: dayNumberSchema, templateId: templateIdSchema }),
-  z.object({ kind: z.literal('pattern'), fromDay: dayNumberSchema, toDay: dayNumberSchema, templateIds: z.array(uuid).min(1).max(50) }),
-]);
-
-/** Manual mapping: one day, a selection, a range or a repeating pattern. Clears with a null template. */
-export async function assignCampaignTemplatesAction(
-  campaignId: string,
-  assignment: z.input<typeof assignmentSchema>,
-  options: { skipManual?: boolean } = {},
-): Promise<ActionResult<ManualMappingResult>> {
-  try {
-    const result = await assignManualTemplates(prisma, uuid.parse(campaignId), assignmentSchema.parse(assignment), {
-      skipManual: z.boolean().optional().parse(options.skipManual),
-    });
-    revalidateAdmin();
-    return { ok: true, data: result };
-  } catch (error) {
-    return toFailure(error, 'Mapping templates');
-  }
-}
-
-export async function changeTemplateMappingModeAction(
-  campaignId: string,
-  mode: 'AUTO' | 'MANUAL',
-): Promise<ActionResult<{ changed: boolean; daysAffected: number }>> {
-  try {
-    const result = await changeTemplateMappingMode(prisma, uuid.parse(campaignId), z.enum(['AUTO', 'MANUAL']).parse(mode));
-    revalidateAdmin();
-    return { ok: true, data: result };
-  } catch (error) {
-    return toFailure(error, 'Changing the mapping mode');
-  }
-}
-
-/** Retires or restores a template for campaign mapping. Mapped days keep it and are flagged. */
+/** Retires or restores a template for new campaign days. Days already using it keep it and are flagged. */
 export async function setTemplateActiveAction(
   templateId: string,
   active: boolean,
@@ -363,51 +133,15 @@ export async function setTemplateActiveAction(
   }
 }
 
-export async function setTemplatePromptAction(
-  templateId: string,
-  prompt: string,
-): Promise<ActionResult<{ prompt: string | null }>> {
-  try {
-    // Length is enforced by the domain function; this only bounds the payload.
-    const result = await setTemplatePrompt(prisma, uuid.parse(templateId), z.string().max(10_000).parse(prompt));
-    revalidateAdmin();
-    return { ok: true, data: result };
-  } catch (error) {
-    return toFailure(error, 'Saving the template prompt');
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Rolling poster generation (Phase 4). Generates posters; never sends anything.
+// Poster generation. Generates posters; never sends anything.
 // ---------------------------------------------------------------------------
 
 const posterModeSchema = z.enum(['missing', 'upcoming', 'regenerate']);
-const batchRequestSchema = z.object({
-  mode: posterModeSchema,
-  fromDay: z.number().int().min(1).max(730).optional(),
-  toDay: z.number().int().min(1).max(730).optional(),
-});
 
 /**
- * What a batch would generate, and why every other day in scope would not.
- * Writes nothing and calls no provider — it is the confirmation's data.
- */
-export async function planPosterBatchAction(
-  campaignId: string,
-  request: z.input<typeof batchRequestSchema>,
-): Promise<ActionResult<PosterBatchPlan>> {
-  try {
-    const overview = await loadPosterOverview(prisma, uuid.parse(campaignId));
-    return { ok: true, data: planPosterBatch(overview, batchRequestSchema.parse(request)) };
-  } catch (error) {
-    return toFailure(error, 'Planning poster generation');
-  }
-}
-
-/**
- * Generates ONE day's poster if it is eligible now. The calendar calls it once
- * per day in sequence, so a batch shows progress, can be stopped between days,
- * and keeps every poster already made if the tab closes.
+ * Generates ONE day's poster if it is eligible now — the board card's Generate.
+ * Bulk generation queues days for the server instead (`clone-actions.ts`).
  */
 export async function generateCampaignDayPosterAction(
   campaignId: string,
@@ -426,11 +160,37 @@ export async function generateCampaignDayPosterAction(
   }
 }
 
-export async function approveCampaignDayPosterAction(dayId: string, versionId: string): Promise<ActionResult> {
+/**
+ * What approving did to a day's delivery, worded for the operator. Dates are
+ * formatted here, in the app timezone, so the browser never re-derives a day.
+ */
+export interface BookingNotice {
+  dayNumber: number;
+  result: BookingResult;
+  /** "09:05 today" / "Thu 18 Sept 09:03" — when the booking goes out. */
+  whenLabel: string | null;
+  /** The moment has already come: the next sweep sends it within a minute. */
+  immediate: boolean;
+  /** Why it was not booked, when it was not. */
+  refusal: string | null;
+}
+
+function toBookingNotice(outcome: DayBookingOutcome): BookingNotice {
+  const moment = outcome.scheduledFor ? describeBookingMoment(outcome.scheduledFor, new Date(), getAppTimeZone()) : null;
+  return {
+    dayNumber: outcome.dayNumber,
+    result: outcome.result,
+    whenLabel: moment?.label ?? null,
+    immediate: moment?.immediate ?? false,
+    refusal: outcome.refusal?.message ?? null,
+  };
+}
+
+export async function approveCampaignDayPosterAction(dayId: string, versionId: string): Promise<ActionResult<{ booking: BookingNotice | null }>> {
   try {
-    await approveCampaignDayPoster(prisma, uuid.parse(dayId), uuid.parse(versionId));
+    const { booking } = await approveCampaignDayPoster(prisma, uuid.parse(dayId), uuid.parse(versionId));
     revalidateAdmin();
-    return { ok: true, data: undefined };
+    return { ok: true, data: { booking: booking ? toBookingNotice(booking) : null } };
   } catch (error) {
     return toFailure(error, 'Approving the poster');
   }
@@ -450,13 +210,20 @@ export async function saveStudioPosterToCampaignDayAction(
   }
 }
 
-/** Activate, pause or resume a campaign. Activating sends nothing — delivery is not wired to campaigns. */
+/**
+ * Activate, pause or resume a campaign.
+ *
+ * Activating (or resuming) books every approved day for delivery at once — the
+ * same booking an approval makes — so nobody has to press Schedule. It sends
+ * nothing itself: bookings go out at their moments through the delivery gate.
+ * Pausing touches no booking; the sweep simply skips a paused campaign.
+ */
 export async function changeCampaignStatusAction(
   campaignId: string,
   status: 'ACTIVE' | 'PAUSED',
-): Promise<ActionResult<{ from: string; to: string }>> {
+): Promise<ActionResult<{ from: string; to: string; booked: number }>> {
   try {
-    const result = await changeCampaignStatus(prisma, uuid.parse(campaignId), z.enum(['ACTIVE', 'PAUSED']).parse(status));
+    const result = await changeCampaignStatusWithBookings(prisma, uuid.parse(campaignId), z.enum(['ACTIVE', 'PAUSED']).parse(status));
     revalidateAdmin();
     return { ok: true, data: result };
   } catch (error) {
@@ -465,7 +232,7 @@ export async function changeCampaignStatusAction(
 }
 
 // ---------------------------------------------------------------------------
-// Review and approval (Phase 5). Reviews posters; never sends or deletes anything.
+// Review and approval. Reviews posters; never sends or deletes anything.
 // ---------------------------------------------------------------------------
 
 const rejectionSchema = z.object({
@@ -496,40 +263,19 @@ export async function rejectCampaignDayPosterAction(
 export async function approveCampaignPostersAction(
   campaignId: string,
   dayIds: string[],
-): Promise<ActionResult<BulkApprovalResult>> {
+): Promise<ActionResult<Omit<BulkApprovalResult, 'bookings'> & { bookings: BookingNotice[] }>> {
   try {
     const ids = z.array(uuid).min(1, 'Select at least one day.').max(730).parse(dayIds);
     const result = await approveCampaignDayPosters(prisma, uuid.parse(campaignId), ids);
     revalidateAdmin();
-    return { ok: true, data: result };
+    return { ok: true, data: { ...result, bookings: result.bookings.map(toBookingNotice) } };
   } catch (error) {
     return toFailure(error, 'Approving the selected posters');
   }
 }
 
-/** One day's content, template, poster and version history — the review detail. */
-export async function loadCampaignDayReviewAction(dayId: string) {
-  try {
-    const detail = await loadCampaignDayReview(prisma, uuid.parse(dayId));
-    return {
-      ok: true as const,
-      data: {
-        ...detail,
-        scheduledDate: detail.scheduledDate.toISOString(),
-        versions: detail.versions.map((version) => ({
-          ...version,
-          createdAt: version.createdAt.toISOString(),
-          reviewedAt: version.reviewedAt?.toISOString() ?? null,
-        })),
-      },
-    };
-  } catch (error) {
-    return toFailure(error, 'Loading the day');
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Delivery (Phase 6)
+// Delivery
 //
 // These are the only actions in this file that can put a message on the wire.
 // None of them decides whether a day may be sent: every one calls the delivery
@@ -537,19 +283,6 @@ export async function loadCampaignDayReviewAction(dayId: string) {
 // database and re-runs the full gate after claiming the row. An action cannot
 // bypass approval, and neither can a hand-made request to it.
 // ---------------------------------------------------------------------------
-
-/** Books deliveries for every day whose approved poster is ready. Sends nothing. */
-export async function scheduleCampaignDeliveriesAction(
-  campaignId: string,
-): Promise<ActionResult<ScheduleOutcome>> {
-  try {
-    const outcome = await scheduleCampaignDeliveries(prisma, uuid.parse(campaignId));
-    revalidateAdmin();
-    return { ok: true, data: outcome };
-  } catch (error) {
-    return toFailure(error, 'Scheduling delivery');
-  }
-}
 
 /**
  * Confirms a day belongs to the campaign the caller named (Phase 7).
@@ -592,13 +325,22 @@ export async function sendCampaignDayNowAction(
   }
 }
 
-/** Puts a failed, cancelled or skipped day back in the queue at its own time. */
-export async function retryCampaignDeliveryAction(campaignId: string, dayId: string): Promise<ActionResult<null>> {
+/**
+ * Puts a failed, cancelled or skipped day back in the queue at its own time.
+ *
+ * A cancelled or skipped delivery that was already attempted may have reached
+ * WhatsApp; booking it again needs `confirmAttempted` — the operator was warned.
+ */
+export async function retryCampaignDeliveryAction(
+  campaignId: string,
+  dayId: string,
+  options: { confirmAttempted?: boolean } = {},
+): Promise<ActionResult<null>> {
   try {
     const campaign = uuid.parse(campaignId);
     const day = uuid.parse(dayId);
     await assertDayInCampaign(campaign, day);
-    await rescheduleCampaignDelivery(prisma, day);
+    await rescheduleCampaignDelivery(prisma, day, defaultDeliveryDeps(), { confirmAttempted: z.boolean().optional().parse(options.confirmAttempted) });
     revalidateAdmin();
     return { ok: true, data: null };
   } catch (error) {
@@ -621,35 +363,8 @@ export async function cancelCampaignDeliveryAction(campaignId: string, dayId: st
 }
 
 // ---------------------------------------------------------------------------
-// Server-side poster generation (Phase 7)
+// Server-side poster generation
 // ---------------------------------------------------------------------------
-
-/**
- * Queues a batch for the server to generate, and returns immediately.
- *
- * Nothing is rendered and nothing is billed here: the days are marked QUEUED and
- * the cron sweep does the work, so the operator may close the tab. Queueing
- * twice is safe — a day already waiting is reported, not queued again.
- */
-export async function queueCampaignPostersAction(
-  campaignId: string,
-  request: { mode: 'upcoming' | 'missing' | 'regenerate'; fromDay?: number; toDay?: number },
-): Promise<ActionResult<QueueOutcome>> {
-  try {
-    const parsed = z
-      .object({
-        mode: z.enum(['upcoming', 'missing', 'regenerate']),
-        fromDay: z.number().int().min(1).max(730).optional(),
-        toDay: z.number().int().min(1).max(730).optional(),
-      })
-      .parse(request);
-    const outcome = await queueCampaignPosters(prisma, uuid.parse(campaignId), parsed);
-    revalidateAdmin();
-    return { ok: true, data: outcome };
-  } catch (error) {
-    return toFailure(error, 'Queueing the posters');
-  }
-}
 
 /** Withdraws queued days no worker has taken yet. Work in flight is left alone. */
 export async function cancelQueuedGenerationAction(campaignId: string): Promise<ActionResult<{ cancelled: number }>> {

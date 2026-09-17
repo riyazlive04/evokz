@@ -13,11 +13,11 @@
 #   - It never touches the edge at all, so no change to Caddy or to the app's
 #     own auth can break scheduled runs.
 #
-# Keep the crontab interval and CRON_WINDOW_MINUTES in .env *equal*: the sweep
-# only matches clients whose delivery minute falls inside its trailing window, so
-# a window shorter than the interval silently drops deliveries in the gap — and a
-# window longer than the interval lets two overlapping sweeps both see a row that
-# is still PENDING mid-send, which sends the same poster twice.
+# There is no window to keep in step with the interval: each sweep generates a
+# few queued campaign posters (CAMPAIGN_GENERATION_LIMIT), books approved days,
+# and sends every campaign delivery whose time has already come. The interval
+# only sets how late a send can be; a delivery still unsent once its local day
+# is over is marked missed rather than sent late.
 
 set -euo pipefail
 

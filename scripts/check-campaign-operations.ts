@@ -8,7 +8,7 @@
  *
  * Run: npm run check:campaign-operations
  */
-import type { CampaignDeliveryStatus, PosterApprovalStatus, PosterGenerationStatus } from '@prisma/client';
+import type { CampaignDeliveryStatus, PosterApprovalStatus, PosterGenerationStatus, TemplateMappingMode } from '@prisma/client';
 
 import {
   buildCampaignPosterBrief,
@@ -204,6 +204,8 @@ section('the needs-attention queue');
       errorMessage: null,
       activePosterVersion: { contentRevision: 3, approvalStatus: 'APPROVED' as PosterApprovalStatus },
       delivery: null,
+      // Campaign board: the day's campaign mode decides whether a suggestion counts.
+      campaign: { templateMappingMode: 'AUTO' as TemplateMappingMode },
       ...overrides,
     };
   };
@@ -230,6 +232,14 @@ section('the needs-attention queue');
   const unmapped = buildAttentionQueue([unmappedDay], [unmappedDay], NOW);
   t('an unmapped window day is a TEMPLATE blocker', unmapped.some((item) => item.group === 'TEMPLATE' && item.href === '?review=unmapped'));
   t('an unmapped day outside the window is not a blocker yet', buildAttentionQueue([unmappedDay], [], NOW).every((item) => item.group !== 'TEMPLATE'));
+
+  // One template source (campaign board): a stored AUTO suggestion only counts
+  // under AUTO — `effectiveTemplateId`, not `posterTemplateId ?? suggestedTemplateId`.
+  const suggestedOnly = { posterTemplateId: null, suggestedTemplateId: 'template-2', activePosterVersion: null, generationStatus: 'NOT_REQUESTED' as PosterGenerationStatus };
+  const autoSuggested = day({ ...suggestedOnly, campaign: { templateMappingMode: 'AUTO' } });
+  const manualSuggested = day({ ...suggestedOnly, campaign: { templateMappingMode: 'MANUAL' } });
+  t('under AUTO a suggestion maps the day', buildAttentionQueue([autoSuggested], [autoSuggested], NOW).every((item) => item.group !== 'TEMPLATE'));
+  t('under MANUAL a suggestion alone leaves the day unmapped', buildAttentionQueue([manualSuggested], [manualSuggested], NOW).some((item) => item.group === 'TEMPLATE'));
 
   const contentDay = day({ contentStatus: 'NEEDS_REVIEW', contentIssues: ['Headline repeats day 12'] });
   const content = buildAttentionQueue([contentDay], [contentDay], NOW);

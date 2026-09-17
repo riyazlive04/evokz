@@ -108,15 +108,13 @@ async function asAction<T>(work: () => Promise<T>): Promise<T> {
 
 async function suite(): Promise<void> {
   const tx = facade;
-  const { SAMPLE_LAYOUT_SPEC } = await import('@/lib/poster/sample-layout');
   const service = await import('@/lib/campaign/service');
   const mapping = await import('@/lib/campaign/template-mapping-service');
   const posters = await import('@/lib/campaign/poster-generation-service');
   const delivery = await import('@/lib/campaign/delivery-service');
   const campaignActions = await import('@/app/admin/campaigns/actions');
-  const { LEGACY_CALENDAR } = await import('@/lib/calendar-scope');
   const { StudioError } = await import('@/lib/poster-studio/errors');
-  const { prepareStudioInputImage, readStudioImageSize } = await import('@/lib/poster-studio/images');
+  const { readStudioImageSize } = await import('@/lib/poster-studio/images');
   const { recordOpenAiImageUsage } = await import('@/lib/usage');
   const { loadStudioBrandCanvas } = await import('@/lib/poster-studio/brand-context');
   const { startOfZonedDay } = await import('@/lib/time');
@@ -148,15 +146,15 @@ async function suite(): Promise<void> {
   const deps: Deps = {
     assertConfigured: () => undefined,
     loadBrandCanvas: loadStudioBrandCanvas,
-    prepareOverlay: async (canvas, selection, aspectRatio) =>
-      ({ preset: 'footer-band', aspectRatio, theme: null, fonts: [], logo: null, logoInk: null, name: canvas.companyName, tagline: canvas.tagline, website: canvas.website, phone: canvas.phone, footerBackground: selection.footerBackground, drawn: ['name', ...selection.elements] }) as unknown as Awaited<ReturnType<Deps['prepareOverlay']>>,
-    compose: async (raw, plan) => ({ bytes: await sharp(raw).composite([{ input: await png(1152, 240, '#111111'), left: 0, top: 1808 }]).png().toBuffer(), mimeType: 'image/png', drawn: plan.drawn, footerTone: 'DARK' }),
+    resolveLogo: async () => null,
+    composeIdentity: async (raw) => raw,
+    checkText: async () => ({ checkedAt: NOW.toISOString(), model: 'fake', ok: true, items: [], leftovers: [] }),
+    prepareTemplate: async (bytes) => ({ bytes, mimeType: 'image/png' }),
     resolveFolder: async () => 'fixture-folder',
     readFile: async (fileId) => {
       if (!fileId.startsWith('fixture-template')) throw new StudioError('storage', 'Could not load the image from Google Drive.');
       return templatePng;
     },
-    prepareReference: prepareStudioInputImage,
     render: async (request) => {
       const [width, height] = request.size.split('x').map(Number) as [number, number];
       return { bytes: await png(width, height, '#88ccbb'), mimeType: 'image/png', model: 'gpt-image-2', quality: 'low', usage: { textInputTokens: 100, imageInputTokens: 900, outputTokens: 4000 } };
@@ -209,10 +207,22 @@ async function suite(): Promise<void> {
   const vertical = await tx.category.create({
     data: { name: 'check:delivery Vertical', contentStrategy: { pillars: [{ key: 'educational', label: 'Educational', weight: 2, guidance: 'Teach.' }, { key: 'tips', label: 'Tips', weight: 1, guidance: 'Advise.' }] } },
   });
-  const portrait = { ...SAMPLE_LAYOUT_SPEC, aspect: 9 / 16 } as unknown as Prisma.InputJsonValue;
+  /** A read template: clone mode generates only from templates whose elements were read. */
+  const elementsDoc = (label: string) =>
+    ({
+      version: 1,
+      width: 1080,
+      height: 1920,
+      model: 'fake',
+      elements: [
+        { id: 'e1', kind: 'headline', text: `Template ${label} headline`, box: { x: 0.1, y: 0.1, w: 0.8, h: 0.1 }, group: null, description: null },
+        { id: 'e2', kind: 'subheadline', text: 'Gentle care for the whole family.', box: { x: 0.1, y: 0.25, w: 0.8, h: 0.05 }, group: null, description: null },
+        { id: 'e3', kind: 'cta', text: 'Book a visit', box: { x: 0.1, y: 0.85, w: 0.4, h: 0.05 }, group: null, description: null },
+      ],
+    }) as unknown as Prisma.InputJsonValue;
   const template = async (label: string, order: number) =>
     tx.categoryTemplate.create({
-      data: { categoryId: vertical.id, label: `check:delivery ${label}`, gDriveFileId: `fixture-template-${label}`, gDriveViewUrl: 'https://drive.invalid/t', mimeType: 'image/png', width: 1080, height: 1920, layoutSpec: portrait, layoutApprovedAt: new Date(), createdAt: new Date(Date.parse('2026-01-01') + order * 1000) },
+      data: { categoryId: vertical.id, label: `check:delivery ${label}`, gDriveFileId: `fixture-template-${label}`, gDriveViewUrl: 'https://drive.invalid/t', mimeType: 'image/png', width: 1080, height: 1920, createdAt: new Date(Date.parse('2026-01-01') + order * 1000), elements: elementsDoc(label), elementsReadAt: new Date() },
     });
   await template('A', 1);
   await template('B', 2);
@@ -220,7 +230,7 @@ async function suite(): Promise<void> {
   const brand = { colors: [{ hex: '#0e7c86', role: 'primary' }], typography: null, layoutDirectives: [], assets: [] };
   const makeClient = (name: string, data: Partial<Prisma.ClientUncheckedCreateInput> = {}) =>
     tx.client.create({
-      data: { companyName: `check:delivery ${name}`, whatsappNumber: '919876500999', startDate: today, endDate: today, planId: plan.id, categoryId: vertical.id, isDemo: true, isActive: false, imageSizePreset: 'whatsapp-status', brandGuideline: brand, brandTagline: 'Care', websiteUrl: 'delivery-fixture.invalid', gDriveFolderId: 'SECRET-DELIVERY-FOLDER', ...data },
+      data: { companyName: `check:delivery ${name}`, whatsappNumber: '919876500999', startDate: today, endDate: today, planId: plan.id, categoryId: vertical.id, isDemo: false, isActive: true, imageSizePreset: 'whatsapp-status', brandGuideline: brand, brandTagline: 'Care', websiteUrl: 'delivery-fixture.invalid', gDriveFolderId: 'SECRET-DELIVERY-FOLDER', ...data },
     });
   const clientA = await makeClient('Clinic');
   const legacy = await makeClient('Legacy');
@@ -376,6 +386,27 @@ async function suite(): Promise<void> {
   }
 
   // =======================================================================
+  section('a paused client delivers nothing');
+  // =======================================================================
+  {
+    const before = sent.length;
+    await tx.client.update({ where: { id: clientA.id }, data: { isActive: false } });
+    const manual = await delivery.sendCampaignDelivery(tx, (await dayRow(1)).id, deliveryDeps(), { manual: true });
+    t('Send Now is refused for a paused client, with the reason', !manual.ok && manual.reason === 'client-paused' && /Client is paused/.test(manual.message), snapshot(manual));
+
+    clock = (await deliveryOf(1))!.scheduledFor;
+    const sweep = await delivery.runDueCampaignDeliveries(tx, deliveryDeps());
+    t('the sweep sends nothing for a paused client', !sweep.sent.includes(1) && !sweep.skipped.some((entry) => entry.dayNumber === 1), snapshot(sweep));
+    t('no provider call was made while the client was paused', sent.length === before);
+    t('its bookings are untouched', (await deliveryOf(1))?.status === 'SCHEDULED' && (await deliveryOf(1))?.attempts === 0);
+    const synced = await delivery.bookCampaignDay(tx, (await dayRow(1)).id, { deps: deliveryDeps() });
+    t('a booking sync neither withdraws nor re-books them', synced.result === 'unchanged' && (await deliveryOf(1))?.status === 'SCHEDULED', snapshot(synced));
+
+    await tx.client.update({ where: { id: clientA.id }, data: { isActive: true } });
+    t('resuming the client creates no duplicate bookings', (await tx.campaignDelivery.count({ where: { campaignId } })) === 4);
+  }
+
+  // =======================================================================
   section('a successful send');
   // =======================================================================
   {
@@ -393,7 +424,7 @@ async function suite(): Promise<void> {
 
     const message = sent.at(-1)!;
     t("the recipient is the client's own WhatsApp number", message.number === '919876500999');
-    t('the caption is the approved content', message.caption === 'Headline 1\n\nSupporting 1.\n\nBook a visit', snapshot(message.caption));
+    t('the caption is the approved content: the day’s own words, kept in its elements', message.caption === 'Headline 1\n\nSupporting 1.\n\nBook a visit', snapshot(message.caption));
     t('the file name is the campaign day, with no identifier', message.fileName === 'Campaign_Day_001.png');
     t('the media URL names the approved version', message.mediaUrl.includes(row!.posterVersionId));
     t('the media URL carries no Drive id', !/fake-drive-/.test(message.mediaUrl));
@@ -580,9 +611,6 @@ async function suite(): Promise<void> {
     const cancelled = await asAction(() => campaignActions.cancelCampaignDeliveryAction(campaignId, day3.id));
     t('cancelling a sent day is refused', !cancelled.ok);
 
-    const scheduleResult = await asAction(() => campaignActions.scheduleCampaignDeliveriesAction(campaignId));
-    t('the schedule action returns a plan and sends nothing', scheduleResult.ok);
-
     const badId = await asAction(() => campaignActions.sendCampaignDayNowAction(campaignId, 'not-a-uuid'));
     t('a malformed id is rejected by the action', !badId.ok);
 
@@ -637,7 +665,7 @@ async function suite(): Promise<void> {
   // =======================================================================
   {
     t('legacy rows are byte-identical', snapshot(await tx.contentCalendar.findMany({ where: { clientId: legacy.id } })) === legacyBefore);
-    t('legacy scope still excludes campaign days', (await tx.contentCalendar.count({ where: { ...LEGACY_CALENDAR, clientId: clientA.id } })) === 0);
+    t('no calendar row of a campaign client is left without its campaign', (await tx.contentCalendar.count({ where: { campaignId: null, clientId: clientA.id } })) === 0);
 
     const after = snapshot(
       await tx.contentCalendar.findMany({ where: { campaignId }, select: { id: true, deliveryStatus: true, sendAfter: true, approvedAt: true, gDriveFileId: true, gDriveViewUrl: true }, orderBy: { dayNumber: 'asc' } }),

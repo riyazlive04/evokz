@@ -22,13 +22,11 @@ import {
 import { useAction } from '@/hooks/use-action';
 
 /**
- * Reassigns a client's plan and vertical after onboarding.
+ * Reassigns a client's plan, vertical and delivery weekdays after onboarding.
  *
- * These used to be presented as immutable, but nothing enforced it — the real
- * constraint is narrower: a plan can only shrink once the surplus calendar days
- * are gone, because the dispatcher filters on the campaign window and stranded
- * days would silently never deliver. The server action refuses that case and
- * says how many days are in the way; clearing the calendar is the way through.
+ * All three are the defaults a new campaign starts from. A campaign copies them
+ * when it is created and keeps its own, so changing one here never moves a
+ * campaign that already exists.
  */
 export function ClientAssignment({
   clientId,
@@ -37,7 +35,6 @@ export function ClientAssignment({
   deliveryDays,
   plans,
   categories,
-  hasCalendar,
 }: {
   clientId: string;
   planId: string;
@@ -46,8 +43,6 @@ export function ClientAssignment({
   deliveryDays: number[];
   plans: Array<{ id: string; name: string; durationDays: number }>;
   categories: Array<{ id: string; name: string }>;
-  /** Drives the warning that saving weekdays will move existing rows. */
-  hasCalendar: boolean;
 }) {
   const planAction = useAction(updateClientPlan);
   const categoryAction = useAction(updateClientCategory);
@@ -75,7 +70,7 @@ export function ClientAssignment({
   async function savePlan() {
     const result = await planAction.run(clientId, nextPlan);
     if (result.ok) {
-      setFlash(`Plan changed — campaign window now runs ${result.data.durationDays} days.`);
+      setFlash(`Plan changed — new campaigns run ${result.data.durationDays} days.`);
     } else {
       setNextPlan(planId);
     }
@@ -84,27 +79,15 @@ export function ClientAssignment({
   async function saveCategory() {
     const result = await categoryAction.run(clientId, nextCategory);
     if (result.ok) {
-      // The unpinned count is the part an operator cannot infer. A template pin
-      // belongs to a vertical, so moving the client had to release the ones on
-      // rebuildable days — those now follow the new vertical's rotation, and any
-      // sheet naming the old templates will be rejected on its next import.
-      setFlash(
-        result.data.unpinnedDays > 0
-          ? `Vertical updated. Days already seeded keep their old copy, and ${result.data.unpinnedDays} pending day(s) released their template — they now follow the new vertical's rotation.`
-          : 'Vertical updated. Days already seeded keep their old copy.',
-      );
+      setFlash('Vertical updated. New campaigns use its templates; existing campaigns keep theirs.');
     } else setNextCategory(categoryId);
   }
 
   async function saveDays() {
     const result = await daysAction.run(clientId, nextDays);
     if (result.ok) {
-      const { rescheduled, kept, endsOn, label } = result.data;
-      setFlash(
-        `Delivering ${label}. ${rescheduled} upcoming day(s) moved` +
-          (kept > 0 ? `, ${kept} already-sent day(s) untouched` : '') +
-          `. Campaign now ends ${endsOn}.`,
-      );
+      const { endsOn, label } = result.data;
+      setFlash(`Delivering ${label} in new campaigns. The plan window now ends ${endsOn}.`);
     } else {
       setNextDays(deliveryDays);
     }
@@ -239,20 +222,14 @@ export function ClientAssignment({
         </div>
 
         <p className="text-[10px] text-muted-foreground">
-          All plan days are still delivered — restricted weekdays spread the campaign
-          wider and move the end date.
-          {hasCalendar && daysDirty && (
-            <span className="text-warning-ink">
-              {' '}
-              Saving reschedules every upcoming day; already-sent days keep their dates.
-            </span>
-          )}
+          Every plan day is still delivered — restricted weekdays spread a campaign wider
+          and move its end date.
         </p>
       </div>
 
       <p className="text-[10px] text-muted-foreground">
-        Changing the plan moves the campaign end date. A shorter plan is refused while
-        calendar days fall beyond it — clear those days first.
+        Changes apply to campaigns created from now on. An existing campaign keeps its own
+        length, weekdays and vertical.
       </p>
 
       {flash && (
@@ -262,9 +239,9 @@ export function ClientAssignment({
         </p>
       )}
 
-      {(planAction.error ?? categoryAction.error) && (
+      {(planAction.error ?? categoryAction.error ?? daysAction.error) && (
         <p role="alert" className="text-[11px] text-danger-ink">
-          {planAction.error ?? categoryAction.error}
+          {planAction.error ?? categoryAction.error ?? daysAction.error}
         </p>
       )}
     </div>

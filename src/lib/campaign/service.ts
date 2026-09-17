@@ -32,6 +32,7 @@ import {
   resolveContentStrategy,
 } from '@/lib/campaign/content-strategy';
 import { getAppTimeZone, HH_MM_PATTERN, normalizeDeliveryDays } from '@/lib/time';
+import { textCheckResultSchema } from '@/lib/types/template-elements';
 
 /**
  * Campaign automation — database operations of the Phase 1 foundation.
@@ -207,7 +208,11 @@ export async function createCampaign(
         endDate: last.scheduledDate,
         deliveryTime: data.deliveryTime ?? client.cronTime,
         deliveryDays,
-        templateMappingMode: data.templateMappingMode ?? 'AUTO',
+        // MANUAL by default: a day's template is the one set on the day
+        // (`posterTemplateId`), which is how the campaign board fills days, so
+        // `effectiveTemplateId` has a single source. AUTO stays accepted for
+        // existing callers and campaigns.
+        templateMappingMode: data.templateMappingMode ?? 'MANUAL',
         approvalPolicy: data.approvalPolicy ?? 'MANUAL_REVIEW',
         generationWindowDays: data.generationWindowDays ?? 14,
       },
@@ -597,6 +602,8 @@ const addVersionSchema = z
     templateId: z.string().uuid().nullable().optional(),
     parentVersionId: z.string().uuid().nullable().optional(),
     studioGenerationId: z.string().uuid().nullable().optional(),
+    /** Clone mode: the text read-back of this exact image (`TextCheckResult`). Null when not checked. */
+    textCheck: textCheckResultSchema.nullable().optional(),
     /** Default true. Subject to `shouldAutoActivate`. */
     activate: z.boolean().optional(),
   })
@@ -696,6 +703,7 @@ export async function addPosterVersion(
         templateId: data.templateId ?? null,
         parentVersionId: data.parentVersionId ?? null,
         studioGenerationId: data.studioGenerationId ?? null,
+        textCheck: data.textCheck ? (data.textCheck as Prisma.InputJsonValue) : Prisma.DbNull,
         approvalStatus,
         reviewedAt: approvalStatus === 'APPROVED' ? new Date() : null,
       },

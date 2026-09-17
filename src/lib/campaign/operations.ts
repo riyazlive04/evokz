@@ -1,5 +1,12 @@
-import type { CampaignDeliveryStatus, CampaignStatus, PosterApprovalStatus, PosterGenerationStatus } from '@prisma/client';
+import type {
+  CampaignDeliveryStatus,
+  CampaignStatus,
+  PosterApprovalStatus,
+  PosterGenerationStatus,
+  TemplateMappingMode,
+} from '@prisma/client';
 
+import { effectiveTemplateId } from '@/lib/campaign/model';
 import { isGenerationInProgress, derivePosterState, type PosterState } from '@/lib/campaign/poster-generation';
 import { generationWindow, isInWindow } from '@/lib/campaign/poster-generation';
 import { type CampaignDb } from '@/lib/campaign/service';
@@ -42,6 +49,7 @@ const operationsDaySelect = {
   errorMessage: true,
   activePosterVersion: { select: { contentRevision: true, approvalStatus: true } },
   delivery: { select: { status: true, failureReason: true, failurePermanent: true, attempts: true } },
+  campaign: { select: { templateMappingMode: true } },
 } as const;
 
 export interface OperationsDay {
@@ -59,6 +67,17 @@ export interface OperationsDay {
   errorMessage: string | null;
   activePosterVersion: { contentRevision: number; approvalStatus: PosterApprovalStatus } | null;
   delivery: { status: CampaignDeliveryStatus; failureReason: string | null; failurePermanent: boolean; attempts: number } | null;
+  /**
+   * The owning campaign's mapping mode. It decides whether a stored AUTO
+   * suggestion counts as the day's template (`effectiveTemplateId`): under
+   * MANUAL a suggestion is only a hint, and the day is unmapped.
+   */
+  campaign: { templateMappingMode: TemplateMappingMode } | null;
+}
+
+/** Whether the day has a template its poster would be drawn from — model.ts's one rule. */
+function hasEffectiveTemplate(day: OperationsDay): boolean {
+  return effectiveTemplateId(day.campaign?.templateMappingMode ?? 'MANUAL', day) !== null;
 }
 
 function stateOf(day: OperationsDay, now: Date): PosterState {
@@ -177,9 +196,9 @@ export async function loadCampaignHealth(
       missing: rows.filter((day) => day.contentStatus === 'NOT_GENERATED' || day.contentStatus === null).length,
     },
     templates: {
-      done: rows.filter((day) => day.posterTemplateId ?? day.suggestedTemplateId).length,
+      done: rows.filter(hasEffectiveTemplate).length,
       total: rows.length,
-      unmapped: rows.filter((day) => !(day.posterTemplateId ?? day.suggestedTemplateId)).length,
+      unmapped: rows.filter((day) => !hasEffectiveTemplate(day)).length,
     },
     posters: {
       done: inWindow.filter((day) => day.activePosterVersion !== null).length,
@@ -271,7 +290,7 @@ export function buildAttentionQueue(
       items.push({ ...base, group: 'CONTENT', detail: day.contentIssues[0] ?? 'Content needs a look.', href: '?review=all' });
     }
     // An unmapped day only blocks once it is close enough to be generated.
-    if (!(day.posterTemplateId ?? day.suggestedTemplateId) && windowIds.has(day.id)) {
+    if (!hasEffectiveTemplate(day) && windowIds.has(day.id)) {
       items.push({ ...base, group: 'TEMPLATE', detail: 'No template is mapped to this day.', href: '?review=unmapped' });
     }
 
@@ -422,7 +441,7 @@ export async function loadClientCampaignAttention(
     };
 
     for (const day of days) {
-      const unmapped = !(day.posterTemplateId ?? day.suggestedTemplateId);
+      const unmapped = !hasEffectiveTemplate(day);
       const withinWindow = isInWindow(day.scheduledDate, window);
       const state = stateOf(day, now);
 

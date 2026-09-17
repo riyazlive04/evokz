@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { describeError } from '@/lib/ai-pipeline';
+import { describeError } from '@/lib/errors';
 import { ensureClientFolder } from '@/lib/google-drive';
 import { isImageSizePresetId } from '@/lib/image-sizes';
 import { prisma } from '@/lib/prisma';

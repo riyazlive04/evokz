@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
-import { describeError } from '@/lib/ai-pipeline';
 import { executeIntervalDispatch } from '@/lib/cron-worker';
 import { optionalEnv } from '@/lib/env';
+import { describeError } from '@/lib/errors';
 
 /**
  * Recurrent dispatch trigger — safe to call every 5 minutes.
@@ -67,32 +67,8 @@ async function handle(request: NextRequest): Promise<NextResponse> {
   try {
     const summary = await executeIntervalDispatch();
 
-    return NextResponse.json({
-      ok: true,
-      ranAt: summary.ranAt,
-      timeZone: summary.timeZone,
-      minuteWindow: summary.minuteWindow,
-      matchedClients: summary.matchedClients,
-      queuedItems: summary.queuedItems,
-      delivered: summary.delivered,
-      failed: summary.failed,
-      skipped: summary.skipped,
-      // Campaign delivery is its own queue; its counts would otherwise be
-      // invisible in a scheduler log that only reports the legacy totals.
-      campaignSent: summary.campaignSent,
-      campaignFailed: summary.campaignFailed,
-      campaignSkipped: summary.campaignSkipped,
-      campaignGenerated: summary.campaignGenerated,
-      campaignGenerationFailed: summary.campaignGenerationFailed,
-      // Per-item detail stays terse: this response goes into scheduler logs.
-      items: summary.items.map((item) => ({
-        calendarId: item.calendarId,
-        companyName: item.companyName,
-        dayNumber: item.dayNumber,
-        status: item.outcome.status,
-        ...(item.outcome.ok ? {} : { stage: item.outcome.stage, error: item.outcome.error }),
-      })),
-    });
+    // Counts only: this response goes into scheduler logs.
+    return NextResponse.json({ ok: true, ...summary });
   } catch (error) {
     // A sweep-level failure (DB unreachable, bad timezone config) must return
     // 500 so the scheduler surfaces it, without leaking internals.

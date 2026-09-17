@@ -11,12 +11,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAction } from '@/hooks/use-action';
 
-const SELECT_CLASS =
-  'flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
-
 /**
- * Creates a DRAFT campaign with empty day slots, then opens its calendar.
+ * Creates a DRAFT campaign with empty day slots, then opens its board.
  * No content is generated and nothing is spent until the operator asks.
+ *
+ * There is no template-mapping choice any more: each day's template is set on
+ * the day itself, so new campaigns are always created in MANUAL mode.
  */
 export function CreateCampaignForm({
   clientId,
@@ -35,7 +35,6 @@ export function CreateCampaignForm({
   const [name, setName] = React.useState(defaultName);
   const [startDate, setStartDate] = React.useState(defaultStartDate);
   const [duration, setDuration] = React.useState(String(planDurationDays));
-  const [mode, setMode] = React.useState<'AUTO' | 'MANUAL'>('AUTO');
   const create = useAction(createCampaignAction);
 
   async function handleSubmit(event: React.FormEvent) {
@@ -44,7 +43,6 @@ export function CreateCampaignForm({
       name,
       startDate,
       durationDays: Number(duration),
-      templateMappingMode: mode,
     });
     if (result.ok) router.push(`/admin/clients/${clientId}/campaigns/${result.data.campaignId}`);
   }
@@ -79,13 +77,6 @@ export function CreateCampaignForm({
           onChange={(event) => setDuration(event.target.value)}
           required
         />
-      </div>
-      <div className="space-y-1.5 sm:col-span-2">
-        <Label htmlFor="campaign-mapping">Template mapping</Label>
-        <select id="campaign-mapping" value={mode} onChange={(event) => setMode(event.target.value as 'AUTO' | 'MANUAL')} className={SELECT_CLASS}>
-          <option value="AUTO">Auto — templates are suggested for each day</option>
-          <option value="MANUAL">Manual — templates are assigned by hand</option>
-        </select>
       </div>
       {create.error && (
         <p role="alert" className="text-xs text-danger-ink sm:col-span-2">

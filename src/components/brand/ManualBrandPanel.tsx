@@ -123,9 +123,6 @@ export function ManualBrandPanel({
     guideline.layoutDirectives.join('\n'),
   );
   const [flash, setFlash] = React.useState<string | null>(null);
-  // Bumped on save so the preview refetches instead of serving the cached PNG of
-  // the palette that was just replaced.
-  const [previewKey, setPreviewKey] = React.useState(0);
 
   const save = useAction(applyManualBrandTokens);
 
@@ -176,9 +173,8 @@ export function ManualBrandPanel({
     });
 
     if (result.ok) {
-      setPreviewKey((key) => key + 1);
       setFlash(
-        `Saved ${result.data.colors} colour(s) for ${companyName}. These are marked as chosen, not guessed, so the poster theme honours them directly.`,
+        `Saved ${result.data.colors} colour(s) for ${companyName}. These are marked as chosen, not guessed, so posters use them as given.`,
       );
     }
   }
@@ -198,226 +194,205 @@ export function ManualBrandPanel({
         role labels as given instead of re-ranking them by measurement.
       </p>
 
-      <div className="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto]">
-        <div className="min-w-0 space-y-5">
-          {/* ---- Palette ---- */}
-          <div className="space-y-2">
-            <Label>Palette</Label>
-            <ul className="space-y-2">
-              {rows.map((row) => {
-                const valid = HEX_INPUT_PATTERN.test(row.hex);
-                const ratio = valid ? contrastRatio(bestTextOn(row.hex), row.hex) : 0;
+      <div className="mt-5 min-w-0 space-y-5">
+        {/* ---- Palette ---- */}
+        <div className="space-y-2">
+          <Label>Palette</Label>
+          <ul className="space-y-2">
+            {rows.map((row) => {
+              const valid = HEX_INPUT_PATTERN.test(row.hex);
+              const ratio = valid ? contrastRatio(bestTextOn(row.hex), row.hex) : 0;
 
-                return (
-                  <li
-                    key={row.role}
-                    className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2"
+              return (
+                <li
+                  key={row.role}
+                  className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2"
+                >
+                  <input
+                    type="checkbox"
+                    id={`brand-role-${row.role}`}
+                    checked={row.enabled}
+                    onChange={(event) =>
+                      updateRow(row.role, { enabled: event.target.checked })
+                    }
+                    className="h-4 w-4 shrink-0 accent-brand-to"
+                  />
+
+                  <label
+                    htmlFor={`brand-role-${row.role}`}
+                    className="w-36 shrink-0 text-xs text-foreground"
                   >
-                    <input
-                      type="checkbox"
-                      id={`brand-role-${row.role}`}
-                      checked={row.enabled}
-                      onChange={(event) =>
-                        updateRow(row.role, { enabled: event.target.checked })
-                      }
-                      className="h-4 w-4 shrink-0 accent-brand-to"
-                    />
+                    {describeColorRole(row.role)}
+                  </label>
 
-                    <label
-                      htmlFor={`brand-role-${row.role}`}
-                      className="w-36 shrink-0 text-xs text-foreground"
+                  <input
+                    type="color"
+                    aria-label={`${describeColorRole(row.role)} colour`}
+                    value={valid ? row.hex : SEED_HEX[row.role]}
+                    disabled={!row.enabled}
+                    onChange={(event) =>
+                      updateRow(row.role, { hex: event.target.value.toLowerCase() })
+                    }
+                    className="h-8 w-12 shrink-0 cursor-pointer rounded-md border border-border bg-background disabled:cursor-not-allowed disabled:opacity-40"
+                  />
+
+                  <Input
+                    aria-label={`${describeColorRole(row.role)} hex value`}
+                    value={row.hex}
+                    disabled={!row.enabled}
+                    onChange={(event) =>
+                      updateRow(row.role, { hex: event.target.value.trim() })
+                    }
+                    className="h-8 w-28 shrink-0 font-mono text-xs"
+                  />
+
+                  {row.enabled && valid && (
+                    <span
+                      aria-hidden
+                      className="shrink-0 rounded px-2 py-1 text-[10px] font-semibold"
+                      style={{ backgroundColor: row.hex, color: bestTextOn(row.hex) }}
                     >
-                      {describeColorRole(row.role)}
-                    </label>
+                      Text {ratio.toFixed(1)}:1
+                    </span>
+                  )}
 
-                    <input
-                      type="color"
-                      aria-label={`${describeColorRole(row.role)} colour`}
-                      value={valid ? row.hex : SEED_HEX[row.role]}
-                      disabled={!row.enabled}
-                      onChange={(event) =>
-                        updateRow(row.role, { hex: event.target.value.toLowerCase() })
-                      }
-                      className="h-8 w-12 shrink-0 cursor-pointer rounded-md border border-border bg-background disabled:cursor-not-allowed disabled:opacity-40"
-                    />
+                  {row.enabled && !valid && (
+                    <span role="alert" className="text-[10px] text-danger-ink">
+                      Needs a 6-digit hex
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
 
-                    <Input
-                      aria-label={`${describeColorRole(row.role)} hex value`}
-                      value={row.hex}
-                      disabled={!row.enabled}
-                      onChange={(event) =>
-                        updateRow(row.role, { hex: event.target.value.trim() })
-                      }
-                      className="h-8 w-28 shrink-0 font-mono text-xs"
-                    />
-
-                    {row.enabled && valid && (
-                      <span
-                        aria-hidden
-                        className="shrink-0 rounded px-2 py-1 text-[10px] font-semibold"
-                        style={{ backgroundColor: row.hex, color: bestTextOn(row.hex) }}
-                      >
-                        Text {ratio.toFixed(1)}:1
-                      </span>
-                    )}
-
-                    {row.enabled && !valid && (
-                      <span role="alert" className="text-[10px] text-danger-ink">
-                        Needs a 6-digit hex
-                      </span>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-
-            {weakPrimary && (
-              <p className="flex items-start gap-1.5 text-[10px] text-warning-ink">
-                <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
-                <span>
-                  That primary is close to black or white. It saves fine, but the theme
-                  engine will not use it as the headline accent — near-neutral colours
-                  cannot carry type — and will rank the rest of the palette instead. Set
-                  a highlight accent too if you want control over that choice.
-                </span>
-              </p>
-            )}
-
-            {droppedRoles.length > 0 && (
-              <p className="flex items-start gap-1.5 text-[10px] text-warning-ink">
-                <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
-                <span>
-                  Saving replaces the whole palette, which drops {droppedRoles.length}{' '}
-                  existing colour(s) filed under {droppedRoles.slice(0, 3).join(', ')}
-                  {droppedRoles.length > 3 ? '…' : ''}.
-                </span>
-              </p>
-            )}
-          </div>
-
-          {/* ---- Typography ---- */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="brand-heading-font">Heading font</Label>
-              <Select value={headingFont} onValueChange={setHeadingFont}>
-                <SelectTrigger id="brand-heading-font">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="max-h-72">
-                  {HEADING_FONT_OPTIONS.map((family) => (
-                    <SelectItem key={family} value={family}>
-                      {family}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="brand-body-font">Body font</Label>
-              <Select value={bodyFont} onValueChange={setBodyFont}>
-                <SelectTrigger id="brand-body-font">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="max-h-72">
-                  {BODY_FONT_OPTIONS.map((family) => (
-                    <SelectItem key={family} value={family}>
-                      {family}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <p className="text-[10px] text-muted-foreground/70">
-            Only these faces are offered because the renderer fetches them by name at
-            render time. A family outside the list has no bytes to load, and the poster
-            would quietly fall back to {DEFAULT_HEADING_FONT}.
-          </p>
-
-          {/* ---- Vibe + directives ---- */}
-          <div className="space-y-1.5">
-            <Label htmlFor="brand-vibe">Vibe (optional)</Label>
-            <Input
-              id="brand-vibe"
-              value={vibe}
-              maxLength={48}
-              onChange={(event) => setVibe(event.target.value)}
-              placeholder="confident, industrial"
-            />
-            <p className="text-[10px] text-muted-foreground/70">
-              A few words. Goes into the caption prompt as the brand&apos;s voice.
+          {weakPrimary && (
+            <p className="flex items-start gap-1.5 text-[10px] text-warning-ink">
+              <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+              <span>
+                That primary is close to black or white. It saves fine, but the theme
+                engine will not use it as the headline accent — near-neutral colours
+                cannot carry type — and will rank the rest of the palette instead. Set
+                a highlight accent too if you want control over that choice.
+              </span>
             </p>
+          )}
+
+          {droppedRoles.length > 0 && (
+            <p className="flex items-start gap-1.5 text-[10px] text-warning-ink">
+              <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+              <span>
+                Saving replaces the whole palette, which drops {droppedRoles.length}{' '}
+                existing colour(s) filed under {droppedRoles.slice(0, 3).join(', ')}
+                {droppedRoles.length > 3 ? '…' : ''}.
+              </span>
+            </p>
+          )}
+        </div>
+
+        {/* ---- Typography ---- */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="brand-heading-font">Heading font</Label>
+            <Select value={headingFont} onValueChange={setHeadingFont}>
+              <SelectTrigger id="brand-heading-font">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="max-h-72">
+                {HEADING_FONT_OPTIONS.map((family) => (
+                  <SelectItem key={family} value={family}>
+                    {family}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="brand-directives">Layout directives (optional)</Label>
-            <textarea
-              id="brand-directives"
-              value={directives}
-              rows={4}
-              onChange={(event) => setDirectives(event.target.value)}
-              placeholder={'One per line, e.g.\nKeep headlines to three words\nNever place text over faces'}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-            />
-            <p className="text-[10px] text-muted-foreground/70">
-              Read verbatim by the copy prompts. Up to eight lines.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              type="button"
-              onClick={handleSave}
-              disabled={save.pending || enabled.length === 0 || malformed}
-            >
-              {save.pending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Save className="h-4 w-4" />
-              )}
-              Save brand tokens
-            </Button>
-
-            {enabled.length === 0 && (
-              <span className="text-[11px] text-muted-foreground">
-                Tick at least one colour.
-              </span>
-            )}
-
-            {flash && (
-              <span className="flex items-start gap-1.5 text-[11px] text-success-ink">
-                <Check className="mt-px h-3.5 w-3.5 shrink-0" />
-                {flash}
-              </span>
-            )}
-
-            {save.error && (
-              <span role="alert" className="text-[11px] text-danger-ink">
-                {save.error}
-              </span>
-            )}
+            <Label htmlFor="brand-body-font">Body font</Label>
+            <Select value={bodyFont} onValueChange={setBodyFont}>
+              <SelectTrigger id="brand-body-font">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="max-h-72">
+                {BODY_FONT_OPTIONS.map((family) => (
+                  <SelectItem key={family} value={family}>
+                    {family}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
-        {/* ---- Preview ---- */}
-        <div className="shrink-0 space-y-1.5">
-          <Label>Poster preview</Label>
-          {/* eslint-disable-next-line @next/next/no-img-element -- one-off PNG from
-              a dynamic route; next/image would proxy and cache a preview whose whole
-              purpose is to reflect the palette that was just saved. */}
-          <img
-            src={`/api/poster/preview?clientId=${encodeURIComponent(clientId)}&v=${previewKey}`}
-            alt={`Poster preview using ${companyName}'s saved brand tokens`}
-            className="w-40 rounded-lg border border-border bg-muted"
+        <p className="text-[10px] text-muted-foreground/70">
+          Only these faces are offered because the renderer fetches them by name at
+          render time. A family outside the list has no bytes to load, and the poster
+          would quietly fall back to {DEFAULT_HEADING_FONT}.
+        </p>
+
+        {/* ---- Vibe + directives ---- */}
+        <div className="space-y-1.5">
+          <Label htmlFor="brand-vibe">Vibe (optional)</Label>
+          <Input
+            id="brand-vibe"
+            value={vibe}
+            maxLength={48}
+            onChange={(event) => setVibe(event.target.value)}
+            placeholder="confident, industrial"
           />
-          <p className="w-40 text-[10px] text-muted-foreground/70">
-            Saved tokens, real renderer, placeholder photo, and this vertical&apos;s own
-            approved layout. Costs nothing — refresh after saving to see a change. If it
-            fails to load, the vertical has no approved template and this client cannot
-            generate at all yet.
+          <p className="text-[10px] text-muted-foreground/70">
+            A few words. Goes into Poster Studio prompts as the brand&apos;s overall feel.
           </p>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="brand-directives">Layout directives (optional)</Label>
+          <textarea
+            id="brand-directives"
+            value={directives}
+            rows={4}
+            onChange={(event) => setDirectives(event.target.value)}
+            placeholder={'One per line, e.g.\nKeep headlines to three words\nNever place text over faces'}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          />
+          <p className="text-[10px] text-muted-foreground/70">
+            Read verbatim by Poster Studio prompts. Up to eight lines.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            type="button"
+            onClick={handleSave}
+            disabled={save.pending || enabled.length === 0 || malformed}
+          >
+            {save.pending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4" />
+            )}
+            Save brand tokens
+          </Button>
+
+          {enabled.length === 0 && (
+            <span className="text-[11px] text-muted-foreground">
+              Tick at least one colour.
+            </span>
+          )}
+
+          {flash && (
+            <span className="flex items-start gap-1.5 text-[11px] text-success-ink">
+              <Check className="mt-px h-3.5 w-3.5 shrink-0" />
+              {flash}
+            </span>
+          )}
+
+          {save.error && (
+            <span role="alert" className="text-[11px] text-danger-ink">
+              {save.error}
+            </span>
+          )}
         </div>
       </div>
     </section>

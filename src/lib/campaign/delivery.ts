@@ -54,6 +54,7 @@ export const DELIVERY_STATUS_LABELS: Record<CampaignDeliveryStatus, string> = {
 export type DeliveryRefusal =
   | 'not-a-campaign-day'
   | 'campaign-not-active'
+  | 'client-paused'
   | 'already-delivered'
   | 'sending'
   | 'content-not-ready'
@@ -72,6 +73,7 @@ export type DeliveryRefusal =
 export const DELIVERY_REFUSAL_MESSAGES: Record<DeliveryRefusal, string> = {
   'not-a-campaign-day': 'This calendar row is not part of a campaign.',
   'campaign-not-active': 'The campaign is not active.',
+  'client-paused': 'Client is paused. Resume the client to send its posters.',
   'already-delivered': 'Already delivered.',
   sending: 'This day is being sent right now.',
   'content-not-ready': 'The content for this day is not ready.',
@@ -92,6 +94,12 @@ export interface DeliveryCandidate {
   /** Null means a legacy calendar row, which this path never touches. */
   campaignId: string | null;
   campaignStatus: CampaignStatus;
+  /**
+   * The client is active (`Client.isActive`). Pausing a client stops every
+   * WhatsApp send of its campaigns — automatic and manual — and leaves their
+   * bookings exactly where they are, as pausing a campaign does.
+   */
+  clientActive: boolean;
   contentReady: boolean;
   /** The effective template (selection wins over suggestion), from Phase 3. */
   hasTemplate: boolean;
@@ -141,6 +149,7 @@ export function evaluateDeliveryEligibility(input: DeliveryCandidate, now: Date 
   if (delivery?.failurePermanent && delivery.status === 'FAILED') return refuse('permanent-failure');
 
   if (input.campaignStatus !== 'ACTIVE') return refuse('campaign-not-active');
+  if (!input.clientActive) return refuse('client-paused');
   if (!input.contentReady) return refuse('content-not-ready');
   // Only meaningful while there is no poster: an existing poster was already
   // drawn from a template, so a mapping changed afterwards is not a send-blocker.

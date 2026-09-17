@@ -256,11 +256,9 @@ under `src/components/admin`. Writes go through server actions in
 | `/admin/clients` | The roster. Create, assign, activate |
 | `/admin/clients/[id]` | One client: settings, brand identity, the calendar, the queue cards |
 | `/admin/clients/[id]/brand` | Brand guideline and logo handling |
-| `/admin/clients/[id]/approvals` | Bulk approval view |
 | `/admin/verticals` | The verticals list |
 | `/admin/verticals/[id]` | One vertical's designs — upload a reference, upload a plate, edit regions |
 | `/admin/plans` | Plan catalogue |
-| `/admin/demo` | A sandbox for producing sample creative without a real client |
 
 ## 3.2 Components
 
@@ -281,20 +279,22 @@ The ones that carry real behaviour, rather than the shadcn primitives in
 
 ## 3.3 API routes
 
-Only five. Everything else is a server action.
+Only these. Everything else is a server action.
 
 | Route | Auth | Purpose |
 |---|---|---|
 | `POST /api/cron` | Bearer token (`CRON_SECRET`), fails closed | The dispatch tick |
-| `GET /api/health` | **None** | Container health. Reports the renderer's state; carries no error text on purpose |
-| `GET /api/poster/preview` | Session | Renders a poster preview without a calendar row |
+| `GET /api/health` | **None** | Container liveness: answers `{"ok":true}` and nothing else |
+| `GET /api/campaign-media/[token]` | Signed, expiring media token | Serves one campaign poster to the WhatsApp provider |
+| `GET /api/poster-studio/[generationId]/image` | Session | Serves a Poster Studio image from Drive, which is unpublished |
+| `GET /api/poster-studio/clients/[clientId]/logo` | Session | Previews a client's Brand Canvas logo |
 | `GET /api/templates/[id]/thumbnail` | Session | Serves a reference or plate from Drive, which is unpublished |
 | `POST /api/webhooks/razorpay` | HMAC over the **raw** body | Provisions a client on payment |
 
 ## 3.4 Auth
 
-`src/middleware.ts` gates everything except four named paths — the Razorpay
-webhook, the cron endpoint, `/api/health`, and `/login`.
+`src/middleware.ts` gates everything except five named paths — the Razorpay
+webhook, the cron endpoint, `/api/campaign-media`, `/api/health`, and `/login`.
 
 **There are no user accounts.** Authentication is a single password hash in
 `ADMIN_PASSWORD_HASH`, checked in `src/app/login/actions.ts`, with a signed
@@ -751,9 +751,9 @@ database.** They run and they work, but if the VPS is lost, the database and
 every backup of it go together. Copying them off-box is a half-hour job that has
 not been done.
 
-**The health check** now asks two questions: is the web server up (`/login`), and
-is the renderer working (`/api/health`). The second returns 503 after four
-consecutive render failures. Note what this does *not* do: Compose restarts a
+**The health check** asks whether the web server is up: `/login` renders and
+`/api/health` answers `{"ok":true}`. It no longer reports on any renderer. Note
+what this does *not* do: Compose restarts a
 container when it **exits**, not when it goes unhealthy, so this surfaces a
 problem rather than repairing one. `docker ps` says `unhealthy` instead of
 `healthy`, which is the difference between a problem someone can find and one
@@ -789,7 +789,7 @@ Provider keys can also be stored per-installation in `AppSetting`, encrypted by
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Target page, context or browser has been closed` | Chromium died | It now relaunches itself. If it persists, check container memory |
-| Every poster failing at once | The renderer, not one row | `/api/health`, then container logs |
+| Every poster failing at once | Not one row — a shared dependency | Container logs |
 | Rows marked invalid on import | Usually days past the plan's duration | Import the ones that fit, or extend the plan |
 | A poster's copy is not the operator's | The row's poster JSON failed validation and fell back to generated copy | Check the import warnings for that row |
 | Logo missing | No logo on the client, or a design with no logo slot | Client settings, then §10.2 |

@@ -106,16 +106,14 @@ async function asAction<T>(work: () => Promise<T>): Promise<T> {
 
 async function suite(): Promise<void> {
   const tx = facade;
-  const { SAMPLE_LAYOUT_SPEC } = await import('@/lib/poster/sample-layout');
   const service = await import('@/lib/campaign/service');
   const mapping = await import('@/lib/campaign/template-mapping-service');
   const posters = await import('@/lib/campaign/poster-generation-service');
   const review = await import('@/lib/campaign/review-service');
   const { parseRejectionNote } = await import('@/lib/campaign/review');
   const campaignActions = await import('@/app/admin/campaigns/actions');
-  const { LEGACY_CALENDAR } = await import('@/lib/calendar-scope');
   const { StudioError } = await import('@/lib/poster-studio/errors');
-  const { prepareStudioInputImage, readStudioImageSize } = await import('@/lib/poster-studio/images');
+  const { readStudioImageSize } = await import('@/lib/poster-studio/images');
   const { recordOpenAiImageUsage } = await import('@/lib/usage');
   const { loadStudioBrandCanvas } = await import('@/lib/poster-studio/brand-context');
   const { addZonedDays, startOfZonedDay } = await import('@/lib/time');
@@ -145,15 +143,15 @@ async function suite(): Promise<void> {
   const deps: Deps = {
     assertConfigured: () => undefined,
     loadBrandCanvas: loadStudioBrandCanvas,
-    prepareOverlay: async (canvas, selection, aspectRatio) =>
-      ({ preset: 'footer-band', aspectRatio, theme: null, fonts: [], logo: null, logoInk: null, name: canvas.companyName, tagline: canvas.tagline, website: canvas.website, phone: canvas.phone, footerBackground: selection.footerBackground, drawn: ['name', ...selection.elements] }) as unknown as Awaited<ReturnType<Deps['prepareOverlay']>>,
-    compose: async (raw, plan) => ({ bytes: await sharp(raw).composite([{ input: await png(1152, 240, '#111111'), left: 0, top: 1808 }]).png().toBuffer(), mimeType: 'image/png', drawn: plan.drawn, footerTone: 'DARK' }),
+    resolveLogo: async () => null,
+    composeIdentity: async (raw) => raw,
+    checkText: async () => ({ checkedAt: NOW.toISOString(), model: 'fake', ok: true, items: [], leftovers: [] }),
+    prepareTemplate: async (bytes) => ({ bytes, mimeType: 'image/png' }),
     resolveFolder: async () => 'fixture-folder',
     readFile: async (fileId) => {
       if (!fileId.startsWith('fixture-template')) throw new StudioError('storage', 'Could not load the image from Google Drive.');
       return templatePng;
     },
-    prepareReference: prepareStudioInputImage,
     render: async (request) => {
       renders += 1;
       const [width, height] = request.size.split('x').map(Number) as [number, number];
@@ -176,10 +174,22 @@ async function suite(): Promise<void> {
   const vertical = await tx.category.create({
     data: { name: 'check:review Vertical', contentStrategy: { pillars: [{ key: 'educational', label: 'Educational', weight: 2, guidance: 'Teach.' }, { key: 'tips', label: 'Tips', weight: 1, guidance: 'Advise.' }] } },
   });
-  const portrait = { ...SAMPLE_LAYOUT_SPEC, aspect: 9 / 16 } as unknown as Prisma.InputJsonValue;
+  /** A read template: clone mode generates only from templates whose elements were read. */
+  const elementsDoc = (label: string) =>
+    ({
+      version: 1,
+      width: 1080,
+      height: 1920,
+      model: 'fake',
+      elements: [
+        { id: 'e1', kind: 'headline', text: `Template ${label} headline`, box: { x: 0.1, y: 0.1, w: 0.8, h: 0.1 }, group: null, description: null },
+        { id: 'e2', kind: 'subheadline', text: 'Gentle care for the whole family.', box: { x: 0.1, y: 0.25, w: 0.8, h: 0.05 }, group: null, description: null },
+        { id: 'e3', kind: 'cta', text: 'Book a visit', box: { x: 0.1, y: 0.85, w: 0.4, h: 0.05 }, group: null, description: null },
+      ],
+    }) as unknown as Prisma.InputJsonValue;
   const template = async (label: string, order: number) =>
     tx.categoryTemplate.create({
-      data: { categoryId: vertical.id, label: `check:review ${label}`, gDriveFileId: `fixture-template-${label}`, gDriveViewUrl: 'https://drive.invalid/t', mimeType: 'image/png', width: 1080, height: 1920, layoutSpec: portrait, layoutApprovedAt: new Date(), createdAt: new Date(Date.parse('2026-01-01') + order * 1000) },
+      data: { categoryId: vertical.id, label: `check:review ${label}`, gDriveFileId: `fixture-template-${label}`, gDriveViewUrl: 'https://drive.invalid/t', mimeType: 'image/png', width: 1080, height: 1920, createdAt: new Date(Date.parse('2026-01-01') + order * 1000), elements: elementsDoc(label), elementsReadAt: new Date() },
     });
   const tA = await template('A', 1);
   const tB = await template('B', 2);
@@ -229,6 +239,7 @@ async function suite(): Promise<void> {
     t('every generated day needs review under MANUAL_REVIEW', view.summary.needsReview === 6 && view.summary.approved === 0, snapshot(view.summary));
     t('the queue covers the whole campaign, not just the window', view.days.length === 20);
     const day1 = view.days[0]!;
+    // The day's own (AI-written) headline is kept: generation seeds it into the template's headline element.
     t('a row carries what the operator needs to act', day1.headline === 'Headline 1' && day1.contentTypeLabel === 'Educational' && day1.templateLabel?.startsWith('check:review') === true && day1.versionNumber === 1 && day1.generationId !== null && day1.stateLabel === 'Needs approval');
     t('a row offers only valid actions', day1.canApprove && day1.canReject && day1.canRegenerate && !day1.canGenerate);
     const notGenerated = view.days.find((day) => day.dayNumber === 7)!;
@@ -366,14 +377,15 @@ async function suite(): Promise<void> {
   // =======================================================================
   {
     const day2 = await dayRow(2);
-    const detail = await asAction(() => campaignActions.loadCampaignDayReviewAction(day2.id));
-    t('the detail carries content, template, poster and versions', detail.ok && detail.data.content.headline === 'Headline 2' && detail.data.template.label !== null && detail.data.versions.length === 2);
-    if (!detail.ok) throw new Error('detail failed');
-    t('versions are newest first, one active, and the rejection reason is kept', detail.data.versions[0]!.versionNumber === 2 && detail.data.versions[0]!.active && detail.data.versions[1]!.rejection?.label === 'Branding issue');
+    // The service behind the board's day details (its action wrapper retired
+    // with the old day-detail panel).
+    const detail = await review.loadCampaignDayReview(tx, day2.id);
+    t('the detail carries content, template, poster and versions', detail.content.headline === 'Headline 2' && detail.template.label !== null && detail.versions.length === 2);
+    t('versions are newest first, one active, and the rejection reason is kept', detail.versions[0]!.versionNumber === 2 && detail.versions[0]!.active && detail.versions[1]!.rejection?.label === 'Branding issue');
     // Day 2's active v2 was approved by the bulk run: it may be sent back or
     // regenerated, but not approved again, and there is nothing to generate.
-    t('only valid actions are offered for the current state', !detail.data.actions.canApprove && detail.data.actions.canReject && detail.data.actions.canRegenerate && !detail.data.actions.canGenerate, snapshot(detail.data.actions));
-    t('the detail exposes no Drive id', !snapshot(detail.data).includes('fake-drive-') && !snapshot(detail.data).includes('fake-edit-'));
+    t('only valid actions are offered for the current state', !detail.actions.canApprove && detail.actions.canReject && detail.actions.canRegenerate && !detail.actions.canGenerate, snapshot(detail.actions));
+    t('the detail exposes no Drive id', !snapshot(detail).includes('fake-drive-') && !snapshot(detail).includes('fake-edit-'));
   }
 
   // =======================================================================
@@ -407,7 +419,7 @@ async function suite(): Promise<void> {
   section('isolation');
   // =======================================================================
   t('legacy calendar rows are byte-identical', snapshot(await tx.contentCalendar.findMany({ where: { clientId: legacy.id } })) === legacyBefore);
-  t('legacy scope still excludes campaign days', (await tx.contentCalendar.count({ where: { clientId: clientA.id, ...LEGACY_CALENDAR } })) === 0);
+  t('no calendar row of a campaign client is left without its campaign', (await tx.contentCalendar.count({ where: { clientId: clientA.id, campaignId: null } })) === 0);
   t('no WhatsApp usage row was written', (await tx.usageEvent.count({ where: { provider: 'EVOLUTION' } })) === 0);
   t('no delivery column was written by review', (await tx.contentCalendar.count({ where: { campaignId, OR: [{ deliveryStatus: { not: 'PENDING' } }, { gDriveFileId: { not: null } }, { approvedAt: { not: null } }, { sendAfter: { not: null } }] } })) === 0);
 }

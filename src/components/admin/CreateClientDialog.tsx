@@ -44,18 +44,11 @@ export function CreateClientDialog({
   plans,
   categories,
   timeZone,
-  demo = false,
 }: {
   plans: OptionRow[];
   categories: OptionRow[];
   /** Passed from the server — `APP_TIMEZONE` is not exposed to the browser. */
   timeZone: string;
-  /**
-   * Provisions a demo tenant instead of a client. Same provisioning path — the
-   * row is flagged `isDemo`, which keeps it out of the client matrix and out of
-   * the cron sweep.
-   */
-  demo?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [companyName, setCompanyName] = React.useState('');
@@ -104,7 +97,6 @@ export function CreateClientDialog({
       planId,
       categoryId,
       cronTime,
-      isDemo: demo,
       imageSizePreset: imageSizePreset || null,
       deliveryDays,
     });
@@ -135,17 +127,16 @@ export function CreateClientDialog({
       <DialogTrigger asChild>
         <Button size="sm" disabled={blocked} title={blocked ? 'Create a plan and a vertical first' : undefined}>
           <UserPlus className="h-4 w-4" />
-          {demo ? 'New demo tenant' : 'Manual onboarding'}
+          Manual onboarding
         </Button>
       </DialogTrigger>
 
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>{demo ? 'New demo tenant' : 'Manual client onboarding'}</DialogTitle>
+          <DialogTitle>Manual client onboarding</DialogTitle>
           <DialogDescription>
-            {demo
-              ? 'Provisioned exactly like a client — campaign window from the plan duration, isolated Drive folder — but excluded from the dispatch sweep, so it only ever sends when you press the button.'
-              : 'Bypasses Razorpay. Calculates the campaign window from the plan duration and provisions the client’s isolated Google Drive folder.'}
+            Bypasses Razorpay. Calculates the plan window from the plan duration and provisions
+            the client’s isolated Google Drive folder.
           </DialogDescription>
         </DialogHeader>
 
@@ -175,7 +166,6 @@ export function CreateClientDialog({
               />
               <p className="text-[10px] text-muted-foreground">
                 International format without “+”. A bare 10-digit number is treated as +91.
-                {demo ? ' Demo creatives are WhatsApped to this number on demand.' : ''}
               </p>
             </div>
 
@@ -271,7 +261,7 @@ export function CreateClientDialog({
             >
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>
-                {demo ? 'Demo tenant' : 'Client'} created, but the Google Drive folder could
+                Client created, but the Google Drive folder could
                 not be provisioned: {warning}. Use “Provision folder” once Drive access is
                 fixed.
               </span>
@@ -295,7 +285,7 @@ export function CreateClientDialog({
               ) : (
                 <UserPlus className="h-4 w-4" />
               )}
-              {demo ? 'Provision demo tenant' : 'Provision client'}
+              Provision client
             </Button>
           </DialogFooter>
         </form>

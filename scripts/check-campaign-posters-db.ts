@@ -1,12 +1,14 @@
 /**
- * Database checks for rolling campaign poster generation (Phase 4).
+ * Database checks for rolling campaign poster generation (Phase 4), in clone
+ * mode (template clones, Phase 2 of the clone plan).
  *
  * Runs `src/lib/campaign/poster-generation-service.ts` — eligibility, batch
- * planning, claiming, generation, versioning, approval, Poster Studio saves — and
- * the Phase 4 server actions against the development database. The image model,
- * Google Drive and the font-dependent overlay are replaced by in-process fakes
- * (`PosterGenerationDeps`); the prompt builder, reference preparation, decode
- * check, usage ledger, studio rows and versions are the real ones.
+ * planning, claiming, clone generation, versioning, approval, Poster Studio saves
+ * — and the Phase 4 server actions against the development database. The image
+ * model, Google Drive, the logo download and the text read-back are replaced by
+ * in-process fakes (`PosterGenerationDeps`); the element resolution, clone
+ * prompt, template image preparation, decode check, logo compositing, usage
+ * ledger, studio rows and versions are the real ones.
  *
  * How it stays harmless (the `check:calendar-scope` technique, plus savepoints):
  *   - `globalThis.prisma` is a facade over ONE interactive transaction that is
@@ -108,22 +110,62 @@ async function asAction<T>(work: () => Promise<T>): Promise<T> {
   return requestStore.run({ incrementalCache: {}, urlPathname: '/admin/check', isStaticGeneration: false }, work);
 }
 
+// ---- The fixture template's elements -------------------------------------------
+
+type Kind = import('@/lib/types/template-elements').TemplateElementKind;
+const element = (id: string, kind: Kind, text: string | null, box: [number, number, number, number], extra: { group?: string; description?: string } = {}) => ({
+  id,
+  kind,
+  text,
+  box: { x: box[0], y: box[1], w: box[2], h: box[3] },
+  group: extra.group ?? null,
+  description: extra.description ?? null,
+});
+
+/** A read template carrying another business's identity, the way the reader stores one. */
+function fixtureDoc(width: number, height: number) {
+  return {
+    version: 1,
+    width,
+    height,
+    model: 'fake-reader',
+    elements: [
+      element('e1', 'logo', null, [0.05, 0.03, 0.12, 0.07], { description: 'blue cross mark' }),
+      element('e2', 'brandName', 'Old Clinic', [0.19, 0.04, 0.3, 0.04]),
+      element('e3', 'headline', 'Care you can see', [0.05, 0.15, 0.6, 0.12]),
+      element('e4', 'subheadline', 'Gentle care for the whole family.', [0.05, 0.3, 0.5, 0.05]),
+      element('e5', 'photo', null, [0.45, 0.25, 0.55, 0.55], { description: 'dentist smiling at a child patient' }),
+      element('e6', 'feature', 'Painless check-ups', [0.05, 0.45, 0.3, 0.03], { group: 'features' }),
+      element('e7', 'feature', 'Weekend hours', [0.05, 0.5, 0.3, 0.03], { group: 'features' }),
+      element('e8', 'text', 'Choose Old Clinic.', [0.05, 0.6, 0.3, 0.03]),
+      element('e9', 'cta', 'Book a visit', [0.05, 0.84, 0.3, 0.04]),
+      element('e10', 'phone', '+1 555 0100', [0.05, 0.89, 0.25, 0.03], { group: 'contact' }),
+      element('e11', 'website', 'www.oldclinic.example', [0.35, 0.89, 0.3, 0.03], { group: 'contact' }),
+      element('e12', 'text', 'Visit us at:', [0.05, 0.94, 0.12, 0.03], { group: 'contact' }),
+      element('e13', 'address', '12 Old Road', [0.18, 0.94, 0.3, 0.03], { group: 'contact' }),
+      element('e14', 'personName', 'Dr. Old Name', [0.6, 0.94, 0.3, 0.03]),
+    ],
+  };
+}
+
 // ---------------------------------------------------------------------------
 
 async function suite(): Promise<void> {
   const tx = facade;
-  const { SAMPLE_LAYOUT_SPEC } = await import('@/lib/poster/sample-layout');
   const { isVersionCurrent } = await import('@/lib/campaign/model');
   const service = await import('@/lib/campaign/service');
   const mapping = await import('@/lib/campaign/template-mapping-service');
   const posters = await import('@/lib/campaign/poster-generation-service');
+  const queue = await import('@/lib/campaign/generation-queue');
   const campaignActions = await import('@/app/admin/campaigns/actions');
   const studioActions = await import('@/app/admin/poster-studio/actions');
-  const { LEGACY_CALENDAR } = await import('@/lib/calendar-scope');
   const { StudioError } = await import('@/lib/poster-studio/errors');
-  const { prepareStudioInputImage, readStudioImageSize } = await import('@/lib/poster-studio/images');
+  const { prepareCloneTemplateImage, readStudioImageSize } = await import('@/lib/poster-studio/images');
+  const { composeCloneIdentity } = await import('@/lib/poster-studio/clone-identity');
+  const { hasBrandCanvasLogo } = await import('@/lib/poster-studio/brand-logo');
   const { recordOpenAiImageUsage } = await import('@/lib/usage');
   const { loadStudioBrandCanvas } = await import('@/lib/poster-studio/brand-context');
+  const { parseDayPosterElements, parseTextCheck } = await import('@/lib/types/template-elements');
   const { addZonedDays, startOfZonedDay } = await import('@/lib/time');
   const { CampaignDomainError, changeCampaignStatus, createCampaign, updateCampaignDayContent } = service;
   type Deps = import('@/lib/campaign/poster-generation-service').PosterGenerationDeps;
@@ -142,16 +184,25 @@ async function suite(): Promise<void> {
     }
   }
 
-  // ---- Fakes: image model, Drive, overlay ------------------------------------
+  // ---- Fakes: image model, Drive, logo download, text check -----------------
   const png = (width: number, height: number, color: string) => sharp({ create: { width, height, channels: 3, background: color } }).png().toBuffer();
+  const pixelOf = async (bytes: Buffer, x: number, y: number) => {
+    const { data } = await sharp(bytes).extract({ left: x, top: y, width: 1, height: 1 }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    return [data[0], data[1], data[2]];
+  };
   const templatePng = await png(540, 960, '#3366aa');
+  const logoPng = await png(200, 100, '#ff0000');
   const drive = new Map<string, { fileName: string; body: Buffer }>();
   const trashed: string[] = [];
-  const renders: Array<{ prompt: string; size: string; hasImage: boolean }> = [];
+  const renders: Array<{ prompt: string; size: string; quality: string | undefined; image: { width: number; height: number } | null }> = [];
+  const textChecks: string[] = [];
   let renderMode: 'ok' | 'moderation' | 'auth' | 'garbage' = 'ok';
   let storeFailOn: RegExp | null = null;
   let composeFail = false;
+  let logoFail = false;
+  let textCheckFail = false;
   let onCompose: (() => Promise<void>) | null = null;
+  let onCheck: (() => Promise<void>) | null = null;
   let fileCounter = 0;
   /** Requests the fake model refused: no image, so nothing billed or recorded. */
   let renderRefusals = 0;
@@ -162,44 +213,48 @@ async function suite(): Promise<void> {
       if (!configured) throw new StudioError('config', 'OPENAI_API_KEY is not set on the server.');
     },
     loadBrandCanvas: loadStudioBrandCanvas,
-    prepareOverlay: async (canvas, selection, aspectRatio) =>
-      ({
-        preset: 'footer-band',
-        aspectRatio,
-        theme: null,
-        fonts: [],
-        logo: null,
-        logoInk: null,
-        name: canvas.companyName,
-        tagline: canvas.tagline,
-        website: canvas.website,
-        phone: canvas.phone,
-        footerBackground: selection.footerBackground,
-        drawn: ['name', ...selection.elements],
-      }) as unknown as Awaited<ReturnType<Deps['prepareOverlay']>>,
-    compose: async (raw, plan) => {
-      await onCompose?.();
-      if (composeFail) throw new Error('fake footer failure');
-      const bytes = await sharp(raw).composite([{ input: await png(1152, 240, '#111111'), left: 0, top: 1808 }]).png().toBuffer();
-      return { bytes, mimeType: 'image/png', drawn: plan.drawn, footerTone: 'DARK' };
+    resolveLogo: async (canvas) => {
+      if (!hasBrandCanvasLogo(canvas.logo)) return null;
+      if (logoFail) throw new StudioError('logo', "The client's logo could not be read from Google Drive.");
+      return { background: 'ORIGINAL', processing: 'as-uploaded', bytes: logoPng, mimeType: 'image/png', isSvg: false, width: 200, height: 100, inkLuminance: null };
     },
     resolveFolder: async () => 'fixture-folder',
     readFile: async (fileId) => {
       if (!fileId.startsWith('fixture-template')) throw new StudioError('storage', 'Could not load the selected image from Google Drive.');
       return templatePng;
     },
-    prepareReference: prepareStudioInputImage,
+    prepareTemplate: prepareCloneTemplateImage,
     render: async (request) => {
-      renders.push({ prompt: request.prompt, size: request.size, hasImage: Boolean(request.image) });
+      const meta = request.image ? await sharp(request.image.bytes).metadata() : null;
+      renders.push({ prompt: request.prompt, size: request.size, quality: request.quality, image: meta ? { width: meta.width ?? 0, height: meta.height ?? 0 } : null });
       if (renderMode === 'moderation' || renderMode === 'auth') renderRefusals += 1;
       if (renderMode === 'moderation') throw new StudioError('moderation', 'OpenAI declined this request under its safety policy.');
       if (renderMode === 'auth') throw new StudioError('auth', 'OpenAI rejected the API key configured on the server.');
       const [width, height] = request.size.split('x').map(Number) as [number, number];
-      const bytes = renderMode === 'garbage' ? Buffer.from('not an image at all') : await png(width, height, '#88ccbb');
-      return { bytes, mimeType: 'image/png', model: 'gpt-image-2', quality: 'low', usage: { textInputTokens: 100, imageInputTokens: 900, outputTokens: 4000 } };
+      const bytes = renderMode === 'garbage' ? Buffer.from('not an image at all') : await png(width, height, '#ffffff');
+      return { bytes, mimeType: 'image/png', model: 'gpt-image-2', quality: request.quality ?? 'low', usage: { textInputTokens: 100, imageInputTokens: 900, outputTokens: 4000 } };
     },
     recordUsage: recordOpenAiImageUsage,
     readImageSize: readStudioImageSize,
+    composeIdentity: async (raw, input) => {
+      await onCompose?.();
+      if (composeFail) throw new Error('fake compositing failure');
+      return composeCloneIdentity(raw, input);
+    },
+    checkText: async (input) => {
+      const hook = onCheck;
+      onCheck = null;
+      await hook?.();
+      textChecks.push(input.resolved.map((item) => item.element.id).join(','));
+      if (textCheckFail) throw new Error('fake text check failure');
+      return {
+        checkedAt: NOW.toISOString(),
+        model: 'fake-reader',
+        ok: false,
+        items: [{ elementId: 'e3', label: 'Headline', expected: 'Care you can see', found: 'Care you can sea', match: false }],
+        leftovers: [],
+      };
+    },
     store: async ({ fileName, body }) => {
       if (storeFailOn?.test(fileName)) throw new StudioError('storage', 'Google Drive did not accept the upload.');
       const id = `fake-drive-${(fileCounter += 1)}`;
@@ -222,22 +277,34 @@ async function suite(): Promise<void> {
       contentStrategy: { pillars: [{ key: 'educational', label: 'Educational', weight: 2, guidance: 'Teach.' }, { key: 'tips', label: 'Tips', weight: 1, guidance: 'Advise.' }] },
     },
   });
-  const portrait = { ...SAMPLE_LAYOUT_SPEC, aspect: 9 / 16 } as unknown as Prisma.InputJsonValue;
   let order = 0;
   const template = (label: string, data: Partial<Prisma.CategoryTemplateUncheckedCreateInput> = {}) =>
     tx.categoryTemplate.create({
-      data: { categoryId: vertical.id, label: `check:posters ${label}`, gDriveFileId: `fixture-template-${label}`, gDriveViewUrl: 'https://drive.invalid/t', mimeType: 'image/png', width: 1080, height: 1920, layoutSpec: portrait, layoutApprovedAt: new Date(), createdAt: new Date(Date.parse('2026-01-01') + (order += 1) * 1000), ...data },
+      data: {
+        categoryId: vertical.id,
+        label: `check:posters ${label}`,
+        gDriveFileId: `fixture-template-${label}`,
+        gDriveViewUrl: 'https://drive.invalid/t',
+        mimeType: 'image/png',
+        width: 1080,
+        height: 1920,
+        elements: fixtureDoc(data.width ?? 1080, data.height ?? 1920) as unknown as Prisma.InputJsonValue,
+        elementsReadAt: new Date(),
+        createdAt: new Date(Date.parse('2026-01-01') + (order += 1) * 1000),
+        ...data,
+      },
     });
   const tA = await template('A');
   const tB = await template('B');
 
-  const brand = { colors: [{ hex: '#0e7c86', role: 'primary' }, { hex: '#f4b942', role: 'accent' }], typography: null, layoutDirectives: [], assets: [] };
+  const brand = { colors: [{ hex: '#0e7c86', role: 'primary' }, { hex: '#f4b942', role: 'accent' }, { hex: '#fafafa', role: 'background' }], typography: null, layoutDirectives: [], assets: [] };
   const start = addZonedDays(today, -2, TZ);
   const client = (name: string, data: Partial<Prisma.ClientUncheckedCreateInput> = {}) =>
     tx.client.create({
       data: {
         companyName: `check:posters ${name}`,
         whatsappNumber: '919876500321',
+        displayPhone: '080 4000 1234',
         startDate: start,
         endDate: start,
         planId: plan.id,
@@ -248,13 +315,14 @@ async function suite(): Promise<void> {
         brandGuideline: brand,
         brandTagline: 'Care you can see',
         websiteUrl: 'clinic-fixture.invalid',
+        logoUrl: 'https://logo.invalid/clinic.png',
         gDriveFolderId: 'SECRET-CLIENT-FOLDER',
         ...data,
       },
     });
   const clientA = await client('Clinic A');
   const clientAuto = await client('Auto approve');
-  const clientNoBrand = await client('No brand', { brandGuideline: Prisma.DbNull });
+  const clientNoBrand = await client('No colours', { brandGuideline: Prisma.DbNull, logoUrl: null });
   const clientPortrait = await client('Four five', { imageSizePreset: 'instagram-portrait' });
   const legacy = await client('Legacy');
 
@@ -272,7 +340,7 @@ async function suite(): Promise<void> {
           cta: 'Book a visit',
           caption: 'Caption',
           hashtags: '#care',
-          imagePrompt: `A bright scene for day ${day.dayNumber}.`,
+          imagePrompt: day.dayNumber === 3 ? 'a smiling hygienist with a teenage patient' : '',
           contentStatus: 'READY',
           contentRevision: { increment: 1 },
         },
@@ -309,6 +377,7 @@ async function suite(): Promise<void> {
     const activePlan = posters.planPosterBatch(await overview(campaignA), { mode: 'upcoming' });
     t('an ACTIVE campaign: 14 eligible days, 14 estimated generations — never all 30', activePlan.estimatedGenerations === 14 && activePlan.days.every((day) => day.dayNumber >= 3 && day.dayNumber <= 16), snapshot(activePlan.days.map((d) => d.dayNumber)));
     t('past days are not generated; future days stay editable slots', (await tx.posterVersion.count({ where: { calendarDay: { campaignId: campaignA } } })) === 0);
+    t('each day knows its template’s clone size, from the template shape', view.days.every((day) => day.outputSize?.size === '1008x1792' && day.template?.readable === true));
   }
 
   // =======================================================================
@@ -316,66 +385,110 @@ async function suite(): Promise<void> {
   // =======================================================================
   {
     const d5 = await dayRow(campaignA, 5);
-    await tx.contentCalendar.update({ where: { id: d5.id }, data: { contentStatus: 'NOT_GENERATED' } });
+    await tx.contentCalendar.update({ where: { id: d5.id }, data: { contentStatus: 'NEEDS_REVIEW' } });
     const d6 = await dayRow(campaignA, 6);
     await tx.contentCalendar.update({ where: { id: d6.id }, data: { suggestedTemplateId: null } });
     const d7 = await dayRow(campaignA, 7);
     await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [7], templateId: tB.id });
     await mapping.setTemplateActive(tx, tB.id, false);
+    const tUnread = await template('Unread', { elements: Prisma.DbNull, elementsReadAt: null });
+    const d8 = await dayRow(campaignA, 8);
+    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [8], templateId: tUnread.id });
 
     const view = await overview(campaignA);
     const reasons = new Map(view.days.map((day) => [day.dayNumber, day.upcoming.eligible ? 'eligible' : day.upcoming.reason]));
-    t('missing content → content-not-generated', reasons.get(5) === 'content-not-generated');
+    t('a clone day is READY content: a NEEDS_REVIEW status does not block it', reasons.get(5) === 'eligible');
     t('no template → no-template (Needs attention)', reasons.get(6) === 'no-template' && view.days[5]!.state === 'needs-attention');
     t('inactive template → template-inactive (Needs attention)', reasons.get(7) === 'template-inactive' && view.days[6]!.state === 'needs-attention');
+    const unread = view.days[7]!;
+    t(
+      'a template not read yet → template-not-read (Needs attention), with what to do',
+      !unread.upcoming.eligible && unread.upcoming.reason === 'template-not-read' && unread.upcoming.attention && /press Read now/.test(unread.upcoming.message) && unread.state === 'needs-attention',
+      snapshot(unread.upcoming),
+    );
     const before = renders.length;
-    const results = await Promise.all([5, 6, 7].map(async (n) => generate(campaignA, (await dayRow(campaignA, n)).id, 'upcoming')));
+    const results = await Promise.all([6, 7, 8].map(async (n) => generate(campaignA, (await dayRow(campaignA, n)).id, 'upcoming')));
     t('each refusal is returned with its reason, with no provider call', results.every((r) => r.outcome === 'skipped') && renders.length === before, snapshot(results.map((r) => r.outcome === 'skipped' && r.reason)));
     t('the inactive template is not silently remapped', (await dayRow(campaignA, 7)).posterTemplateId === tB.id && (await dayRow(campaignA, 7)).suggestedTemplateId === d7.suggestedTemplateId);
+    const d8After = await dayRow(campaignA, 8);
+    t('the unread day was not touched: no clone saved, no status, no version', d8After.posterElements === null && d8After.generationStatus === d8.generationStatus && d8After.activePosterVersionId === null);
 
     const noBrand = await readyCampaign(clientNoBrand.id);
     await changeCampaignStatus(tx, noBrand, 'ACTIVE');
-    const noBrandView = await overview(noBrand);
-    const noBrandDay = noBrandView.days.find((day) => day.inWindow)!;
-    t('missing Brand Canvas → brand-canvas-unavailable (attention), no call', !noBrandDay.upcoming.eligible && noBrandDay.upcoming.reason === 'brand-canvas-unavailable' && (await generate(noBrand, noBrandDay.id, 'upcoming')).outcome === 'skipped' && renders.length === before);
+    const noBrandDay = (await overview(noBrand)).days.find((day) => day.inWindow)!;
+    t('Brand Canvas without colours is enough: the day is eligible (template colours kept)', noBrandDay.upcoming.eligible, snapshot(noBrandDay.upcoming));
+    const nameless = await client('Nameless');
+    await tx.client.update({ where: { id: nameless.id }, data: { companyName: '   ' } });
+    const namelessCampaign = await readyCampaign(nameless.id);
+    await changeCampaignStatus(tx, namelessCampaign, 'ACTIVE');
+    const namelessDay = (await overview(namelessCampaign)).days.find((day) => day.inWindow)!;
+    t('no company name → brand-canvas-unavailable (attention), no call', !namelessDay.upcoming.eligible && namelessDay.upcoming.reason === 'brand-canvas-unavailable' && (await generate(namelessCampaign, namelessDay.id, 'upcoming')).outcome === 'skipped' && renders.length === before);
 
     const fourFive = await readyCampaign(clientPortrait.id);
+    // Auto Map still matches the client preset (it is retired with mapping); a clone day's template is set directly.
+    await mapping.assignManualTemplates(tx, fourFive, { kind: 'range', fromDay: 1, toDay: 30, templateId: tA.id });
     await changeCampaignStatus(tx, fourFive, 'ACTIVE');
     const fourFiveView = await overview(fourFive);
-    t('a 4:5 client output is an unsupported aspect ratio (attention)', fourFiveView.days.filter((day) => day.inWindow).every((day) => !day.upcoming.eligible && (day.upcoming.reason === 'unsupported-aspect' || day.upcoming.reason === 'no-template')));
+    t('a 4:5 client output no longer blocks: the template shape decides', fourFiveView.days.filter((day) => day.inWindow).every((day) => day.upcoming.eligible), snapshot(fourFiveView.days.filter((day) => day.inWindow).map((day) => !day.upcoming.eligible && day.upcoming.reason)));
 
     // Put the refused days back for the batch below.
-    await tx.contentCalendar.update({ where: { id: d5.id }, data: { contentStatus: 'READY' } });
     await tx.contentCalendar.update({ where: { id: d6.id }, data: { suggestedTemplateId: tA.id } });
     await mapping.setTemplateActive(tx, tB.id, true);
+    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [8], templateId: tA.id });
+    await mapping.setTemplateActive(tx, tUnread.id, false);
   }
 
   // =======================================================================
-  section('successful generation: day 3');
+  section('clone generation: day 3');
   // =======================================================================
   const d3 = await dayRow(campaignA, 3);
   {
-    // The admin's prompt on whichever template day 3 is mapped to.
-    const d3Template = (await posters.loadPosterOverview(tx, campaignA, load)).days.find((d) => d.id === d3.id)!.mapping.templateId!;
-    await tx.categoryTemplate.update({ where: { id: d3Template }, data: { prompt: 'Keep the curved blue footer.' } });
+    const revisionBefore = d3.contentRevision;
+    const d3Template = (await overview(campaignA)).days.find((d) => d.id === d3.id)!.mapping.templateId!;
     const result = await generate(campaignA, d3.id, 'upcoming');
     t('day 3 generated as v1', result.outcome === 'generated' && result.versionNumber === 1, snapshot(result));
     if (result.outcome !== 'generated') throw new Error('cannot continue without a generated poster');
     const call = renders.at(-1)!;
-    t('one image request, 9:16 size, mapped template attached as the reference', renders.length === 1 && call.size === '1152x2048' && call.hasImage);
-    t('the prompt carries the day content and the no-invented-branding rule', call.prompt.includes('Headline: "Headline for day 3"') && call.prompt.includes('No invented branding') && call.prompt.includes('Reference image:'));
-    const secrets = [d3.id, campaignA, clientA.id, tA.id, tA.gDriveFileId, 'SECRET-CLIENT-FOLDER', '919876500321', 'fixture-folder'];
-    t('the mapped template prompt reaches the model after the reference guidance', call.prompt.indexOf('Keep the curved blue footer.') > call.prompt.indexOf('Reference image:'));
-    t('no id, Drive id, folder or WhatsApp number reaches the model', secrets.every((secret) => !call.prompt.includes(secret)), secrets.filter((secret) => call.prompt.includes(secret)).join());
+    t('one image request at the template’s own size, quality high', renders.length === 1 && call.size === '1008x1792' && call.quality === 'high');
+    t('the template is attached at exactly that size', call.image?.width === 1008 && call.image?.height === 1792, snapshot(call.image));
+
+    const prompt = call.prompt;
+    const company = 'check:posters Clinic A';
+    t('the prompt asks for an exact recreation', prompt.startsWith('Recreate the attached poster exactly.') && prompt.includes('Output frame: vertical 9:16'));
+    t('replacements: the brand name, phone and website from Brand Canvas', prompt.includes(`Business name (top centre): replace "Old Clinic" with "${company}".`) && prompt.includes('replace "+1 555 0100" with "080 4000 1234"') && prompt.includes('replace "www.oldclinic.example" with "clinic-fixture.invalid"'));
+    t('the template’s business name is swapped inside its words', prompt.includes(`replace "Choose Old Clinic." with "Choose ${company}."`));
+    t('removals: the address, its orphaned label, and the other person’s name', prompt.includes('erase "12 Old Road" together with its icon') && prompt.includes('erase "Visit us at:"') && prompt.includes('erase "Dr. Old Name"'));
+    t('the photo takes the day’s image prompt and different people', prompt.includes('replace this photograph with a new one of a smiling hygienist with a teenage patient') && prompt.includes('nobody from the original is recognisable'));
+    t('the logo area is cleared for the client’s logo', prompt.includes("the client's logo is placed there afterwards") && prompt.includes("The space left for the client's logo stays clean and empty"));
+    t('the day’s own headline and supporting text replace the template’s; kept words are not listed', prompt.includes('replace "Care you can see" with "Headline for day 3"') && prompt.includes('replace "Gentle care for the whole family." with "Supporting text 3."') && !prompt.includes('Painless check-ups') && !prompt.includes('"Book a visit"'), prompt.split('\n').filter((line) => /Headline|Sub-headline/.test(line)).join(' | '));
+    t('the old business identity is never a value to print', !/with "(Old Clinic|\+1 555 0100|www\.oldclinic\.example|12 Old Road|Dr\. Old Name)/.test(prompt));
+    t('brand accent colours only — never the background colour', prompt.includes('primary #0E7C86, accent #F4B942') && !prompt.includes('#FAFAFA') && prompt.includes('Keep the lightness of every area'));
+    const secrets = [d3.id, campaignA, clientA.id, tA.id, tA.gDriveFileId, 'SECRET-CLIENT-FOLDER', '919876500321', 'fixture-folder', 'logo.invalid'];
+    t('no id, Drive id, folder, logo URL or WhatsApp number reaches the model', secrets.every((secret) => !prompt.includes(secret)), secrets.filter((secret) => prompt.includes(secret)).join());
 
     const version = await tx.posterVersion.findUniqueOrThrow({ where: { id: result.versionId } });
     const generation = await tx.posterStudioGeneration.findUniqueOrThrow({ where: { id: result.generationId } });
     const day = await dayRow(campaignA, 3);
+    const raw = drive.get(generation.imageDriveFileId)!.body;
+    const final = drive.get(generation.finalImageDriveFileId!)!.body;
     t('RAW and FINAL are separate Drive files', generation.imageDriveFileId !== generation.finalImageDriveFileId && drive.has(generation.imageDriveFileId) && drive.has(generation.finalImageDriveFileId!));
-    t('RAW is exactly the model output; FINAL carries the identity footer', drive.get(generation.imageDriveFileId)!.fileName.endsWith('-raw.png') && !drive.get(generation.imageDriveFileId)!.body.equals(drive.get(generation.finalImageDriveFileId!)!.body));
-    t('studio row records prompts, model, format, client and overlay', generation.mode === 'GENERATE' && generation.sentPrompt === call.prompt && generation.aspectRatio === '9:16' && generation.clientId === clientA.id && generation.overlayElements.includes('name'));
-    t('PosterVersion: PIPELINE, final image, studio row, template, content revision', version.source === 'PIPELINE' && version.imageDriveFileId === generation.finalImageDriveFileId && version.studioGenerationId === generation.id && version.templateId === tA.id && version.contentRevision === day.contentRevision);
+    // Logo box e1: x 0.05 y 0.03 w 0.12 h 0.07 of 1008x1792 → centre ≈ (111, 116).
+    t('the client’s logo is composited into the template’s logo box on FINAL only', snapshot(await pixelOf(final, 111, 116)) === snapshot([255, 0, 0]) && snapshot(await pixelOf(raw, 111, 116)) === snapshot([255, 255, 255]));
+    t('…and nowhere else', snapshot(await pixelOf(final, 700, 1500)) === snapshot([255, 255, 255]));
+    t(
+      'studio row: CLONE, source template, template shape and size, quality, logo recorded',
+      generation.mode === 'CLONE' && generation.sourceTemplateId === d3Template && generation.aspectRatio === '9:16' && generation.size === '1008x1792' && generation.quality === 'high' && snapshot(generation.overlayElements) === snapshot(['logo']) && generation.sentPrompt === prompt && generation.clientId === clientA.id && generation.referenceDriveFileId === null,
+      snapshot({ mode: generation.mode, aspect: generation.aspectRatio, size: generation.size, overlay: generation.overlayElements }),
+    );
+    t('PosterVersion: PIPELINE, final image, studio row, template, content revision', version.source === 'PIPELINE' && version.imageDriveFileId === generation.finalImageDriveFileId && version.studioGenerationId === generation.id && version.templateId === d3Template && version.contentRevision === day.contentRevision);
+    const check = parseTextCheck(version.textCheck);
+    t('the text check is stored on the version', check !== null && check.ok === false && check.items[0]?.found === 'Care you can sea' && textChecks.length === 1);
     t('v1 is the day’s active version; status SUCCEEDED', day.activePosterVersionId === version.id && day.generationStatus === 'SUCCEEDED' && day.errorMessage === null);
+    const stored = parseDayPosterElements(day.posterElements);
+    t('the day’s clone is saved with its template', stored?.templateId === d3Template && stored.values.find((value) => value.id === 'e8')?.text === `Choose ${company}.`);
+    t('…seeded with the day’s existing content, as the admin’s — never the template’s words over it', stored?.values.find((value) => value.id === 'e3')?.text === 'Headline for day 3' && stored.values.find((value) => value.id === 'e3')?.source === 'admin' && stored.values.find((value) => value.id === 'e4')?.text === 'Supporting text 3.' && stored.values.find((value) => value.id === 'e9')?.source === 'template');
+    t('headline, supporting text and CTA keep the day’s content; its image prompt is kept', day.headline === 'Headline for day 3' && day.supportingText === 'Supporting text 3.' && day.cta === 'Book a visit' && day.imagePrompt === 'a smiling hygienist with a teenage patient', snapshot([day.headline, day.supportingText, day.cta]));
+    t('…without moving the content revision (the poster is current)', day.contentRevision === revisionBefore && isVersionCurrent(version, day));
     t('MANUAL_REVIEW policy: the poster needs approval', version.approvalStatus === 'PENDING' && (await overview(campaignA)).days[2]!.state === 'needs-approval');
     t('usage recorded against the client and day', (await tx.usageEvent.count({ where: { clientId: clientA.id, calendarId: d3.id } })) === 1);
     t('no delivery column is written', day.deliveryStatus === 'PENDING' && day.gDriveFileId === null && day.approvedAt === null && day.sendAfter === null);
@@ -415,13 +528,17 @@ async function suite(): Promise<void> {
     for (const entry of batch.days.slice(0, 6)) {
       renderMode = entry.dayNumber === 6 ? 'moderation' : 'ok';
       storeFailOn = entry.dayNumber === 8 ? /-final\.png$/ : null;
+      textCheckFail = entry.dayNumber === 7;
       const result = await generate(campaignA, entry.dayId, 'upcoming');
       outcomes.set(entry.dayNumber, result.outcome === 'failed' ? `failed:${result.kind}` : result.outcome);
     }
     renderMode = 'ok';
     storeFailOn = null;
+    textCheckFail = false;
     t('the stale claim of day 4 was released and day 4 generated', outcomes.get(4) === 'generated' && (await dayRow(campaignA, 4)).generationStatus === 'SUCCEEDED');
     t('a moderation rejection fails day 6 only', outcomes.get(6) === 'failed:moderation' && ['generated'].includes(outcomes.get(5)!) && outcomes.get(7) === 'generated', snapshot([...outcomes]));
+    const d7version = await tx.posterVersion.findFirstOrThrow({ where: { calendarDay: { campaignId: campaignA, dayNumber: 7 } } });
+    t('a text check failure never fails the poster: it is stored unchecked', outcomes.get(7) === 'generated' && d7version.textCheck === null);
     const d6 = await dayRow(campaignA, 6);
     t('day 6 is FAILED with the reason and no version', d6.generationStatus === 'FAILED' && /safety policy/.test(d6.errorMessage ?? '') && d6.activePosterVersionId === null);
     const d8 = await dayRow(campaignA, 8);
@@ -454,7 +571,12 @@ async function suite(): Promise<void> {
     composeFail = true;
     const composeFailure = await generate(campaignA, d20.id, 'missing', true);
     composeFail = false;
-    t('an identity footer failure after generation keeps nothing', composeFailure.outcome === 'failed' && composeFailure.kind === 'composition' && (await dayRow(campaignA, 20)).activePosterVersionId === null);
+    t('a logo compositing failure after generation keeps nothing', composeFailure.outcome === 'failed' && composeFailure.kind === 'composition' && composeFailure.billed && (await dayRow(campaignA, 20)).activePosterVersionId === null, composeFailure.outcome === 'failed' ? composeFailure.message : '');
+    logoFail = true;
+    const rendersBeforeLogo = renders.length;
+    const logoFailure = await generate(campaignA, d20.id, 'missing', true);
+    logoFail = false;
+    t('an unreadable client logo fails before any spend', logoFailure.outcome === 'failed' && logoFailure.kind === 'logo' && !logoFailure.billed && renders.length === rendersBeforeLogo);
     configured = false;
     const before = renders.length;
     const noKey = await generate(campaignA, d20.id, 'missing', true);
@@ -488,6 +610,37 @@ async function suite(): Promise<void> {
     t('…the studio row written in that transaction was rolled back', (await tx.posterStudioGeneration.count()) === generationsBefore, `${await tx.posterStudioGeneration.count()} vs ${generationsBefore}`);
     t('…no version exists for the day', (await tx.posterVersion.count({ where: { calendarDayId: bDay.id } })) === 0);
     t('…both files it stored (RAW and FINAL) were binned', storedThisRun.length === 2 && storedThisRun.every((id) => trashed.includes(id) && !drive.has(id)), snapshot(storedThisRun));
+  }
+
+  // =======================================================================
+  section('template shape, brand colours and the queue');
+  // =======================================================================
+  {
+    const t45 = await template('Four five', { width: 736, height: 920 });
+    const noBrandCampaign = (await tx.campaign.findFirstOrThrow({ where: { clientId: clientNoBrand.id } })).id;
+    const day = (await overview(noBrandCampaign)).days.find((candidate) => candidate.inWindow)!;
+    await mapping.assignManualTemplates(tx, noBrandCampaign, { kind: 'days', dayNumbers: [day.dayNumber], templateId: t45.id });
+    const result = await generate(noBrandCampaign, day.id, 'missing', true);
+    const call = renders.at(-1)!;
+    t('a 4:5 template renders at 1280x1600 whatever the client preset', result.outcome === 'generated' && call.size === '1280x1600' && call.image?.width === 1280 && call.image?.height === 1600, snapshot(call.size));
+    const generation = result.outcome === 'generated' ? await tx.posterStudioGeneration.findUniqueOrThrow({ where: { id: result.generationId } }) : null;
+    t('…recorded as a 4:5 clone of that template', generation?.aspectRatio === '4:5' && generation.size === '1280x1600' && generation.sourceTemplateId === t45.id);
+    t('no brand colours: the template’s colours are kept', call.prompt.includes('Colours: keep every colour exactly as in the original.'));
+    t('no Brand Canvas logo: the template logo is removed and nothing is composited', call.prompt.includes('remove this logo completely and leave clean background') && snapshot(generation?.overlayElements) === snapshot([]));
+
+    // A queued day whose template became unreadable is released, not retried forever.
+    const queued = (await overview(noBrandCampaign)).days.find((candidate) => candidate.inWindow && !candidate.activeVersion && candidate.id !== day.id)!;
+    await mapping.assignManualTemplates(tx, noBrandCampaign, { kind: 'days', dayNumbers: [queued.dayNumber], templateId: t45.id });
+    const queuedOutcome = await queue.queueCampaignPosters(tx, noBrandCampaign, { mode: 'missing', dayIds: [queued.id] }, load);
+    t('days in view are queued by id', snapshot(queuedOutcome.queued) === snapshot([queued.dayNumber]), snapshot(queuedOutcome));
+    await tx.categoryTemplate.update({ where: { id: t45.id }, data: { elements: Prisma.DbNull } });
+    const rendersBefore = renders.length;
+    const sweep = await queue.runQueuedCampaignGenerations(tx, { ...load, deps, campaignId: noBrandCampaign, limit: 1 });
+    const released = await tx.contentCalendar.findUniqueOrThrow({ where: { id: queued.id } });
+    t('the worker skips it with the reason and releases it from the queue', sweep.skipped[0]?.reason === 'template-not-read' && released.generationStatus === 'NOT_REQUESTED' && renders.length === rendersBefore, snapshot(sweep.skipped));
+    const idle = await queue.runQueuedCampaignGenerations(tx, { ...load, deps, campaignId: noBrandCampaign, limit: 1 });
+    t('…so the next run finds nothing', idle.claimed === 0 && idle.skipped.length === 0);
+    await tx.categoryTemplate.update({ where: { id: t45.id }, data: { elements: fixtureDoc(736, 920) as unknown as Prisma.InputJsonValue } });
   }
 
   // =======================================================================
@@ -525,6 +678,33 @@ async function suite(): Promise<void> {
     const d9After = await dayRow(campaignA, 9);
     const versions = await tx.posterVersion.findMany({ where: { calendarDayId: d9.id }, orderBy: { versionNumber: 'asc' } });
     t('regenerating the outdated day: v2 current and active, v1 kept as outdated history', regen.outcome === 'generated' && versions.length === 2 && d9After.activePosterVersionId === versions[1]!.id && isVersionCurrent(versions[1]!, d9After) && !isVersionCurrent(versions[0]!, d9After));
+    // Day 9's elements were saved (seeded with "Headline for day 9") at its first generation; the
+    // headline edited through the old content path is not in them, so the columns follow the elements.
+    t('…and the legacy headline follows the elements again', d9After.headline === 'Headline for day 9', String(d9After.headline));
+  }
+
+  // =======================================================================
+  section('a claim lost before recording saves nothing');
+  // =======================================================================
+  {
+    const d12 = await dayRow(campaignA, 12);
+    const versionsBefore = await tx.posterVersion.count({ where: { calendarDayId: d12.id } });
+    const studioRowsBefore = await tx.posterStudioGeneration.count();
+    const counterBefore = fileCounter;
+    const rendersBefore = renders.length;
+    const otherClaim = new Date(NOW.getTime() + 60_000);
+    // The attempt's text check outlives its claim: it goes stale and another run claims the day.
+    onCheck = async () => {
+      await tx.contentCalendar.update({ where: { id: d12.id }, data: { generationStatus: 'GENERATING', posterGenerationStartedAt: otherClaim } });
+    };
+    const lost = await generate(campaignA, d12.id, 'regenerate', true);
+    const after = await dayRow(campaignA, 12);
+    const storedThisRun = Array.from({ length: fileCounter - counterBefore }, (_, i) => `fake-drive-${counterBefore + i + 1}`);
+    t('the attempt reports the lost claim: billed, nothing saved', lost.outcome === 'failed' && lost.billed && /another run took over this day/i.test(lost.message), snapshot(lost));
+    t('…one image was paid for, no version and no studio row recorded', renders.length === rendersBefore + 1 && (await tx.posterVersion.count({ where: { calendarDayId: d12.id } })) === versionsBefore && (await tx.posterStudioGeneration.count()) === studioRowsBefore);
+    t('…both files it stored were binned', storedThisRun.length === 2 && storedThisRun.every((id) => trashed.includes(id) && !drive.has(id)), snapshot(storedThisRun));
+    t('…and the other run’s claim was left as it was, not marked FAILED', after.generationStatus === 'GENERATING' && after.posterGenerationStartedAt?.getTime() === otherClaim.getTime() && after.activePosterVersionId === d12.activePosterVersionId);
+    await tx.contentCalendar.update({ where: { id: d12.id }, data: { generationStatus: 'SUCCEEDED', posterGenerationStartedAt: d12.posterGenerationStartedAt } });
   }
 
   // =======================================================================
@@ -558,14 +738,51 @@ async function suite(): Promise<void> {
     const saved = await asAction(() => campaignActions.saveStudioPosterToCampaignDayAction(day.id, edit.id));
     const after = await dayRow(campaignA, 3);
     const v = saved.ok ? await tx.posterVersion.findUniqueOrThrow({ where: { id: saved.data.versionId } }) : null;
-    t('the edit becomes a new POSTER_STUDIO version, active, edited from the previous one', saved.ok && v?.source === 'POSTER_STUDIO' && v.parentVersionId === activeBefore.id && after.activePosterVersionId === v.id && v.imageDriveFileId === 'fake-edit-final');
+    t('the edit becomes a new POSTER_STUDIO version, active, edited from the previous one', saved.ok && v?.source === 'POSTER_STUDIO' && v.parentVersionId === activeBefore.id && after.activePosterVersionId === v.id && v.imageDriveFileId === 'fake-edit-final', saved.ok ? '' : saved.error);
     t('the previous version is unchanged history', snapshot(await tx.posterVersion.findUniqueOrThrow({ where: { id: activeBefore.id } })) === snapshot(activeBefore));
     const again = await asAction(() => campaignActions.saveStudioPosterToCampaignDayAction(day.id, edit.id));
     t('saving the same studio poster twice creates no duplicate', again.ok && again.data.alreadySaved && (await tx.posterVersion.count({ where: { studioGenerationId: edit.id } })) === 1);
     const otherClient = await tx.posterStudioGeneration.create({ data: { mode: 'GENERATE', prompt: 'x', sentPrompt: 'x', aspectRatio: '9:16', size: '1152x2048', model: 'gpt-image-2', quality: 'low', imageDriveFileId: 'fake-other', imageMimeType: 'image/png', clientId: clientAuto.id } });
     const square = await tx.posterStudioGeneration.create({ data: { mode: 'GENERATE', prompt: 'x', sentPrompt: 'x', aspectRatio: '1:1', size: '1024x1024', model: 'gpt-image-2', quality: 'low', imageDriveFileId: 'fake-square', imageMimeType: 'image/png', clientId: clientA.id } });
     await expectDomainError('a poster made for another client is refused', 'invalid-input', () => posters.saveStudioPosterToCampaignDay(tx, day.id, otherClient.id));
-    await expectDomainError('a poster in another format is refused', 'invalid-input', () => posters.saveStudioPosterToCampaignDay(tx, day.id, square.id));
+    await expectDomainError('a poster in another shape than the day’s template is refused', 'invalid-input', () => posters.saveStudioPosterToCampaignDay(tx, day.id, square.id));
+
+    // A 4:5 clone is accepted on a day whose template is 4:5, whatever the client preset.
+    const t45 = await tx.categoryTemplate.findFirstOrThrow({ where: { label: 'check:posters Four five' } });
+    const d11 = await dayRow(campaignA, 11);
+    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [11], templateId: t45.id });
+    const clone45 = await tx.posterStudioGeneration.create({ data: { mode: 'CLONE', prompt: 'x', sentPrompt: 'x', aspectRatio: '4:5', size: '1280x1600', model: 'gpt-image-2', quality: 'high', imageDriveFileId: 'fake-45', imageMimeType: 'image/png', clientId: clientA.id, sourceTemplateId: t45.id } });
+    const saved45 = await posters.saveStudioPosterToCampaignDay(tx, d11.id, clone45.id);
+    const v45 = await tx.posterVersion.findUniqueOrThrow({ where: { id: saved45.versionId } });
+    t('a 4:5 clone saves to a day whose template is 4:5, keeping its source template', v45.templateId === t45.id);
+    await expectDomainError('a 9:16 poster is refused on that 4:5 day', 'invalid-input', () => posters.saveStudioPosterToCampaignDay(tx, d11.id, edit.id));
+    const context = await posters.loadCampaignDayStudioContext(tx, d11.id);
+    t('the studio context gives the day’s poster shape; no studio format for 4:5', context?.posterAspect === '4:5' && context.aspectRatio === null, snapshot(context && { posterAspect: context.posterAspect, aspectRatio: context.aspectRatio }));
+    const context3 = await posters.loadCampaignDayStudioContext(tx, day.id);
+    t('a 9:16 template day maps to the studio 9:16 format', context3?.posterAspect === '9:16' && context3.aspectRatio === '9:16');
+
+    // A day with no template: a Poster Studio poster saved to it makes the day READY, so it can be sent.
+    const readyClient = await client('Studio only', { isActive: true, isDemo: false });
+    const { campaignId: studioCampaign } = await createCampaign(tx, { clientId: readyClient.id, name: 'Studio only', startDate: today, durationDays: 3, timeZone: TZ });
+    await changeCampaignStatus(tx, studioCampaign, 'ACTIVE');
+    const bare = (await service.findCampaignDay(tx, studioCampaign, 2))!;
+    t('fixture: the day has no template and its content is not ready', bare.posterTemplateId === null && bare.contentStatus !== 'READY', String(bare.contentStatus));
+    const studioPoster = await tx.posterStudioGeneration.create({ data: { mode: 'GENERATE', prompt: 'x', sentPrompt: 'x', aspectRatio: '9:16', size: '1152x2048', model: 'gpt-image-2', quality: 'low', imageDriveFileId: 'fake-studio-only', imageMimeType: 'image/png', clientId: readyClient.id } });
+    const savedBare = await posters.saveStudioPosterToCampaignDay(tx, bare.id, studioPoster.id);
+    const bareAfter = await tx.contentCalendar.findUniqueOrThrow({ where: { id: bare.id } });
+    t('saving a Poster Studio poster to it marks the day READY without moving its revision', bareAfter.contentStatus === 'READY' && bareAfter.contentIssues.length === 0 && bareAfter.contentRevision === bare.contentRevision && bareAfter.activePosterVersionId === savedBare.versionId);
+    const studioDeliveryDeps = (await import('@/lib/campaign/delivery-service')).defaultDeliveryDeps({
+      timeZone: TZ,
+      now: () => NOW,
+      whatsappConfigured: () => true,
+      mediaConfigured: () => true,
+      buildMediaUrl: async (versionId) => `https://console.invalid/api/campaign-media/${versionId}`,
+      sendMedia: async () => {
+        throw new Error('check:campaign-posters-db never sends');
+      },
+    });
+    const approvedBare = await posters.approveCampaignDayPoster(tx, bare.id, savedBare.versionId, { deliveryDeps: studioDeliveryDeps });
+    t('…so approving it books it, never refused as content-not-ready', approvedBare.booking?.result === 'booked' && approvedBare.booking.refusal === null, snapshot(approvedBare.booking));
 
     const deleted = await asAction(() => studioActions.deleteStudioGenerationAction(activeBefore.studioGenerationId!));
     t('Poster Studio refuses to delete a history item a campaign version uses', !deleted.ok && /campaign poster version/.test(deleted.ok ? '' : deleted.error) && (await tx.posterStudioGeneration.count({ where: { id: activeBefore.studioGenerationId! } })) === 1);
@@ -577,10 +794,17 @@ async function suite(): Promise<void> {
   section('server actions');
   // =======================================================================
   {
-    const planned = await asAction(() => campaignActions.planPosterBatchAction(campaignA, { mode: 'missing' }));
-    t('planPosterBatchAction returns eligible count and grouped reasons', planned.ok && typeof planned.data.estimatedGenerations === 'number' && Array.isArray(planned.data.skipped));
-    const invalid = await asAction(() => campaignActions.planPosterBatchAction(campaignA, { mode: 'regenerate', fromDay: 9, toDay: 3 }));
-    t('an invalid range is refused', !invalid.ok);
+    // The batch planner's action wrapper retired with the old generation panel;
+    // the service still plans the board's bulk generation.
+    const planned = posters.planPosterBatch(await overview(campaignA), { mode: 'missing' });
+    t('planPosterBatch returns eligible count and grouped reasons', typeof planned.estimatedGenerations === 'number' && Array.isArray(planned.skipped));
+    let invalidRefused = false;
+    try {
+      posters.planPosterBatch(await overview(campaignA), { mode: 'regenerate', fromDay: 9, toDay: 3 });
+    } catch (error) {
+      invalidRefused = error instanceof CampaignDomainError;
+    }
+    t('an invalid range is refused', invalidRefused);
     const status = await asAction(() => campaignActions.changeCampaignStatusAction(campaignA, 'PAUSED'));
     t('pausing the campaign blocks generation', status.ok && posters.planPosterBatch(await overview(campaignA), { mode: 'upcoming' }).estimatedGenerations === 0);
     await asAction(() => campaignActions.changeCampaignStatusAction(campaignA, 'ACTIVE'));
@@ -590,14 +814,14 @@ async function suite(): Promise<void> {
   section('isolation: legacy rows, WhatsApp, production');
   // =======================================================================
   t('legacy calendar rows are byte-identical', snapshot(await tx.contentCalendar.findMany({ where: { clientId: legacy.id } })) === legacyBefore);
-  t('legacy calendar scope still excludes every campaign day', (await tx.contentCalendar.count({ where: { clientId: clientA.id, ...LEGACY_CALENDAR } })) === 0);
+  t('no calendar row of a campaign client is left without its campaign', (await tx.contentCalendar.count({ where: { clientId: clientA.id, campaignId: null } })) === 0);
   t('no WhatsApp usage and no delivery column on any campaign day', (await tx.usageEvent.count({ where: { provider: 'EVOLUTION' } })) === whatsappUsageBefore && (await tx.contentCalendar.count({ where: { campaignId: { not: null }, OR: [{ deliveryStatus: { not: 'PENDING' } }, { gDriveFileId: { not: null } }, { approvedAt: { not: null } }, { sendAfter: { not: null } }] } })) === 0);
   const imageUsageAdded = (await tx.usageEvent.count({ where: { provider: 'OPENAI' } })) - imageUsageBefore;
   t('only image usage rows were added, one per billed image', imageUsageAdded > 0 && (await tx.usageEvent.count()) - usageBefore === imageUsageAdded && imageUsageAdded === renders.length - renderRefusals, `${imageUsageAdded} rows, ${renders.length} requests, ${renderRefusals} refused`);
   t('ran against the local development database only', /evokz_ai_dev @ localhost/.test(databaseLabel), databaseLabel);
 }
 
-const TABLES = ['Client', 'Campaign', 'ContentCalendar', 'PosterVersion', 'PosterStudioGeneration', 'Category', 'CategoryTemplate', 'Plan', 'UsageEvent'];
+const TABLES = ['Client', 'Campaign', 'ContentCalendar', 'PosterVersion', 'PosterStudioGeneration', 'Category', 'CategoryTemplate', 'Plan', 'UsageEvent', 'CampaignDelivery'];
 async function tableCounts(): Promise<string> {
   const counts: Record<string, number> = {};
   for (const table of TABLES) {

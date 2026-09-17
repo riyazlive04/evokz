@@ -17,6 +17,8 @@ import {
   STALE_GENERATION_MS,
   studioAspectFor,
   summarizePosterWindow,
+  templateOutputSize,
+  templateShapeOf,
   type PosterEligibilityInput,
 } from '@/lib/campaign/poster-generation';
 import { buildGeneratePrompt } from '@/lib/ai/studio-prompts';
@@ -52,11 +54,9 @@ const base = (overrides: Partial<PosterEligibilityInput> = {}): PosterEligibilit
   window: WINDOW,
   campaignStatus: 'ACTIVE',
   scheduledDate: dayAt(2),
-  contentStatus: 'READY',
   mapping: mapped(tpl()),
   unmappedReason: null,
-  studioAspect: '9:16',
-  targetAspectLabel: '9:16',
+  template: { label: 'T', readable: true, width: 1080, height: 1920 },
   brandCanvas: { available: true, reason: null },
   generationStatus: 'NOT_REQUESTED',
   generationStartedAt: null,
@@ -87,8 +87,12 @@ t('4:5 and 3:4 outputs are unsupported', studioAspectFor(0.8) === null && studio
 t('QUEUED and a fresh GENERATING claim are in progress', isGenerationInProgress('QUEUED', null, NOW) && isGenerationInProgress('GENERATING', new Date(NOW.getTime() - 60_000), NOW));
 t('a GENERATING claim older than the stale limit is not', !isGenerationInProgress('GENERATING', new Date(NOW.getTime() - STALE_GENERATION_MS - 1), NOW) && !isGenerationInProgress('GENERATING', null, NOW));
 t('SUCCEEDED / FAILED are not in progress', !isGenerationInProgress('SUCCEEDED', NOW, NOW) && !isGenerationInProgress('FAILED', NOW, NOW));
-t('Brand Canvas without extracted colours is unavailable, with the reason', !brandCanvasReadiness({ companyName: 'Clinic', brandColorCount: 0 }).available && /brand colours/.test(brandCanvasReadiness({ companyName: 'Clinic', brandColorCount: 0 }).reason ?? ''));
-t('Brand Canvas with colours is available', brandCanvasReadiness({ companyName: 'Clinic', brandColorCount: 3 }).available);
+t('a QUEUED day of a campaign that is not ACTIVE is not in progress (nothing will take it)', !isGenerationInProgress('QUEUED', null, NOW, 'PAUSED') && !isGenerationInProgress('QUEUED', null, NOW, 'DRAFT') && isGenerationInProgress('QUEUED', null, NOW, 'ACTIVE'));
+t('…while a live GENERATING claim is in progress whatever the campaign status', isGenerationInProgress('GENERATING', new Date(NOW.getTime() - 60_000), NOW, 'PAUSED'));
+t('Brand Canvas needs only a company name: no colours is available (template colours are kept)', brandCanvasReadiness({ companyName: 'Clinic' }).available && brandCanvasReadiness({ companyName: 'Clinic' }).reason === null);
+t('Brand Canvas without a company name is unavailable, with the reason', !brandCanvasReadiness({ companyName: '  ' }).available && /company name/.test(brandCanvasReadiness({ companyName: '' }).reason ?? ''));
+t('the clone size comes from the template shape, not the client preset', templateOutputSize({ width: 736, height: 920 })?.size === '1280x1600' && templateOutputSize(null) === null && templateOutputSize({ width: 100, height: 400 }) === null);
+t('template shape: read elements and the read size when unmeasured', templateShapeOf({ label: 'L', width: null, height: null, elements: { version: 1, width: 736, height: 920, model: 'm', elements: [{ id: 'e1', kind: 'headline', text: 'H', box: { x: 0, y: 0, w: 0.5, h: 0.1 }, group: null, description: null }] } }).readable && templateShapeOf({ label: 'L', width: null, height: null, elements: { version: 1, width: 736, height: 920, model: 'm', elements: [] } }).width === 736 && !templateShapeOf({ label: 'L', width: 10, height: 10, elements: null }).readable);
 
 // ===========================================================================
 section('eligibility');
@@ -100,18 +104,25 @@ t('campaign CANCELLED → closed', reasonOf(base({ campaignStatus: 'CANCELLED' }
 t('outside the window → skipped by a batch', reasonOf(base({ scheduledDate: dayAt(20) })) === 'outside-window');
 t('…but an explicit request for that day is allowed', reasonOf(base({ scheduledDate: dayAt(20), explicit: true })) === 'eligible:generate');
 t('a past day is refused even when explicit', reasonOf(base({ scheduledDate: dayAt(-1), explicit: true })) === 'in-the-past');
-t('content not generated → not ready', reasonOf(base({ contentStatus: 'NOT_GENERATED' })) === 'content-not-generated');
-t('content needing review → not ready', reasonOf(base({ contentStatus: 'NEEDS_REVIEW' })) === 'content-needs-review');
 {
   const none = evaluatePosterEligibility(base({ mapping: mapped(null), unmappedReason: { code: 'no-compatible-template', severity: 'action', title: 'No compatible template', detail: 'No template draws 9:16 posters.' } }));
   t('no template mapped → needs attention, with the Phase 3 reason', !none.eligible && none.reason === 'no-template' && none.attention && /draws 9:16/.test(none.message));
 }
 t('inactive template → template-inactive (attention)', reasonOf(base({ mapping: mapped(tpl({ isActive: false })) })) === 'template-inactive');
 t('template from another vertical → unavailable', reasonOf(base({ mapping: mapped(tpl({ categoryId: 'other' })) })) === 'template-unavailable');
-t('AUTO mapping of the wrong shape → incompatible', reasonOf(base({ mapping: mapped(tpl({ aspect: 1 })) })) === 'template-incompatible');
-t('MANUAL choice of another shape is a deliberate warning → eligible', reasonOf(base({ mapping: mapped(tpl({ aspect: 1 }), 'MANUAL') })) === 'eligible:generate');
-t('unsupported client format → attention', reasonOf(base({ studioAspect: null, targetAspectLabel: '4:5' })) === 'unsupported-aspect');
-t('Brand Canvas unavailable → attention', reasonOf(base({ brandCanvas: { available: false, reason: 'no colours' } })) === 'brand-canvas-unavailable');
+t('an AUTO mapping of another shape than the client output is eligible: a clone keeps its template shape', reasonOf(base({ mapping: mapped(tpl({ aspect: 1 })) })) === 'eligible:generate');
+t('a MANUAL choice of another shape is eligible too', reasonOf(base({ mapping: mapped(tpl({ aspect: 1 }), 'MANUAL') })) === 'eligible:generate');
+{
+  const unread = evaluatePosterEligibility(base({ template: { label: 'T', readable: false, width: 1080, height: 1920 } }));
+  t('a template not read yet → template-not-read (attention), with what to do', !unread.eligible && unread.reason === 'template-not-read' && unread.attention && unread.message === 'Template not read yet — open the vertical and press Read now.');
+  const tooTall = evaluatePosterEligibility(base({ template: { label: 'Strip', readable: true, width: 300, height: 1200 } }));
+  t('a template shape outside 1:3–3:1 → unsupported-aspect (attention), naming the template', !tooTall.eligible && tooTall.reason === 'unsupported-aspect' && tooTall.attention && /Strip/.test(tooTall.message) && /300×1200/.test(tooTall.message));
+  t('an unmeasured template with a read size is eligible', reasonOf(base({ template: { label: 'T', readable: true, width: 736, height: 920 } })) === 'eligible:generate');
+  t('a mapped template with no row → template-unavailable', reasonOf(base({ template: null })) === 'template-unavailable');
+  t('4:5 and 2:3 templates are eligible whatever the client preset', reasonOf(base({ template: { label: '4:5', readable: true, width: 736, height: 920 } })) === 'eligible:generate' && reasonOf(base({ template: { label: '2:3', readable: true, width: 736, height: 1104 } })) === 'eligible:generate');
+  t('a template not read is reported after a closed campaign or an existing poster', reasonOf(base({ campaignStatus: 'PAUSED', template: { label: 'T', readable: false, width: 1, height: 1 } })) === 'campaign-not-active' && reasonOf(base({ mode: 'missing', activeVersion: { contentRevision: 3 }, template: { label: 'T', readable: false, width: 1, height: 1 } })) === 'already-generated');
+}
+t('Brand Canvas unavailable → attention', reasonOf(base({ brandCanvas: { available: false, reason: 'the client has no company name' } })) === 'brand-canvas-unavailable');
 t('a live generation → skipped as generating', reasonOf(base({ generationStatus: 'GENERATING', generationStartedAt: new Date(NOW.getTime() - 30_000) })) === 'generating');
 t('a stale GENERATING claim → eligible again', reasonOf(base({ generationStatus: 'GENERATING', generationStartedAt: new Date(NOW.getTime() - STALE_GENERATION_MS - 5_000) })) === 'eligible:generate');
 {
@@ -126,6 +137,14 @@ t('upcoming: a current poster → already generated (no second active version)',
 t('upcoming: an outdated poster → regenerate', reasonOf(base({ activeVersion: outdated })) === 'eligible:regenerate');
 t('regenerate: a current poster → regenerate (explicit)', reasonOf(base({ mode: 'regenerate', explicit: true, activeVersion: current })) === 'eligible:regenerate');
 t('a generated day is reported generated even if its template is now inactive', reasonOf(base({ mode: 'missing', activeVersion: current, mapping: mapped(tpl({ isActive: false })) })) === 'already-generated');
+t('a day whose poster was sent is never regenerated, explicit or not', reasonOf(base({ mode: 'regenerate', explicit: true, activeVersion: current, deliveryStatus: 'SENT' })) === 'day-locked' && reasonOf(base({ activeVersion: outdated, deliveryStatus: 'SENT' })) === 'day-locked');
+t('…nor one being sent right now', reasonOf(base({ mode: 'regenerate', explicit: true, activeVersion: current, deliveryStatus: 'SENDING' })) === 'day-locked');
+{
+  const locked = evaluatePosterEligibility(base({ mode: 'regenerate', explicit: true, activeVersion: current, deliveryStatus: 'SENT' }));
+  t('…with a clear message, and not as something to fix', !locked.eligible && /has been sent/.test(locked.message) && !locked.attention);
+}
+t('a sent day asked for missing posters still reads as already generated', reasonOf(base({ mode: 'missing', activeVersion: current, deliveryStatus: 'SENT' })) === 'already-generated');
+t('a scheduled, failed or cancelled booking does not lock the poster', ['SCHEDULED', 'FAILED', 'CANCELLED', 'SKIPPED'].every((status) => reasonOf(base({ mode: 'regenerate', explicit: true, activeVersion: current, deliveryStatus: status as 'SCHEDULED' })) === 'eligible:regenerate'));
 t('regenerating with an inactive template is refused (never silently remapped)', reasonOf(base({ mode: 'regenerate', explicit: true, activeVersion: outdated, mapping: mapped(tpl({ isActive: false })) })) === 'template-inactive');
 
 // ===========================================================================

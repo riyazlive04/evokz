@@ -1,4 +1,4 @@
-import { DeliveryStatus, UsageKeySource, UsageProvider } from '@prisma/client';
+import { CampaignDeliveryStatus, DeliveryStatus, UsageKeySource, UsageProvider } from '@prisma/client';
 
 import { prisma } from '@/lib/prisma';
 import { getRateCard, microsToInr, type RateCard } from '@/lib/pricing';
@@ -260,11 +260,21 @@ export async function loadCostReport(
       },
       _sum: { costUsdMicros: true },
     }),
+    // Posts delivered in range: campaign days whose delivery went out, plus the
+    // delivered history of the retired daily poster maker (rows with no
+    // campaign). A campaign day never uses `deliveryStatus`, so they never
+    // overlap.
     prisma.contentCalendar.groupBy({
       by: ['clientId'],
       where: {
-        deliveryStatus: DeliveryStatus.DELIVERED,
-        ...(from ? { updatedAt: { gte: from } } : {}),
+        OR: [
+          { delivery: { is: { status: CampaignDeliveryStatus.SENT, ...(from ? { sentAt: { gte: from } } : {}) } } },
+          {
+            campaignId: null,
+            deliveryStatus: DeliveryStatus.DELIVERED,
+            ...(from ? { updatedAt: { gte: from } } : {}),
+          },
+        ],
       },
       _count: { _all: true },
     }),

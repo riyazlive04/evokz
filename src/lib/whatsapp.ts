@@ -4,15 +4,10 @@ import { intEnv, requireEnv } from '@/lib/env';
  * The one Evolution API integration.
  *
  * This is the transport only: it builds the request, classifies the outcome and
- * says whether retrying could help. It has two callers and there is no other
- * code anywhere that talks to Evolution.
- *
- * - `src/lib/ai-pipeline.ts` — the legacy per-client calendar broadcast, which
- *   passes `tolerateUnreadableBody` to keep its long-standing behaviour exactly
- *   as it was.
- * - `src/lib/campaign/delivery-service.ts` — campaign day delivery (Phase 6),
- *   which does not tolerate an unreadable body and records the provider's
- *   message id when it returns one.
+ * says whether retrying could help. Its one caller is
+ * `src/lib/campaign/delivery-service.ts` (campaign day delivery), which does not
+ * tolerate an unreadable body and records the provider's message id when it
+ * returns one. There is no other code anywhere that talks to Evolution.
  *
  * **Evolution GO, not Node v2.** `POST /send/media` with `{url, type}` and no
  * instance path segment: the instance is selected by the API key, so each
@@ -70,10 +65,10 @@ export interface WhatsAppSendOptions {
   /**
    * Treat an empty or non-JSON 2xx body as success.
    *
-   * Only the legacy pipeline sets this, because that is how it has always
-   * behaved and changing it would alter a working flow. It is a real blind
-   * spot — a gateway answering 200 with an HTML error page reads as delivered —
-   * so campaign delivery leaves it off and fails loudly instead.
+   * Nothing sets this any more: the retired daily poster maker was its only
+   * user. It is a real blind spot — a gateway answering 200 with an HTML error
+   * page reads as delivered — so campaign delivery leaves it off and fails
+   * loudly instead.
    */
   tolerateUnreadableBody?: boolean;
 }
@@ -116,8 +111,8 @@ export async function sendWhatsAppMedia(
   const rawBody = await readBody(response, host);
 
   if (!response.ok) {
-    // Message format kept identical to the legacy pipeline's, because it is
-    // persisted and operators recognise it.
+    // Message format kept stable, because it is persisted and operators
+    // recognise it.
     throw new WhatsAppError(
       classifyStatus(response.status, rawBody),
       `${host} responded ${response.status} ${response.statusText}: ${truncate(rawBody, 500)}`,
@@ -208,8 +203,7 @@ async function requestWithTimeout(
        * Not retryable, deliberately. A timeout is ambiguous: the message may
        * already be queued at the provider, so retrying risks sending the same
        * poster to the client twice. The delivery is left failed and permanent
-       * for a person to decide about — the same reasoning the legacy pipeline
-       * documents for never retrying its broadcast.
+       * for a person to decide about.
        */
       throw new WhatsAppError(
         'timeout',

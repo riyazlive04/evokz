@@ -108,7 +108,6 @@ async function asAction<T>(work: () => Promise<T>): Promise<T> {
 
 async function suite(): Promise<void> {
   const tx = facade;
-  const { SAMPLE_LAYOUT_SPEC } = await import('@/lib/poster/sample-layout');
   const service = await import('@/lib/campaign/service');
   const mapping = await import('@/lib/campaign/template-mapping-service');
   const posters = await import('@/lib/campaign/poster-generation-service');
@@ -118,7 +117,7 @@ async function suite(): Promise<void> {
   const review = await import('@/lib/campaign/review-service');
   const campaignActions = await import('@/app/admin/campaigns/actions');
   const { StudioError } = await import('@/lib/poster-studio/errors');
-  const { prepareStudioInputImage, readStudioImageSize } = await import('@/lib/poster-studio/images');
+  const { readStudioImageSize } = await import('@/lib/poster-studio/images');
   const { recordOpenAiImageUsage } = await import('@/lib/usage');
   const { loadStudioBrandCanvas } = await import('@/lib/poster-studio/brand-context');
   const { startOfZonedDay } = await import('@/lib/time');
@@ -155,15 +154,15 @@ async function suite(): Promise<void> {
   const deps: Deps = {
     assertConfigured: () => undefined,
     loadBrandCanvas: loadStudioBrandCanvas,
-    prepareOverlay: async (canvas, selection, aspectRatio) =>
-      ({ preset: 'footer-band', aspectRatio, theme: null, fonts: [], logo: null, logoInk: null, name: canvas.companyName, tagline: canvas.tagline, website: canvas.website, phone: canvas.phone, footerBackground: selection.footerBackground, drawn: ['name', ...selection.elements] }) as unknown as Awaited<ReturnType<Deps['prepareOverlay']>>,
-    compose: async (raw, plan) => ({ bytes: await sharp(raw).composite([{ input: await png(1152, 240, '#111111'), left: 0, top: 1808 }]).png().toBuffer(), mimeType: 'image/png', drawn: plan.drawn, footerTone: 'DARK' }),
+    resolveLogo: async () => null,
+    composeIdentity: async (raw) => raw,
+    checkText: async () => ({ checkedAt: NOW.toISOString(), model: 'fake', ok: true, items: [], leftovers: [] }),
+    prepareTemplate: async (bytes) => ({ bytes, mimeType: 'image/png' }),
     resolveFolder: async () => 'fixture-folder',
     readFile: async (fileId) => {
       if (!fileId.startsWith('fixture-template')) throw new StudioError('storage', 'Could not load the image from Google Drive.');
       return templatePng;
     },
-    prepareReference: prepareStudioInputImage,
     render: async (request) => {
       inFlight += 1;
       peakInFlight = Math.max(peakInFlight, inFlight);
@@ -199,17 +198,29 @@ async function suite(): Promise<void> {
   const vertical = await tx.category.create({
     data: { name: 'check:ops Vertical', contentStrategy: { pillars: [{ key: 'educational', label: 'Educational', weight: 2, guidance: 'Teach.' }, { key: 'tips', label: 'Tips', weight: 1, guidance: 'Advise.' }] } },
   });
-  const portrait = { ...SAMPLE_LAYOUT_SPEC, aspect: 9 / 16 } as unknown as Prisma.InputJsonValue;
+  /** A read template: clone mode generates only from templates whose elements were read. */
+  const elementsDoc = (label: string) =>
+    ({
+      version: 1,
+      width: 1080,
+      height: 1920,
+      model: 'fake',
+      elements: [
+        { id: 'e1', kind: 'headline', text: `Template ${label} headline`, box: { x: 0.1, y: 0.1, w: 0.8, h: 0.1 }, group: null, description: null },
+        { id: 'e2', kind: 'subheadline', text: 'Gentle care for the whole family.', box: { x: 0.1, y: 0.25, w: 0.8, h: 0.05 }, group: null, description: null },
+        { id: 'e3', kind: 'cta', text: 'Book a visit', box: { x: 0.1, y: 0.85, w: 0.4, h: 0.05 }, group: null, description: null },
+      ],
+    }) as unknown as Prisma.InputJsonValue;
   for (const [label, order] of [['A', 1], ['B', 2]] as const) {
     await tx.categoryTemplate.create({
-      data: { categoryId: vertical.id, label: `check:ops ${label}`, gDriveFileId: `fixture-template-${label}`, gDriveViewUrl: 'https://drive.invalid/t', mimeType: 'image/png', width: 1080, height: 1920, layoutSpec: portrait, layoutApprovedAt: new Date(), createdAt: new Date(Date.parse('2026-01-01') + order * 1000) },
+      data: { categoryId: vertical.id, label: `check:ops ${label}`, gDriveFileId: `fixture-template-${label}`, gDriveViewUrl: 'https://drive.invalid/t', mimeType: 'image/png', width: 1080, height: 1920, createdAt: new Date(Date.parse('2026-01-01') + order * 1000), elements: elementsDoc(label), elementsReadAt: new Date() },
     });
   }
 
   const brand = { colors: [{ hex: '#0e7c86', role: 'primary' }], typography: null, layoutDirectives: [], assets: [] };
   const makeClient = (name: string, data: Partial<Prisma.ClientUncheckedCreateInput> = {}) =>
     tx.client.create({
-      data: { companyName: `check:ops ${name}`, whatsappNumber: '919876500777', startDate: today, endDate: today, planId: plan.id, categoryId: vertical.id, isDemo: true, isActive: false, imageSizePreset: 'whatsapp-status', brandGuideline: brand, brandTagline: 'Care', websiteUrl: 'ops-fixture.invalid', gDriveFolderId: 'SECRET-OPS-FOLDER', ...data },
+      data: { companyName: `check:ops ${name}`, whatsappNumber: '919876500777', startDate: today, endDate: today, planId: plan.id, categoryId: vertical.id, isDemo: false, isActive: true, imageSizePreset: 'whatsapp-status', brandGuideline: brand, brandTagline: 'Care', websiteUrl: 'ops-fixture.invalid', gDriveFolderId: 'SECRET-OPS-FOLDER', ...data },
     });
 
   async function readyCampaign(clientId: string, options: { generationWindowDays?: number } = {}) {
@@ -332,6 +343,26 @@ async function suite(): Promise<void> {
     t('a day held by a live claim is refused', contended.outcome === 'skipped', snapshot(contended));
     t('…and no extra render was paid for', prompts.length === before + 1);
     await tx.contentCalendar.update({ where: { id: day.id }, data: { generationStatus: 'SUCCEEDED', posterGenerationStartedAt: null } });
+
+    /*
+     * Overlapping sweeps: a worker listed day 7 while it was QUEUED, and another
+     * worker (or the board's own runner) finished it before this one reached it.
+     * The worker's per-day call is exactly this; it must never regenerate the day.
+     */
+    const approvedVersion = (await dayRow(7)).activePosterVersionId!;
+    await posters.approveCampaignDayPoster(tx, day.id, approvedVersion);
+    const staleListing = await posters.generateCampaignDayPoster(tx, campaignId, day.id, { ...load, mode: 'regenerate', explicit: true, acceptQueued: true, deps });
+    t('a worker meeting a day another worker already finished (SUCCEEDED) skips it as a conflict', staleListing.outcome === 'skipped' && staleListing.reason === 'conflict', snapshot(staleListing));
+    t('…no second render, no new version, and the approved poster stays active', prompts.length === before + 1 && (await tx.posterVersion.count({ where: { calendarDayId: day.id } })) === 1 && (await dayRow(7)).activePosterVersionId === approvedVersion);
+    for (const status of ['FAILED', 'NOT_REQUESTED'] as const) {
+      await tx.contentCalendar.update({ where: { id: day.id }, data: { generationStatus: status } });
+      const settled = await posters.generateCampaignDayPoster(tx, campaignId, day.id, { ...load, mode: 'regenerate', explicit: true, acceptQueued: true, deps });
+      t(`…nor a day that is ${status} rather than queued`, settled.outcome === 'skipped' && settled.reason === 'conflict' && prompts.length === before + 1, snapshot(settled));
+    }
+    await tx.contentCalendar.update({ where: { id: day.id }, data: { generationStatus: 'SUCCEEDED' } });
+    const interactive = await posters.generateCampaignDayPoster(tx, campaignId, day.id, { ...load, mode: 'regenerate', explicit: true, deps: { ...deps, render: async () => { throw new StudioError('moderation', 'stop here'); } } });
+    t('an operator’s explicit Regenerate of that day still claims it (only the worker is restricted)', interactive.outcome === 'failed' && interactive.kind === 'moderation', snapshot(interactive));
+    await tx.contentCalendar.update({ where: { id: day.id }, data: { generationStatus: 'SUCCEEDED', errorMessage: null } });
   }
 
   // =======================================================================
@@ -384,6 +415,133 @@ async function suite(): Promise<void> {
   }
 
   // =======================================================================
+  section('the cron sweep: order, a time budget, one generator at a time');
+  // =======================================================================
+  {
+    const { executeIntervalDispatch } = await import('@/lib/cron-worker');
+    const order: string[] = [];
+    const summary = await executeIntervalDispatch(NOW, {
+      syncBookings: async () => {
+        order.push('bookings');
+        return { considered: 1, booked: 2, repinned: 1, cancelled: 0, missed: 0 };
+      },
+      runDeliveries: async () => {
+        order.push('deliveries');
+        return { considered: 1, sent: [4], failed: [], skipped: [] };
+      },
+      releaseInactiveQueues: async () => {
+        order.push('release');
+        return 0;
+      },
+      runGeneration: async () => {
+        order.push('generation');
+        return { claimed: 1, generated: [{ campaignId, dayNumber: 1 }], failed: [], skipped: [], stopped: false, budgetExhausted: false, lockHeld: false };
+      },
+    });
+    t('the sweep books and sends before it generates', order.join(',') === 'bookings,deliveries,release,generation', order.join(','));
+    t('…and still reports every count', summary.campaignBooked === 3 && summary.campaignSent === 1 && summary.campaignGenerated === 1 && !summary.campaignGenerationBusy, snapshot(summary));
+    const afterFailure: string[] = [];
+    await executeIntervalDispatch(NOW, {
+      syncBookings: async () => {
+        throw new Error('bookings down');
+      },
+      runDeliveries: async () => {
+        afterFailure.push('deliveries');
+        return { considered: 0, sent: [], failed: [], skipped: [] };
+      },
+      releaseInactiveQueues: async () => 0,
+      runGeneration: async () => {
+        afterFailure.push('generation');
+        return { claimed: 0, generated: [], failed: [], skipped: [], stopped: false, budgetExhausted: false, lockHeld: true };
+      },
+    });
+    t('a failing step does not stop the ones after it', afterFailure.join(',') === 'deliveries,generation');
+    let budgetGiven = -1;
+    await executeIntervalDispatch(NOW, {
+      syncBookings: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return { considered: 0, booked: 0, repinned: 0, cancelled: 0, missed: 0 };
+      },
+      runDeliveries: async () => ({ considered: 0, sent: [], failed: [], skipped: [] }),
+      releaseInactiveQueues: async () => 0,
+      runGeneration: async (_now, budgetMs) => {
+        budgetGiven = budgetMs;
+        return { claimed: 0, generated: [], failed: [], skipped: [], stopped: false, budgetExhausted: false, lockHeld: false };
+      },
+    });
+    t('generation gets what is left of the 150-second budget after the steps before it', budgetGiven > 0 && budgetGiven <= queue.CRON_GENERATION_BUDGET_MS - 50 && queue.CRON_GENERATION_BUDGET_MS === 150_000, String(budgetGiven));
+
+    // The budget: each render takes "100 seconds" on a fake wall clock; the budget is 150.
+    const budgetDays = [12, 13, 14];
+    const budgetIds = await Promise.all(budgetDays.map(async (n) => (await dayRow(n)).id));
+    const budgetQueued = await queue.queueCampaignPosters(tx, campaignId, { mode: 'missing', dayIds: budgetIds }, load);
+    t('(three days are queued for the budget check)', budgetQueued.queued.join() === budgetDays.join(), snapshot(budgetQueued));
+    let wall = 5_000_000;
+    const slowDeps: Deps = {
+      ...deps,
+      render: async (request) => {
+        wall += 100_000;
+        return deps.render(request);
+      },
+    };
+    const budgeted = await queue.runQueuedCampaignGenerations(tx, { ...load, deps: slowDeps, limit: 5, concurrency: 1, budgetMs: 150_000, clock: () => wall, campaignId });
+    t('no day is started once the budget has passed; the one in flight finished', budgeted.generated.map((entry) => entry.dayNumber).join() === '12,13' && budgeted.budgetExhausted, snapshot(budgeted));
+    t('…the day not started stays QUEUED for the next tick, untouched', (await statusOf(14)) === 'QUEUED' && (await dayRow(14)).activePosterVersionId === null);
+    t('…and a day started later carries a later claim stamp (its stale window starts when it starts)', (await dayRow(13)).posterGenerationStartedAt?.getTime() === NOW.getTime() + 100_000, String((await dayRow(13)).posterGenerationStartedAt?.toISOString()));
+
+    // One generator at a time: another sweep holds the lock on its own connection.
+    const promptsBefore = prompts.length;
+    let whileHeld: Awaited<ReturnType<typeof queue.runQueuedCampaignGenerationsExclusively>> | null = null;
+    await realPrisma.$transaction(
+      async (other) => {
+        const held = await other.$queryRawUnsafe<Array<{ locked: boolean }>>(`SELECT pg_try_advisory_xact_lock(hashtext('evokz:campaign-generation-sweep')) AS locked`);
+        t('(a second connection — another sweep — takes the generation lock)', held[0]?.locked === true);
+        whileHeld = await queue.runQueuedCampaignGenerationsExclusively(tx, { ...load, deps, limit: 5 });
+      },
+      { timeout: 60_000, maxWait: 10_000 },
+    );
+    const held = whileHeld as Awaited<ReturnType<typeof queue.runQueuedCampaignGenerationsExclusively>> | null;
+    t('while another sweep holds the lock, this sweep skips generation entirely', held?.lockHeld === true && held.generated.length === 0 && held.claimed === 0 && prompts.length === promptsBefore && (await statusOf(14)) === 'QUEUED', snapshot(held));
+    const free = await queue.runQueuedCampaignGenerationsExclusively(tx, { ...load, deps, limit: 5 });
+    t('once the lock is released, the next sweep takes it and generates', free.lockHeld === false && free.generated.some((entry) => entry.dayNumber === 14), snapshot(free));
+  }
+
+  // =======================================================================
+  section('a paused client’s queue waits; a paused campaign’s is released');
+  // =======================================================================
+  {
+    const day15 = await dayRow(15);
+    const day16 = await dayRow(16);
+    await queue.queueCampaignPosters(tx, campaignId, { mode: 'missing', dayIds: [day15.id] }, load);
+    await tx.client.update({ where: { id: clientA.id }, data: { isActive: false } });
+    const promptsBefore = prompts.length;
+    const cronPass = await queue.runQueuedCampaignGenerations(tx, { ...load, deps, limit: 5 });
+    t('the cron worker skips a paused client’s queue', !cronPass.generated.some((entry) => entry.dayNumber === 15) && prompts.length === promptsBefore && (await statusOf(15)) === 'QUEUED');
+    const boardPass = await queue.runQueuedCampaignGenerations(tx, { ...load, deps, limit: 1, campaignId });
+    t('…while the board’s own run for the campaign (an operator’s request) still generates', boardPass.generated.some((entry) => entry.dayNumber === 15), snapshot(boardPass));
+    await queue.queueCampaignPosters(tx, campaignId, { mode: 'missing', dayIds: [day16.id] }, load);
+    await tx.client.update({ where: { id: clientA.id }, data: { isActive: true } });
+    const resumed = await queue.runQueuedCampaignGenerations(tx, { ...load, deps, limit: 5 });
+    t('resuming the client lets the cron worker continue its queue', resumed.generated.some((entry) => entry.dayNumber === 16), snapshot(resumed.generated));
+
+    const demo = await makeClient('Demo', { isDemo: true });
+    const demoCampaign = await readyCampaign(demo.id, { generationWindowDays: 2 });
+    await queue.queueCampaignPosters(tx, demoCampaign, { mode: 'upcoming' }, load);
+    const demoPass = await queue.runQueuedCampaignGenerations(tx, { ...load, deps, limit: 5 });
+    t('a demo client’s queue is never generated by the cron worker', !demoPass.generated.some((entry) => entry.campaignId === demoCampaign) && (await tx.contentCalendar.count({ where: { campaignId: demoCampaign, generationStatus: 'QUEUED' } })) > 0);
+
+    // A paused campaign: the cron sweep releases its queue, so its days stop looking in progress.
+    const { executeIntervalDispatch } = await import('@/lib/cron-worker');
+    await changeCampaignStatus(tx, demoCampaign, 'PAUSED');
+    await executeIntervalDispatch(NOW, {
+      syncBookings: async () => ({ considered: 0, booked: 0, repinned: 0, cancelled: 0, missed: 0 }),
+      runDeliveries: async () => ({ considered: 0, sent: [], failed: [], skipped: [] }),
+      runGeneration: async () => ({ claimed: 0, generated: [], failed: [], skipped: [], stopped: false, budgetExhausted: false, lockHeld: false }),
+    });
+    t('the cron sweep releases a paused campaign’s queued days', (await tx.contentCalendar.count({ where: { campaignId: demoCampaign, generationStatus: 'QUEUED' } })) === 0);
+  }
+
+  // =======================================================================
   section('rejection context reaches the next attempt, and only that');
   // =======================================================================
   {
@@ -400,7 +558,7 @@ async function suite(): Promise<void> {
     const prompt = prompts.at(-1)!;
     t('the new prompt carries the reviewer’s reason', /rejected in review/.test(prompt) && /logo sits over the headline/.test(prompt));
     t('…and tells the model not to repeat it', /do not repeat it/i.test(prompt));
-    t('the day content is still in the prompt', /Headline 1/.test(prompt));
+    t('the clone instructions are still in the prompt, before the correction', prompt.indexOf('Recreate the attached poster exactly.') === 0 && prompt.indexOf('rejected in review') > prompt.indexOf('Colours:'));
     t('no identifier leaked into the prompt', !/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/.test(prompt) && !/fake-drive|SECRET-OPS-FOLDER/.test(prompt));
     t('the rejected version is untouched', (await tx.posterVersion.findUniqueOrThrow({ where: { id: versionId } })).approvalStatus === 'REJECTED');
     t('the new version is pending, not auto-approved', (await tx.posterVersion.findUniqueOrThrow({ where: { id: (await dayRow(1)).activePosterVersionId! } })).approvalStatus === 'PENDING');
@@ -547,8 +705,9 @@ async function suite(): Promise<void> {
     const badCampaign = await asAction(() => campaignActions.sendCampaignDayNowAction('not-a-uuid', ourDay.id));
     t('a malformed campaign id is rejected', !badCampaign.ok);
 
-    const queuedElsewhere = await asAction(() => campaignActions.queueCampaignPostersAction(otherCampaign, { mode: 'upcoming' }));
-    t('queueing is scoped to the campaign it names', queuedElsewhere.ok);
+    // The service behind the board's bulk Generate (the old batch action is retired).
+    const queuedElsewhere = await queue.queueCampaignPosters(tx, otherCampaign, { mode: 'upcoming' });
+    t('queueing is scoped to the campaign it names', Array.isArray(queuedElsewhere.queued));
     t("…and did not touch this campaign's days", (await tx.contentCalendar.count({ where: { campaignId, generationStatus: 'QUEUED' } })) === 0);
     await queue.cancelQueuedGeneration(tx, otherCampaign);
   }
@@ -557,8 +716,7 @@ async function suite(): Promise<void> {
   section('isolation and hygiene');
   // =======================================================================
   {
-    const { LEGACY_CALENDAR } = await import('@/lib/calendar-scope');
-    t('legacy scope still excludes campaign days', (await tx.contentCalendar.count({ where: { ...LEGACY_CALENDAR, clientId: clientA.id } })) === 0);
+    t('no calendar row of a campaign client is left without its campaign', (await tx.contentCalendar.count({ where: { campaignId: null, clientId: clientA.id } })) === 0);
 
     const legacyColumns = await tx.contentCalendar.findMany({
       where: { campaignId },

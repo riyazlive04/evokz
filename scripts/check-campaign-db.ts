@@ -184,7 +184,7 @@ async function suite(tx: Tx): Promise<void> {
     clientId: manualClient.id,
     name: '365-Day Scale',
     startDate: start,
-    templateMappingMode: 'MANUAL',
+    // No mode given: new campaigns default to MANUAL (campaign board — one template source).
     timeZone: TZ,
   });
   const manualCampaign = await tx.campaign.findUniqueOrThrow({
@@ -432,13 +432,15 @@ async function suite(tx: Tx): Promise<void> {
     startDate: start,
     deliveryDays: [1, 3, 5],
     approvalPolicy: 'AUTO_APPROVE',
+    // AUTO is still accepted when asked for explicitly.
+    templateMappingMode: 'AUTO',
     timeZone: TZ,
   });
   {
     const autoCampaign = await tx.campaign.findUniqueOrThrow({ where: { id: auto.campaignId } });
     t('10. campaign exists with zero poster versions', (await tx.posterVersion.count({ where: { calendarDay: { campaignId: auto.campaignId } } })) === 0 && auto.dayCount === 30);
-    t('11. mapping mode defaults to AUTO', autoCampaign.templateMappingMode === 'AUTO');
-    t('12. MANUAL mode is stored', manualCampaign.templateMappingMode === 'MANUAL');
+    t('11. AUTO mode is stored when asked for', autoCampaign.templateMappingMode === 'AUTO');
+    t('12. mapping mode defaults to MANUAL', manualCampaign.templateMappingMode === 'MANUAL');
     t('weekday-restricted campaign spans more calendar days', autoCampaign.endDate.getTime() - autoCampaign.startDate.getTime() > 29 * 86_400_000);
 
     const autoDay = (await findCampaignDay(tx, auto.campaignId, 3))!;
@@ -467,7 +469,7 @@ async function suite(tx: Tx): Promise<void> {
     t('templates default to active with no content types', templateA.isActive && templateA.contentTypes.length === 0);
     t('client still reads its vertical and plan', (await tx.client.findUniqueOrThrow({ where: { id: legacyClient.id }, include: { category: true, plan: true } })).category.name === vertical.name);
 
-    // The legacy sweep's own filters (cron-worker.ts) must not select campaign days.
+    // Campaign days never carry the retired daily poster maker's delivery state.
     const sweepable = await tx.contentCalendar.count({
       where: {
         campaignId: { not: null },

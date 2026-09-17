@@ -3,8 +3,8 @@ import crypto from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 
-import { describeError } from '@/lib/ai-pipeline';
 import { optionalEnv } from '@/lib/env';
+import { describeError } from '@/lib/errors';
 import { provisionClient } from '@/lib/onboarding';
 
 /**

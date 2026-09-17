@@ -1,4 +1,10 @@
-import { Prisma, type CampaignDeliveryStatus, type CampaignStatus, type PosterApprovalStatus } from '@prisma/client';
+import {
+  Prisma,
+  type CampaignDeliveryStatus,
+  type CampaignStatus,
+  type PosterApprovalStatus,
+  type TemplateMappingMode,
+} from '@prisma/client';
 
 import {
   buildDeliveryCaption,
@@ -23,8 +29,9 @@ import {
   isMediaDeliveryConfigured,
   MediaUrlNotConfiguredError,
 } from '@/lib/campaign/delivery-media';
-import { CampaignDomainError, type CampaignDb } from '@/lib/campaign/service';
-import { getAppTimeZone } from '@/lib/time';
+import { effectiveTemplateId } from '@/lib/campaign/model';
+import { CampaignDomainError, runInCampaignTransaction, type CampaignDb } from '@/lib/campaign/service';
+import { getAppTimeZone, startOfZonedDay } from '@/lib/time';
 import { recordWhatsAppUsage } from '@/lib/usage';
 import { redactWhatsAppSecrets, sendWhatsAppMedia, WhatsAppError } from '@/lib/whatsapp';
 
@@ -107,8 +114,8 @@ const deliveryDaySelect = {
   activePosterVersion: {
     select: { id: true, contentRevision: true, approvalStatus: true, imageDriveFileId: true, imageMimeType: true },
   },
-  client: { select: { whatsappNumber: true } },
-  campaign: { select: { id: true, status: true, deliveryTime: true } },
+  client: { select: { whatsappNumber: true, isActive: true } },
+  campaign: { select: { id: true, status: true, deliveryTime: true, templateMappingMode: true } },
   delivery: {
     select: {
       id: true,
@@ -129,15 +136,15 @@ type DeliveryDayRow = Prisma.ContentCalendarGetPayload<{ select: typeof delivery
  * the dashboard's wider select and the sender's narrow one share one function —
  * and therefore one set of rules.
  */
-interface CandidateSource {
+export interface CandidateSource {
   campaignId: string | null;
   contentStatus: DeliveryDayRow['contentStatus'];
   contentRevision: number;
   posterTemplateId: string | null;
   suggestedTemplateId: string | null;
   activePosterVersion: { id: string; contentRevision: number; approvalStatus: PosterApprovalStatus } | null;
-  client: { whatsappNumber: string } | null;
-  campaign: { status: CampaignStatus } | null;
+  client: { whatsappNumber: string; isActive: boolean } | null;
+  campaign: { status: CampaignStatus; templateMappingMode: TemplateMappingMode } | null;
   delivery: {
     status: CampaignDeliveryStatus;
     posterVersionId: string;
@@ -153,7 +160,7 @@ interface CandidateSource {
  * the same second (Phase 7 §7). The offset is derived from the day id, so it
  * never moves between runs.
  */
-function scheduledInstantFor(dayId: string, scheduledDate: Date, deliveryTime: string, timeZone: string): Date {
+export function scheduledInstantFor(dayId: string, scheduledDate: Date, deliveryTime: string, timeZone: string): Date {
   const base = deliveryInstant(scheduledDate, deliveryTime, timeZone);
   return new Date(base.getTime() + deliverySpreadSeconds(dayId) * 1000);
 }
@@ -167,12 +174,20 @@ async function loadDeliveryDay(db: CampaignDb, dayId: string): Promise<DeliveryD
   return day;
 }
 
-function candidateFrom(day: CandidateSource, deps: DeliveryDeps) {
+/**
+ * A day as the delivery gate reads it. Exported so the campaign board asks the
+ * gate exactly the question the sender will, rather than a copy of it.
+ *
+ * `hasTemplate` is the campaign's effective template (`effectiveTemplateId`):
+ * under MANUAL a stored suggestion is only a hint, so it does not count.
+ */
+export function deliveryCandidateFrom(day: CandidateSource, deps: Pick<DeliveryDeps, 'whatsappConfigured' | 'mediaConfigured'>) {
   return {
     campaignId: day.campaignId,
     campaignStatus: (day.campaign?.status ?? 'DRAFT') as CampaignStatus,
+    clientActive: day.client?.isActive ?? false,
     contentReady: day.contentStatus === 'READY',
-    hasTemplate: Boolean(day.posterTemplateId ?? day.suggestedTemplateId),
+    hasTemplate: Boolean(effectiveTemplateId(day.campaign?.templateMappingMode ?? 'MANUAL', day)),
     dayContentRevision: day.contentRevision,
     activeVersion: day.activePosterVersion
       ? {
@@ -199,31 +214,319 @@ function candidateFrom(day: CandidateSource, deps: DeliveryDeps) {
 // Scheduling
 // ---------------------------------------------------------------------------
 
+/**
+ * What keeping one day's booking honest did.
+ *
+ * `booked`       a new SCHEDULED row was created
+ * `rebooked`     a CANCELLED row that was never attempted was put back in the
+ *                queue for the active poster
+ * `repinned`     a SCHEDULED row now carries the newly approved active poster
+ * `rescheduled`  a SCHEDULED row's moment moved to follow its day
+ * `cancelled`    a SCHEDULED row was withdrawn: its poster was replaced by one
+ *                that cannot go out, or is no longer approved, current or ready
+ * `missed`       its moment passed a whole local day ago (SKIPPED, or never booked)
+ * `not-bookable` no row, and the gate refuses one — `refusal` says why
+ * `unchanged`    nothing to do (including SENT, SENDING, FAILED and SKIPPED rows)
+ */
+export type BookingResult = 'booked' | 'rebooked' | 'repinned' | 'rescheduled' | 'cancelled' | 'missed' | 'not-bookable' | 'unchanged';
+
+export interface DayBookingOutcome {
+  dayId: string;
+  dayNumber: number;
+  result: BookingResult;
+  refusal: { reason: DeliveryRefusal; message: string } | null;
+  /** When the day's booking goes out after this sync, if it is SCHEDULED. */
+  scheduledFor: Date | null;
+}
+
+/**
+ * Refusals that mean the poster itself may no longer go out, as opposed to the
+ * campaign or its client being paused or WhatsApp being unconfigured. Only these
+ * withdraw a booking: pausing must leave every booking exactly where it is
+ * (Phase 6), and a configuration problem is fixed by configuring, not by losing
+ * the queue.
+ */
+export const WITHDRAWING_REFUSALS: ReadonlySet<DeliveryRefusal> = new Set([
+  'content-not-ready',
+  'no-poster',
+  'poster-outdated',
+  'poster-rejected',
+  'awaiting-approval',
+]);
+
+/** Refusals that hold for every day of a campaign at once. */
+const CAMPAIGN_WIDE_REFUSALS: ReadonlySet<DeliveryRefusal> = new Set([
+  'not-a-campaign-day',
+  'campaign-not-active',
+  'client-paused',
+  'whatsapp-not-configured',
+  'invalid-recipient',
+]);
+
+export interface BookingSyncOptions {
+  /**
+   * The operator just approved this day's poster. A booking they cancelled
+   * before belongs to an earlier decision, so a fresh approval books the day
+   * again. Without it, a CANCELLED row is re-booked only when a different poster
+   * has become the approved active one since.
+   */
+  reapproved?: boolean;
+}
+
+/**
+ * Serialises a booking write with moves of the same campaign.
+ *
+ * `FOR SHARE` on the campaign row: it waits for a move in progress (which holds
+ * `FOR NO KEY UPDATE`, see `moveCampaignPost`) and blocks a move from starting,
+ * but does not block other booking writes. Taken first, before the day is
+ * re-read, so the date a booking is computed from is the one after any move.
+ */
+export async function lockCampaignForBooking(tx: Prisma.TransactionClient, campaignId: string): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM "Campaign" WHERE id = ${campaignId} FOR SHARE`;
+}
+
+interface BookingPlan {
+  outcome: DayBookingOutcome;
+  /** The one conditional write, or null when nothing needs writing. Returns the rows changed. */
+  write: ((db: CampaignDb) => Promise<number>) | null;
+}
+
+/**
+ * The one rule set that books, re-pins, reschedules and withdraws a day's
+ * delivery, decided from one read of the day. No I/O: `syncDayBooking` runs it,
+ * then re-runs it on a fresh read under the campaign lock before writing.
+ *
+ * The Phase 6 guarantees hold by construction:
+ * - **One row per day.** A new booking is `createMany … skipDuplicates`, so a
+ *   racing request meets the unique `calendarDayId` and books nothing (and,
+ *   unlike a caught P2002, does not abort an enclosing transaction).
+ * - **The gate, twice.** A booking is only made, re-pinned or re-booked for a
+ *   day the full delivery gate passes (`evaluateDeliveryEligibility` with no
+ *   delivery); the sender still re-runs that gate after claiming the row.
+ * - **Version pinning.** A row is only ever pinned to the approved active
+ *   poster, and every write restates the status and pin it read.
+ * - **SENT, SENDING and FAILED rows are never touched** here: sent is final,
+ *   sending is in flight, and a failure belongs to the bounded retry sweep and
+ *   the operator.
+ * - **Pause protection.** A paused campaign's — or a paused client's — bookings
+ *   stay exactly as they are (only a missed one is marked, as before): neither
+ *   refusal withdraws a booking. Nothing here sends.
+ */
+function planDayBooking(day: DeliveryDayRow, deps: DeliveryDeps, now: Date, options: BookingSyncOptions): BookingPlan {
+  const plan = (
+    result: BookingResult,
+    write: BookingPlan['write'] = null,
+    extra: { refusal?: DayBookingOutcome['refusal']; scheduledFor?: Date | null } = {},
+  ): BookingPlan => ({
+    outcome: { dayId: day.id, dayNumber: day.dayNumber, result, refusal: extra.refusal ?? null, scheduledFor: extra.scheduledFor ?? null },
+    write,
+  });
+  if (!day.campaignId || !day.campaign) return plan('unchanged');
+  const campaignId = day.campaignId;
+
+  const scheduledFor = scheduledInstantFor(day.id, day.scheduledDate, day.campaign.deliveryTime, deps.timeZone);
+  const existing = day.delivery;
+  const active = day.activePosterVersion;
+  // Would the gate accept a booking made now? `delivery: null` because that is
+  // exactly the question a new, re-pinned or re-booked row has to answer.
+  const fresh = evaluateDeliveryEligibility({ ...deliveryCandidateFrom(day, deps), delivery: null }, now);
+  const bookable = fresh.eligible && active !== null && !isMissed(scheduledFor, now, deps.timeZone);
+
+  // ---- No booking yet --------------------------------------------------------
+  if (!existing) {
+    if (!fresh.eligible) return plan('not-bookable', null, { refusal: { reason: fresh.reason, message: fresh.message } });
+    // A day whose moment is long past is never booked retroactively.
+    if (!bookable || !active) return plan('missed');
+    return plan(
+      'booked',
+      async (db) =>
+        (
+          await db.campaignDelivery.createMany({
+            data: [{ campaignId, calendarDayId: day.id, posterVersionId: active.id, scheduledFor, status: 'SCHEDULED' }],
+            skipDuplicates: true,
+          })
+        ).count,
+      { scheduledFor },
+    );
+  }
+
+  // ---- Keep a SCHEDULED booking consistent (§8, §17) --------------------------
+  if (existing.status === 'SCHEDULED') {
+    if (active && existing.posterVersionId !== active.id) {
+      // The poster was replaced. An approved, deliverable replacement takes the
+      // booking over; anything else cancels it rather than sending either one.
+      if (bookable) {
+        return plan(
+          'repinned',
+          async (db) =>
+            (
+              await db.campaignDelivery.updateMany({
+                where: { id: existing.id, status: 'SCHEDULED', posterVersionId: existing.posterVersionId },
+                data: { posterVersionId: active.id, scheduledFor },
+              })
+            ).count,
+          { scheduledFor },
+        );
+      }
+      return plan('cancelled', async (db) =>
+        (
+          await db.campaignDelivery.updateMany({
+            where: { id: existing.id, status: 'SCHEDULED', posterVersionId: existing.posterVersionId },
+            data: {
+              status: 'CANCELLED',
+              failureReason: 'The approved poster was replaced before this went out. It is booked again once the new version is approved.',
+            },
+          })
+        ).count,
+      );
+    }
+
+    // Its moment passed a whole local day ago: it is not late, it is missed.
+    if (isMissed(existing.scheduledFor, now, deps.timeZone)) {
+      return plan('missed', async (db) =>
+        (
+          await db.campaignDelivery.updateMany({
+            where: { id: existing.id, status: 'SCHEDULED', scheduledFor: existing.scheduledFor },
+            data: { status: 'SKIPPED', failureReason: 'Its delivery day passed before it was sent.' },
+          })
+        ).count,
+      );
+    }
+
+    // The same poster, but it may no longer go out (rejected, outdated, approval
+    // withdrawn): withdraw the booking now instead of leaving it armed.
+    if (!fresh.eligible && WITHDRAWING_REFUSALS.has(fresh.reason)) {
+      const refusal = { reason: fresh.reason, message: fresh.message };
+      return plan(
+        'cancelled',
+        async (db) =>
+          (
+            await db.campaignDelivery.updateMany({
+              where: { id: existing.id, status: 'SCHEDULED', posterVersionId: existing.posterVersionId },
+              data: { status: 'CANCELLED', failureReason: `Withdrawn before it went out: ${fresh.message}` },
+            })
+          ).count,
+        { refusal },
+      );
+    }
+
+    // A moved day moves its booking; it never sends because of it.
+    if (existing.scheduledFor.getTime() !== scheduledFor.getTime()) {
+      return plan(
+        'rescheduled',
+        async (db) =>
+          (
+            await db.campaignDelivery.updateMany({
+              where: { id: existing.id, status: 'SCHEDULED', scheduledFor: existing.scheduledFor },
+              data: { scheduledFor },
+            })
+          ).count,
+        { scheduledFor },
+      );
+    }
+    return plan('unchanged', null, { scheduledFor: existing.scheduledFor });
+  }
+
+  // ---- A withdrawn booking, and a poster approved since ------------------------
+  // Only a booking that never reached the provider (`attempts === 0`) is put back
+  // automatically. One that was attempted and then cancelled may have been an
+  // ambiguous failure that actually delivered; re-sending that day stays an
+  // explicit, confirmed operator Retry.
+  if (existing.status === 'CANCELLED' && active && existing.attempts === 0) {
+    const replaced = existing.posterVersionId !== active.id;
+    if ((options.reapproved || replaced) && bookable) {
+      return plan(
+        'rebooked',
+        async (db) =>
+          (
+            await db.campaignDelivery.updateMany({
+              where: { id: existing.id, status: 'CANCELLED', attempts: 0, posterVersionId: existing.posterVersionId },
+              data: {
+                status: 'SCHEDULED',
+                posterVersionId: active.id,
+                scheduledFor,
+                failureReason: null,
+                failurePermanent: false,
+                sendingStartedAt: null,
+              },
+            })
+          ).count,
+        { scheduledFor },
+      );
+    }
+    if (!fresh.eligible) return plan('unchanged', null, { refusal: { reason: fresh.reason, message: fresh.message } });
+  }
+
+  return plan('unchanged');
+}
+
+/**
+ * Keeps one day's booking in line with its poster (`planDayBooking`).
+ *
+ * `day` may be a read taken earlier — a whole campaign loaded at once. It only
+ * decides whether anything needs writing; a write happens in its own short
+ * transaction that first takes the campaign's booking lock
+ * (`lockCampaignForBooking`), then re-reads the day and re-plans from that
+ * fresh row. A move that commits between the first read and the write can
+ * therefore never have its new date overwritten by a moment computed from the
+ * old one.
+ */
+async function syncDayBooking(
+  db: CampaignDb,
+  day: DeliveryDayRow,
+  deps: DeliveryDeps,
+  now: Date,
+  options: BookingSyncOptions = {},
+): Promise<DayBookingOutcome> {
+  const first = planDayBooking(day, deps, now, options);
+  const campaignId = day.campaignId;
+  if (!first.write || !campaignId) return first.outcome;
+
+  return runInCampaignTransaction(db, async (tx) => {
+    await lockCampaignForBooking(tx, campaignId);
+    const fresh = await tx.contentCalendar.findUnique({ where: { id: day.id }, select: deliveryDaySelect });
+    if (!fresh || fresh.campaignId !== campaignId) return { ...first.outcome, result: 'unchanged', refusal: null, scheduledFor: null };
+    const planned = planDayBooking(fresh, deps, now, options);
+    if (!planned.write) return planned.outcome;
+    const changed = await planned.write(tx);
+    if (changed === 1) return planned.outcome;
+    return {
+      ...planned.outcome,
+      result: 'unchanged',
+      scheduledFor: fresh.delivery?.status === 'SCHEDULED' ? fresh.delivery.scheduledFor : null,
+    };
+  });
+}
+
 export interface ScheduleOutcome {
   scheduled: number[];
   /** Days that could not be booked, grouped by why. */
   skipped: Array<{ reason: DeliveryRefusal; message: string; dayNumbers: number[] }>;
   cancelled: number[];
   missed: number[];
+  /** Bookings moved onto a newly approved active poster. */
+  repinned: number[];
+  /** Bookings whose moment moved with their day. */
+  rescheduled: number[];
 }
 
 /**
- * Books a delivery for every day whose approved poster is ready, and keeps the
- * existing bookings honest.
+ * Books a delivery for every day of one campaign whose approved poster is
+ * ready, and keeps the existing bookings honest (`syncDayBooking`).
  *
- * Safe to run repeatedly — on every campaign page load, after an approval, and
- * at the start of each sweep. The unique constraint on `calendarDayId` means a
- * second run can only ever update, never duplicate. It never sends.
+ * Called when a campaign is activated or resumed, and by the Schedule action.
+ * It does **not** run on page load, and the cron sweep does not call it per
+ * campaign: the sweep uses the narrower `syncActiveCampaignBookings`, and an
+ * approval books its own day through `bookCampaignDay`. Safe to run repeatedly:
+ * the unique constraint on `calendarDayId` means a second run can only ever
+ * update, never duplicate. It never sends.
  */
 export async function scheduleCampaignDeliveries(
   db: CampaignDb,
   campaignId: string,
   deps: DeliveryDeps = defaultDeliveryDeps(),
 ): Promise<ScheduleOutcome> {
-  const campaign = await db.campaign.findUnique({
-    where: { id: campaignId },
-    select: { id: true, status: true, deliveryTime: true },
-  });
+  const campaign = await db.campaign.findUnique({ where: { id: campaignId }, select: { id: true } });
   if (!campaign) throw new CampaignDomainError('not-found', 'Campaign does not exist.');
 
   const days = await db.contentCalendar.findMany({
@@ -233,90 +536,238 @@ export async function scheduleCampaignDeliveries(
   });
 
   const now = deps.now();
-  const outcome: ScheduleOutcome = { scheduled: [], skipped: [], cancelled: [], missed: [] };
+  const outcome: ScheduleOutcome = { scheduled: [], skipped: [], cancelled: [], missed: [], repinned: [], rescheduled: [] };
   const groups = new Map<DeliveryRefusal, { reason: DeliveryRefusal; message: string; dayNumbers: number[] }>();
 
   for (const day of days) {
-    const scheduledFor = scheduledInstantFor(day.id, day.scheduledDate, campaign.deliveryTime, deps.timeZone);
-    const existing = day.delivery;
-
-    // ---- Keep an existing booking consistent (§8, §17) ---------------------
-    if (existing) {
-      if (existing.status === 'SCHEDULED') {
-        // The approved poster was replaced: cancel rather than send either one.
-        if (day.activePosterVersionId && existing.posterVersionId !== day.activePosterVersionId) {
-          await db.campaignDelivery.updateMany({
-            where: { id: existing.id, status: 'SCHEDULED' },
-            data: {
-              status: 'CANCELLED',
-              failureReason: 'The approved poster was replaced before this went out. Review the new version, then schedule it again.',
-            },
-          });
-          outcome.cancelled.push(day.dayNumber);
-          continue;
-        }
-        // Its moment passed a whole local day ago: it is not late, it is missed.
-        if (isMissed(existing.scheduledFor, now, deps.timeZone)) {
-          await db.campaignDelivery.updateMany({
-            where: { id: existing.id, status: 'SCHEDULED' },
-            data: {
-              status: 'SKIPPED',
-              failureReason: 'Its delivery day passed before it was sent.',
-            },
-          });
-          outcome.missed.push(day.dayNumber);
-          continue;
-        }
-        // A rescheduled campaign moves its bookings; it never sends because of it.
-        if (existing.scheduledFor.getTime() !== scheduledFor.getTime()) {
-          await db.campaignDelivery.updateMany({
-            where: { id: existing.id, status: 'SCHEDULED' },
-            data: { scheduledFor },
-          });
-        }
+    const result = await syncDayBooking(db, day, deps, now);
+    switch (result.result) {
+      case 'booked':
+      case 'rebooked':
+        outcome.scheduled.push(result.dayNumber);
+        break;
+      case 'repinned':
+        outcome.repinned.push(result.dayNumber);
+        break;
+      case 'rescheduled':
+        outcome.rescheduled.push(result.dayNumber);
+        break;
+      case 'cancelled':
+        outcome.cancelled.push(result.dayNumber);
+        break;
+      case 'missed':
+        outcome.missed.push(result.dayNumber);
+        break;
+      case 'not-bookable': {
+        if (!result.refusal) break;
+        const refusal = result.refusal;
+        const group = groups.get(refusal.reason) ?? { reason: refusal.reason, message: refusal.message, dayNumbers: [] };
+        group.dayNumbers.push(result.dayNumber);
+        groups.set(refusal.reason, group);
+        break;
       }
-      continue;
-    }
-
-    // ---- Book a new one ----------------------------------------------------
-    const eligibility = evaluateDeliveryEligibility(candidateFrom(day, deps), now);
-    if (!eligibility.eligible) {
-      const group = groups.get(eligibility.reason) ?? {
-        reason: eligibility.reason,
-        message: eligibility.message,
-        dayNumbers: [],
-      };
-      group.dayNumbers.push(day.dayNumber);
-      groups.set(eligibility.reason, group);
-      continue;
-    }
-
-    // A day whose moment is long past is never booked retroactively.
-    if (isMissed(scheduledFor, now, deps.timeZone)) {
-      outcome.missed.push(day.dayNumber);
-      continue;
-    }
-
-    try {
-      await db.campaignDelivery.create({
-        data: {
-          campaignId,
-          calendarDayId: day.id,
-          posterVersionId: day.activePosterVersion!.id,
-          scheduledFor,
-          status: 'SCHEDULED',
-        },
-      });
-      outcome.scheduled.push(day.dayNumber);
-    } catch (error) {
-      // P2002 on calendarDayId: another request booked it first. That is the
-      // constraint doing its job, not a failure.
-      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') throw error;
+      default:
+        break;
     }
   }
 
   outcome.skipped = [...groups.values()];
   return outcome;
+}
+
+/**
+ * Brings ONE day's booking in line with its poster, right after something
+ * changed it: an approval (`reapproved`), a new version, a rejection.
+ *
+ * This is what books an approved poster without anyone pressing Schedule. Same
+ * rules as the campaign-wide run, and the same lock before any write.
+ */
+export async function bookCampaignDay(
+  db: CampaignDb,
+  dayId: string,
+  options: BookingSyncOptions & { deps?: DeliveryDeps } = {},
+): Promise<DayBookingOutcome> {
+  const deps = options.deps ?? defaultDeliveryDeps();
+  const day = await loadDeliveryDay(db, dayId);
+  return syncDayBooking(db, day, deps, deps.now(), options);
+}
+
+/**
+ * `bookCampaignDay` for paths whose own write has already succeeded — an
+ * approval, a generated or saved poster, a rejection. A booking problem must
+ * never turn a completed approval into an error: it is logged with safe
+ * identifiers only, and the cron sweep's sync repairs the day on its next tick.
+ */
+export async function bookCampaignDayQuietly(
+  db: CampaignDb,
+  dayId: string,
+  options: BookingSyncOptions & { deps?: DeliveryDeps } = {},
+): Promise<DayBookingOutcome | null> {
+  try {
+    return await bookCampaignDay(db, dayId, options);
+  } catch (error) {
+    console.error(`[campaign:delivery] booking sync failed for dayId=${dayId}:`, error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+export interface BookingSweepResult {
+  considered: number;
+  booked: number;
+  repinned: number;
+  cancelled: number;
+  missed: number;
+}
+
+/**
+ * Where the unbooked-approvals pass of the last sweep stopped, so the next one
+ * continues after it instead of re-reading the same first days. Per process and
+ * best effort: losing it (a restart) only means starting from the soonest day
+ * again, which is still bounded.
+ */
+let unbookedCursor: { scheduledDate: Date; id: string } | null = null;
+
+/** Starts the unbooked-approvals pass from the soonest day again. For tests. */
+export function resetBookingSyncCursor(): void {
+  unbookedCursor = null;
+}
+
+/**
+ * The campaigns the cron sweeps act on without an operator: ACTIVE, of a client
+ * that is active (not paused) and not a demo. Pausing a client therefore stops
+ * its automatic generation, booking sync and sends; resuming lets them continue
+ * from the rows as they were. Operator actions on one campaign are not filtered
+ * by this — the delivery gate refuses a paused client's sends itself.
+ */
+export const AUTOMATIC_CAMPAIGNS = {
+  status: 'ACTIVE',
+  client: { isActive: true, isDemo: false },
+} as const satisfies Prisma.CampaignWhereInput;
+
+/**
+ * The cron sweep's cheap, self-healing pass over ACTIVE campaigns' bookings
+ * (of active, non-demo clients: `AUTOMATIC_CAMPAIGNS`).
+ *
+ * Rather than re-reading every day of every campaign each minute, three narrow,
+ * bounded queries find only the days whose booking may be out of line, and
+ * each goes through `syncDayBooking` (so every write takes the campaign's
+ * booking lock and re-reads the day first):
+ *
+ * 1. **Stale bookings** — SCHEDULED rows pinned to a poster that is no longer
+ *    its day's active one, or whose moment passed before today.
+ * 2. **Withdrawn bookings** — SCHEDULED rows whose active poster is no longer
+ *    approved, or whose content is no longer ready.
+ * 3. **Unbooked approvals** — days from today on whose active poster is
+ *    approved, with no booking or only a never-attempted CANCELLED one pinned to
+ *    an older poster. Skipped entirely while WhatsApp is not configured; limited
+ *    to campaigns whose client has a valid WhatsApp number; a campaign whose
+ *    first day is refused for a campaign-wide reason is skipped for the rest of
+ *    the pass; and the pass resumes after where the previous sweep stopped
+ *    (`unbookedCursor`), so days the gate keeps refusing (an outdated poster)
+ *    cannot starve the days behind them.
+ *
+ * The first two drop out of their query once fixed. An outdated-but-approved
+ * booking cannot be told apart in a query (it compares two tables' revisions);
+ * the sender refuses it, and any other sync of that day withdraws it.
+ */
+export async function syncActiveCampaignBookings(
+  db: CampaignDb,
+  deps: DeliveryDeps = defaultDeliveryDeps(),
+  options: { limit?: number } = {},
+): Promise<BookingSweepResult> {
+  const now = deps.now();
+  const limit = Math.max(1, options.limit ?? 200);
+  const today = startOfZonedDay(now, deps.timeZone);
+  const result: BookingSweepResult = { considered: 0, booked: 0, repinned: 0, cancelled: 0, missed: 0 };
+  const order = [{ scheduledDate: 'asc' as const }, { dayNumber: 'asc' as const }];
+
+  const stale = await db.contentCalendar.findMany({
+    where: {
+      campaign: AUTOMATIC_CAMPAIGNS,
+      delivery: {
+        is: {
+          status: 'SCHEDULED',
+          OR: [{ scheduledFor: { lt: today } }, { posterVersion: { activeForDay: { none: {} } } }],
+        },
+      },
+    },
+    select: deliveryDaySelect,
+    orderBy: order,
+    take: limit,
+  });
+  const withdrawn = await db.contentCalendar.findMany({
+    where: {
+      campaign: AUTOMATIC_CAMPAIGNS,
+      delivery: { is: { status: 'SCHEDULED' } },
+      OR: [{ contentStatus: { not: 'READY' } }, { activePosterVersion: { is: { approvalStatus: { not: 'APPROVED' } } } }],
+    },
+    select: deliveryDaySelect,
+    orderBy: order,
+    take: limit,
+  });
+
+  let unbooked: DeliveryDayRow[] = [];
+  if (deps.whatsappConfigured() && deps.mediaConfigured()) {
+    // Campaigns that could book at all: a client with a usable number.
+    const campaigns = await db.campaign.findMany({
+      where: AUTOMATIC_CAMPAIGNS,
+      select: { id: true, client: { select: { whatsappNumber: true } } },
+    });
+    const bookableCampaigns = campaigns.filter((campaign) => isValidRecipient(campaign.client.whatsappNumber)).map((campaign) => campaign.id);
+
+    if (bookableCampaigns.length > 0) {
+      if (unbookedCursor && unbookedCursor.scheduledDate.getTime() < today.getTime()) unbookedCursor = null;
+      const cursor = unbookedCursor;
+      unbooked = await db.contentCalendar.findMany({
+        where: {
+          campaignId: { in: bookableCampaigns },
+          scheduledDate: { gte: today },
+          contentStatus: 'READY',
+          activePosterVersion: { is: { approvalStatus: 'APPROVED' } },
+          AND: [
+            {
+              OR: [
+                { delivery: { is: null } },
+                { delivery: { is: { status: 'CANCELLED', attempts: 0, posterVersion: { activeForDay: { none: {} } } } } },
+              ],
+            },
+            ...(cursor
+              ? [{ OR: [{ scheduledDate: { gt: cursor.scheduledDate } }, { scheduledDate: cursor.scheduledDate, id: { gt: cursor.id } }] }]
+              : []),
+          ],
+        },
+        select: deliveryDaySelect,
+        orderBy: [{ scheduledDate: 'asc' }, { id: 'asc' }],
+        take: limit,
+      });
+      const last = unbooked[unbooked.length - 1];
+      // A full page means there may be more after it; a short one wraps around.
+      unbookedCursor = unbooked.length === limit && last ? { scheduledDate: last.scheduledDate, id: last.id } : null;
+    }
+  }
+
+  const seen = new Set<string>();
+  const skippedCampaigns = new Set<string>();
+  const unbookedIds = new Set(unbooked.map((day) => day.id));
+  for (const day of [...stale, ...withdrawn, ...unbooked]) {
+    if (seen.has(day.id)) continue;
+    seen.add(day.id);
+    if (unbookedIds.has(day.id) && day.campaignId && skippedCampaigns.has(day.campaignId)) continue;
+    result.considered += 1;
+    try {
+      const outcome = await syncDayBooking(db, day, deps, now);
+      if (outcome.result === 'booked' || outcome.result === 'rebooked') result.booked += 1;
+      else if (outcome.result === 'repinned') result.repinned += 1;
+      else if (outcome.result === 'cancelled') result.cancelled += 1;
+      else if (outcome.result === 'missed') result.missed += 1;
+      if (outcome.refusal && CAMPAIGN_WIDE_REFUSALS.has(outcome.refusal.reason) && day.campaignId) skippedCampaigns.add(day.campaignId);
+    } catch (error) {
+      // One day's failure must not stop the rest of the sync.
+      console.error(`[campaign:delivery] booking sync failed for dayId=${day.id}:`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,7 +811,7 @@ export async function sendCampaignDelivery(
   });
 
   // ---- Gate, before anything is claimed ------------------------------------
-  const eligibility = evaluateDeliveryEligibility(candidateFrom(day, deps), now);
+  const eligibility = evaluateDeliveryEligibility(deliveryCandidateFrom(day, deps), now);
   if (!eligibility.eligible) {
     if (eligibility.reason === 'version-changed' && day.delivery) {
       await db.campaignDelivery.updateMany({
@@ -387,7 +838,7 @@ export async function sendCampaignDelivery(
         },
         select: { id: true },
       });
-      return await claimAndSend(db, day, created.id, deps, now);
+      return await claimAndSend(db, day, created.id, deps, now, true);
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         return refuse('sending', 'Another request is already delivering this day.');
@@ -408,7 +859,7 @@ export async function sendCampaignDelivery(
     );
   }
 
-  return claimAndSend(db, day, delivery.id, deps, now);
+  return claimAndSend(db, day, delivery.id, deps, now, options.manual === true);
 }
 
 /**
@@ -418,6 +869,10 @@ export async function sendCampaignDelivery(
  * update can match, so two sweeps, two tabs or a sweep racing a Send Now cannot
  * both proceed. A SENDING row older than the stale window is reclaimable, which
  * is how an attempt killed mid-flight is recovered.
+ *
+ * A scheduled (non-manual) claim of a SCHEDULED row also restates that its
+ * moment has come: the sweep chose the row from an earlier read, and a post
+ * moved to a later day meanwhile must not be sent on its old slot.
  */
 async function claimAndSend(
   db: CampaignDb,
@@ -425,6 +880,7 @@ async function claimAndSend(
   deliveryId: string,
   deps: DeliveryDeps,
   now: Date,
+  manual: boolean,
 ): Promise<SendOutcome> {
   const staleBefore = new Date(now.getTime() - STALE_SENDING_MS);
 
@@ -432,7 +888,7 @@ async function claimAndSend(
     where: {
       id: deliveryId,
       OR: [
-        { status: 'SCHEDULED' },
+        manual ? { status: 'SCHEDULED' } : { status: 'SCHEDULED', scheduledFor: { lte: now } },
         { status: 'FAILED', failurePermanent: false },
         // Recover an attempt whose worker died.
         { status: 'SENDING', sendingStartedAt: { lt: staleBefore } },
@@ -463,7 +919,7 @@ async function claimAndSend(
   const pinnedVersionId = fresh.delivery?.posterVersionId ?? null;
   // `delivery: null` because our own row is now SENDING and would refuse itself;
   // the version pin it carries is therefore checked explicitly below.
-  const recheck = evaluateDeliveryEligibility({ ...candidateFrom(fresh, deps), delivery: null }, now);
+  const recheck = evaluateDeliveryEligibility({ ...deliveryCandidateFrom(fresh, deps), delivery: null }, now);
   if (!recheck.eligible) {
     await releaseClaim(db, deliveryId, now, recheck.message, true, false);
     return { ok: false, dayNumber: day.dayNumber, reason: recheck.reason, message: recheck.message, permanent: true };
@@ -581,9 +1037,10 @@ export async function runDueCampaignDeliveries(
 
   const due = await db.campaignDelivery.findMany({
     where: {
-      // Only a running campaign delivers: a paused or cancelled one leaves its
-      // future bookings untouched and unsent.
-      campaign: { status: 'ACTIVE' },
+      // Only a running campaign of an active client delivers: a paused or
+      // cancelled campaign, or a paused client, leaves its bookings untouched
+      // and unsent.
+      campaign: AUTOMATIC_CAMPAIGNS,
       OR: [
         { status: 'SCHEDULED', scheduledFor: { lte: now } },
         { status: 'FAILED', failurePermanent: false, attempts: { lt: 3 } },
@@ -640,44 +1097,70 @@ export async function cancelCampaignDelivery(db: CampaignDb, dayId: string): Pro
   }
 }
 
+export const ATTEMPTED_DELIVERY_WARNING = 'This delivery was attempted before and may already have reached WhatsApp.';
+
 /**
  * Puts a cancelled, skipped or failed day back in the queue.
  *
  * Re-pins the current active version and clears the failure, so a retry always
- * sends what is approved now — never a stale pin. Refused for a sent day.
+ * sends what is approved now — never a stale pin. Refused for a sent day or one
+ * being sent.
+ *
+ * A cancelled or skipped delivery that was already attempted may have reached
+ * WhatsApp (an ambiguous failure), so booking it again needs `confirmAttempted`
+ * — the operator saw that warning.
+ *
+ * Runs under the campaign's booking lock and computes the moment from a fresh
+ * read, so it cannot write a date a move has just replaced.
  */
 export async function rescheduleCampaignDelivery(
   db: CampaignDb,
   dayId: string,
   deps: DeliveryDeps = defaultDeliveryDeps(),
+  options: { confirmAttempted?: boolean } = {},
 ): Promise<void> {
-  const day = await loadDeliveryDay(db, dayId);
-  if (day.delivery?.status === 'SENT') {
-    throw new CampaignDomainError('invalid-transition', 'This day was already delivered.');
-  }
+  const { campaignId } = await loadDeliveryDay(db, dayId);
 
-  const eligibility = evaluateDeliveryEligibility({ ...candidateFrom(day, deps), delivery: null }, deps.now());
-  if (!eligibility.eligible) throw new CampaignDomainError('invalid-transition', eligibility.message);
+  await runInCampaignTransaction(db, async (tx) => {
+    await lockCampaignForBooking(tx, campaignId!);
+    const day = await loadDeliveryDay(tx, dayId);
+    const existing = day.delivery;
+    if (existing?.status === 'SENT') {
+      throw new CampaignDomainError('invalid-transition', 'This day was already delivered.');
+    }
+    if (existing?.status === 'SENDING') {
+      throw new CampaignDomainError('invalid-transition', 'This day is being sent right now.');
+    }
+    if (existing && (existing.status === 'CANCELLED' || existing.status === 'SKIPPED') && existing.attempts > 0 && !options.confirmAttempted) {
+      throw new CampaignDomainError('invalid-transition', `${ATTEMPTED_DELIVERY_WARNING} Confirm to book it again.`);
+    }
 
-  const scheduledFor = scheduledInstantFor(day.id, day.scheduledDate, day.campaign!.deliveryTime, deps.timeZone);
-  await db.campaignDelivery.upsert({
-    where: { calendarDayId: dayId },
-    create: {
-      campaignId: day.campaignId!,
-      calendarDayId: dayId,
-      posterVersionId: day.activePosterVersion!.id,
-      scheduledFor,
-      status: 'SCHEDULED',
-    },
-    update: {
-      posterVersionId: day.activePosterVersion!.id,
-      scheduledFor,
-      status: 'SCHEDULED',
-      attempts: 0,
-      failureReason: null,
-      failurePermanent: false,
-      sendingStartedAt: null,
-    },
+    const eligibility = evaluateDeliveryEligibility({ ...deliveryCandidateFrom(day, deps), delivery: null }, deps.now());
+    if (!eligibility.eligible) throw new CampaignDomainError('invalid-transition', eligibility.message);
+
+    const version = day.activePosterVersion!;
+    const scheduledFor = scheduledInstantFor(day.id, day.scheduledDate, day.campaign!.deliveryTime, deps.timeZone);
+    if (!existing) {
+      const created = await tx.campaignDelivery.createMany({
+        data: [{ campaignId: day.campaignId!, calendarDayId: dayId, posterVersionId: version.id, scheduledFor, status: 'SCHEDULED' }],
+        skipDuplicates: true,
+      });
+      if (created.count !== 1) throw new CampaignDomainError('conflict', 'This day was booked by someone else meanwhile. Refresh and try again.');
+      return;
+    }
+    const updated = await tx.campaignDelivery.updateMany({
+      where: { id: existing.id, status: existing.status },
+      data: {
+        posterVersionId: version.id,
+        scheduledFor,
+        status: 'SCHEDULED',
+        attempts: 0,
+        failureReason: null,
+        failurePermanent: false,
+        sendingStartedAt: null,
+      },
+    });
+    if (updated.count !== 1) throw new CampaignDomainError('conflict', 'This delivery changed meanwhile. Refresh and try again.');
   });
 }
 
@@ -775,7 +1258,7 @@ export async function loadCampaignDeliveryOverview(
 
   const now = deps.now();
   const views: DeliveryDayView[] = days.map((day) => {
-    const eligibility = evaluateDeliveryEligibility(candidateFrom(day as DeliveryDayRow, deps), now);
+    const eligibility = evaluateDeliveryEligibility(deliveryCandidateFrom(day as DeliveryDayRow, deps), now);
     const delivery = day.delivery;
     return {
       dayId: day.id,

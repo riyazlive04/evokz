@@ -133,6 +133,30 @@ export async function reduceVariationSource(image: { bytes: Buffer; mimeType: st
 }
 
 /**
+ * A template image as a clone sends it: PNG, at exactly the output size.
+ *
+ * The output size is the template's own shape (`cloneSizeFor` snaps within 2%),
+ * so this is a resize, never a crop; the stretch is at most that 2%. Sent at the
+ * output size so the model edits the poster at the resolution it answers in.
+ */
+export async function prepareCloneTemplateImage(
+  bytes: Buffer,
+  size: { width: number; height: number },
+): Promise<{ bytes: Buffer; mimeType: string }> {
+  try {
+    const body = await sharp(bytes, { limitInputPixels: 64_000_000 })
+      .rotate()
+      .resize({ width: size.width, height: size.height, fit: 'fill' })
+      .flatten({ background: '#ffffff' })
+      .png()
+      .toBuffer();
+    return { bytes: body, mimeType: 'image/png' };
+  } catch (error) {
+    throw new StudioError('invalid-image', 'The template image could not be read as an image.', { cause: error });
+  }
+}
+
+/**
  * Decoded size of an image the model returned, or null when the bytes are not
  * an image sharp can read. Decoded rather than read from the header, so a
  * truncated or corrupt response is caught before it is stored.

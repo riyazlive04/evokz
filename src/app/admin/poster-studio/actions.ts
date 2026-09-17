@@ -1,5 +1,6 @@
 'use server';
 
+import type { PosterStudioMode } from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 
@@ -562,7 +563,7 @@ async function resolveSource(request: StudioRequest, formData: FormData): Promis
  * than stopping the request.
  */
 async function findCampaignBrief(row: {
-  mode: StudioRequest['mode'];
+  mode: PosterStudioMode;
   prompt: string;
   parentGenerationId: string | null;
 }): Promise<string | null> {

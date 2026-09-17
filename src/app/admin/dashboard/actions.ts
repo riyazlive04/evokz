@@ -1,22 +1,10 @@
 'use server';
 
-import {
-  ContentSourceType,
-  DeliveryStatus,
-  Prisma,
-  UsageKeySource,
-} from '@prisma/client';
+import { DeliveryStatus, Prisma } from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 
-import {
-  describeError,
-  getFalEndpoint,
-  probeFalKey,
-  runCreativePipeline,
-} from '@/lib/ai-pipeline';
 import { tokenizeClientBrand } from '@/lib/ai/brand-tokenizer';
-import { generateContentCalendar } from '@/lib/ai/calendar-generator';
 import {
   extractWebsiteColors,
   toBrandColors,
@@ -28,33 +16,13 @@ import {
   parseBrandGuideline,
   type BrandGuideline,
 } from '@/lib/types/brand';
-import { applyCalendarImport, type CalendarImportResult } from '@/lib/calendar-import';
-import { CAMPAIGN_DAY_REFUSAL, LEGACY_CALENDAR } from '@/lib/calendar-scope';
 import { countOpenCampaignDaysReferencingTemplate } from '@/lib/campaign/template-mapping-service';
-import type { CalendarImportInput } from '@/lib/calendar-parse';
+import { describeError } from '@/lib/errors';
 import {
-  ManualUploadRefusal,
-  storeManualPoster,
-  type StoredManualPoster,
-} from '@/lib/manual-upload';
-import { extractLayoutSpec } from '@/lib/ai/layout-extractor';
-import { labelTextBlocks, unionIntoRegions } from '@/lib/ai/plate-labeller';
-import { detectTextBlocks } from '@/lib/poster/text-detect';
-import {
-  downloadDriveFile,
   ensureVerticalTemplateFolder,
   trashDriveFile,
   uploadClientAsset,
 } from '@/lib/google-drive';
-import {
-  isInheritedLayout,
-  normalizeLayoutSpec,
-  parseLayoutSpec,
-  posterLayoutSpecSchema,
-  validateLayoutSpec,
-} from '@/lib/types/layout-spec';
-import { readImageDimensions } from '@/lib/poster/image-info';
-import { assessAutoApproval } from '@/lib/poster/layout-risk';
 import { fetchLogoUrl } from '@/lib/brand/logo-fetch';
 import {
   describeLogoKeySkip,
@@ -62,17 +30,12 @@ import {
   type LogoKeySkipReason,
 } from '@/lib/poster/logo-key';
 import { BODY_FONT_OPTIONS, HEADING_FONT_OPTIONS } from '@/lib/poster/theme';
-import { sampleRegionInk } from '@/lib/poster/plate-ink';
-import { findPlateHoles } from '@/lib/poster/plate-regions';
 import { prepareTemplateImage, templateFileName } from '@/lib/template-image';
 import {
-  normalizePlateSpec,
-  parsePlateDraft,
-  parsePlateSpec,
-  posterPlateSpecSchema,
-  validatePlateSpec,
-  type PlateTextRegion,
-} from '@/lib/types/plate-spec';
+  elementsCreateData,
+  readElementsQuietly,
+  refreshTemplateElements,
+} from '@/lib/templates/elements-reading';
 import {
   dedupeTemplateLabel,
   normalizeTemplateLabel,
@@ -90,26 +53,7 @@ import {
   provisionClient,
   repairClientDriveFolder,
 } from '@/lib/onboarding';
-import { mapWithConcurrency } from '@/lib/cron-worker';
-import { intEnv, MissingEnvError } from '@/lib/env';
-import {
-  APP_SETTING_ID,
-  FAL_KEY_PATTERN,
-  FAL_KEY_PURPOSE,
-  loadFalKeyStatus,
-  normalizeFalKey,
-  resolveFalCredentials,
-  type FalKeyStatus,
-} from '@/lib/fal-credentials';
 import { prisma } from '@/lib/prisma';
-import {
-  encryptSecret,
-  isSecretEncryptionConfigured,
-  secretLast4,
-  SecretDecryptionError,
-} from '@/lib/secret-box';
-import { nextSendDelay } from '@/lib/send-jitter';
-import { recordImageUsage } from '@/lib/usage';
 import {
   describeDeliveryDays,
   formatDisplayDate,
@@ -117,8 +61,6 @@ import {
   HH_MM_PATTERN,
   normalizeDeliveryDays,
   nthDeliveryDate,
-  toTimeString,
-  zonedDayRange,
 } from '@/lib/time';
 
 /**
@@ -488,13 +430,10 @@ export async function updateClientBudget(
 }
 
 /**
- * Sets the client's output-size preset.
+ * Sets the client's output-size preset: the poster shape of a campaign day that
+ * has no template (a templated day takes its template's own shape).
  *
- * Applies from the next render onward only. Already-GENERATED and DELIVERED
- * rows keep the asset they were rendered at — re-shaping them would mean
- * re-billing fal.ai for every past day of the campaign, so an operator who
- * wants a resize picks the days and hits regenerate.
- *
+ * Applies to posters made from now on; an existing poster keeps its size.
  * `null` reverts the client to the fleet default.
  */
 export async function updateClientImageSize(
@@ -522,88 +461,42 @@ export async function updateClientImageSize(
 }
 
 /**
- * Reassigns the client's vertical.
- *
- * `category.name` only feeds the LLM system prefix (`Industry: …`) for *future*
- * generation, and days already seeded keep the copy written for the old
- * vertical — reseeding them is the operator's call.
- *
- * **The layout pins are not safe to leave, though.** A day pinned to a template
- * belongs to a vertical, and no foreign key can express "the same vertical the
- * client is in" without denormalising `categoryId` onto every calendar row. So
- * moving a client strands every pin it carries, pointing at templates the new
- * vertical does not own. `resolveDayLayout` catches that as `pinned-foreign` and
- * fails the render rather than drawing the wrong layout — correct, but a silent
- * trap: the operator changing a dropdown here has no idea they have just armed a
- * compose failure on every pinned day.
- *
- * Cleared, and only on rows that can still be rebuilt. A PENDING or FAILED day
- * falls back to the new vertical's rotation, which is what an unpinned day gets
- * anyway. GENERATED and DELIVERED rows keep their pin: it is now a record of
- * what was actually rendered and sent, and rewriting history to tidy a foreign
- * key would be worse than leaving it.
- *
- * The count comes back so the console can say what happened.
+ * Reassigns the client's vertical: the one a new campaign takes its templates
+ * from. An existing campaign keeps the vertical it was created with, so nothing
+ * already planned changes.
  */
 export async function updateClientCategory(
   clientId: string,
   categoryId: string,
-): Promise<ActionResult<{ unpinnedDays: number }>> {
+): Promise<ActionResult> {
   try {
     const id = z.string().uuid().parse(clientId);
     const nextId = z.string().uuid('A valid vertical must be selected').parse(categoryId);
 
-    const client = await prisma.client.findUnique({
-      where: { id },
-      select: { categoryId: true },
-    });
-    if (!client) return failure('That client no longer exists.');
-
-    const category = await prisma.category.findUnique({
-      where: { id: nextId },
-      select: { id: true },
-    });
-    if (!category) return failure('That vertical no longer exists.');
-
-    if (client.categoryId === nextId) return success({ unpinnedDays: 0 });
-
-    const [, cleared] = await prisma.$transaction([
-      prisma.client.update({ where: { id }, data: { categoryId: nextId } }),
-      prisma.contentCalendar.updateMany({
-        where: {
-          clientId: id,
-          // A campaign day's template is checked against the campaign's own
-          // vertical, not the client's, so moving the client strands nothing there.
-          ...LEGACY_CALENDAR,
-          posterTemplateId: { not: null },
-          deliveryStatus: { in: [DeliveryStatus.PENDING, DeliveryStatus.FAILED] },
-        },
-        data: { posterTemplateId: null },
-      }),
+    const [client, category] = await Promise.all([
+      prisma.client.findUnique({ where: { id }, select: { categoryId: true } }),
+      prisma.category.findUnique({ where: { id: nextId }, select: { id: true } }),
     ]);
+    if (!client) return failure('That client no longer exists.');
+    if (!category) return failure('That vertical no longer exists.');
+    if (client.categoryId === nextId) return success();
+
+    await prisma.client.update({ where: { id }, data: { categoryId: nextId } });
 
     revalidateAdmin();
-    return success({ unpinnedDays: cleared.count });
+    return success();
   } catch (error) {
     return toFailure(error, 'Updating vertical');
   }
 }
 
 /**
- * Reassigns the client's plan, and moves the campaign window with it.
+ * Reassigns the client's plan, and moves the client's plan window with it.
  *
- * Two things make this more than a column update:
- *
- * 1. **`endDate` must be recomputed.** It is derived from the plan duration at
- *    provisioning (`lib/onboarding.ts`) and has never had a second writer, so
- *    leaving it alone would keep the dispatcher on the old window — a longer
- *    plan would stop delivering at the old end date while the UI showed more
- *    days remaining.
- *
- * 2. **A shortening that would strand days is refused.** Those rows keep their
- *    `scheduledDate`, but once `endDate` moves back they fall outside the
- *    dispatcher's `endDate >= start` filter and are silently never delivered.
- *    Clearing the calendar first is the deliberate, visible alternative.
+ * The plan is the default length of a new campaign; an existing campaign keeps
+ * its own duration and dates. `endDate` is derived from the plan duration at
+ * provisioning (`lib/onboarding.ts`), so it is recomputed here rather than left
+ * describing the old plan.
  */
 export async function updateClientPlan(
   clientId: string,
@@ -631,17 +524,6 @@ export async function updateClientPlan(
     }
     if (client.planId === nextId) return failure('That is already this client’s plan.');
 
-    // Campaign days follow their campaign's own duration, not the client's plan.
-    const stranded = await prisma.contentCalendar.count({
-      where: { clientId: id, ...LEGACY_CALENDAR, dayNumber: { gt: plan.durationDays } },
-    });
-    if (stranded > 0) {
-      return failure(
-        `${stranded} calendar day(s) fall beyond a ${plan.durationDays}-day plan and would never be delivered. ` +
-          'Clear the calendar first, then change the plan.',
-      );
-    }
-
     await prisma.client.update({
       where: { id },
       data: {
@@ -662,41 +544,24 @@ export async function updateClientPlan(
   }
 }
 
-/** Reschedule writes per transaction, matching the bulk importer's chunking. */
-const RESCHEDULE_CHUNK = 25;
-
 /**
- * Sets the weekdays a client accepts delivery on, and moves everything that
- * depends on them.
- *
- * The dispatcher is deliberately untouched by this feature: it already selects
- * rows whose `scheduledDate` falls inside today, so a day with no row simply
- * never sends. All the work is in placing dates correctly.
- *
- * Three things move together:
- *  - `deliveryDays` itself.
- *  - Every PENDING row's `scheduledDate`, recomputed from its day number under
- *    the new weekday set. GENERATED and DELIVERED rows keep their dates —
- *    those record what actually happened, and rewriting history to match a new
- *    preference would be a lie.
- *  - `endDate`, since the last deliverable day moves with the weekdays.
+ * Sets the weekdays a client accepts delivery on — the default for a new
+ * campaign, which keeps its own weekdays once created — and moves the plan
+ * window's end date with them.
  */
 export async function updateClientDeliveryDays(
   clientId: string,
   days: number[],
-): Promise<
-  ActionResult<{ rescheduled: number; kept: number; endsOn: string; label: string }>
-> {
+): Promise<ActionResult<{ endsOn: string; label: string }>> {
   try {
     const id = z.string().uuid().parse(clientId);
     const parsed = normalizeDeliveryDays(
       z.array(z.number().int().min(1).max(7)).parse(days),
     );
 
-    // An empty set would mean a client who never receives anything. Pausing is
-    // what that is for, and it is reversible without touching the calendar.
+    // An empty set would mean a client who never receives anything.
     if (parsed.length === 0) {
-      return failure('Pick at least one delivery day, or pause the campaign instead.');
+      return failure('Pick at least one delivery day.');
     }
 
     const client = await prisma.client.findUnique({
@@ -707,18 +572,6 @@ export async function updateClientDeliveryDays(
 
     const timeZone = getAppTimeZone();
     const stored = parsed.length === 7 ? [] : parsed;
-
-    // Legacy rows only: a campaign's days are placed by the campaign's own
-    // delivery weekdays, which this client-level preference does not change.
-    const pending = await prisma.contentCalendar.findMany({
-      where: { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: DeliveryStatus.PENDING },
-      select: { id: true, dayNumber: true },
-      orderBy: { dayNumber: 'asc' },
-    });
-    const kept = await prisma.contentCalendar.count({
-      where: { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: { not: DeliveryStatus.PENDING } },
-    });
-
     const endDate = nthDeliveryDate(
       client.startDate,
       client.plan.durationDays,
@@ -731,102 +584,13 @@ export async function updateClientDeliveryDays(
       data: { deliveryDays: stored, endDate },
     });
 
-    for (let offset = 0; offset < pending.length; offset += RESCHEDULE_CHUNK) {
-      const chunk = pending.slice(offset, offset + RESCHEDULE_CHUNK);
-      await prisma.$transaction(
-        chunk.map((row) =>
-          prisma.contentCalendar.update({
-            where: { id: row.id },
-            data: {
-              scheduledDate: nthDeliveryDate(
-                client.startDate,
-                row.dayNumber,
-                stored,
-                timeZone,
-              ),
-            },
-          }),
-        ),
-      );
-    }
-
     revalidateAdmin();
     return success({
-      rescheduled: pending.length,
-      kept,
       endsOn: formatDisplayDate(endDate, timeZone),
       label: describeDeliveryDays(stored),
     });
   } catch (error) {
     return toFailure(error, 'Updating delivery days');
-  }
-}
-
-/**
- * Rows retried per invocation.
- *
- * Capped because this runs as a single server action, and `vercel.json` raises
- * `maxDuration` only for `/api/cron` and the Razorpay webhook — not for actions.
- * An uncapped loop over a few hundred failures works in dev and is killed in
- * production, which is the worst place to discover it.
- */
-const RETRY_BATCH_LIMIT = 10;
-
-/**
- * Re-runs the pipeline over the most recent failed deliveries.
- *
- * Uses `reuseExistingAsset`, so a row that already reached GENERATED re-sends
- * its stored Drive file for free. A row that failed before the upload has no
- * asset to reuse and will re-bill fal.ai — surfaced in the UI rather than
- * hidden, since the two look identical on the card.
- */
-export async function retryFailedDeliveries(
-  clientId?: string,
-): Promise<
-  ActionResult<{ attempted: number; delivered: number; failed: number; remaining: number }>
-> {
-  try {
-    const id = clientId ? z.string().uuid().parse(clientId) : null;
-    const where = {
-      ...LEGACY_CALENDAR,
-      deliveryStatus: DeliveryStatus.FAILED,
-      ...(id ? { clientId: id } : {}),
-    };
-
-    const [rows, total] = await Promise.all([
-      prisma.contentCalendar.findMany({
-        where,
-        orderBy: { updatedAt: 'desc' },
-        take: RETRY_BATCH_LIMIT,
-        select: { id: true },
-      }),
-      prisma.contentCalendar.count({ where }),
-    ]);
-
-    if (rows.length === 0) return failure('No failed deliveries to retry.');
-
-    const results = await mapWithConcurrency(
-      rows,
-      Math.max(1, intEnv('CRON_MAX_CONCURRENCY', 4)),
-      async (row) => ({
-        outcome: await runCreativePipeline(row.id, {
-          reuseExistingAsset: true,
-          allowRedelivery: true,
-        }),
-      }),
-    );
-
-    const delivered = results.filter((result) => result.outcome.ok).length;
-
-    revalidateAdmin();
-    return success({
-      attempted: results.length,
-      delivered,
-      failed: results.length - delivered,
-      remaining: Math.max(0, total - delivered),
-    });
-  } catch (error) {
-    return toFailure(error, 'Retrying failed deliveries');
   }
 }
 
@@ -881,453 +645,6 @@ export async function repairDriveFolder(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Manual pipeline intervention
-// ---------------------------------------------------------------------------
-
-/**
- * Immediately pushes one calendar entry to WhatsApp, bypassing cron.
- *
- * `reuseExistingAsset` keeps this cheap: an entry that already reached
- * GENERATED/DELIVERED re-sends its stored Drive asset instead of re-billing
- * fal.ai. A PENDING entry generates first, exactly as the scheduler would.
- *
- * The only caller that sets `ignoreApproval`. An operator pressing "Send now" on
- * a poster they are looking at has approved it in every sense that matters, and
- * refusing here would leave them approving a row purely to satisfy a check —
- * which teaches the habit of approving without looking.
- */
-export async function forceResendCreative(
-  calendarId: string,
-): Promise<ActionResult<{ status: string; reusedAsset: boolean }>> {
-  try {
-    const id = z.string().uuid().parse(calendarId);
-
-    const outcome = await runCreativePipeline(id, {
-      reuseExistingAsset: true,
-      allowRedelivery: true,
-      ignoreApproval: true,
-    });
-
-    revalidateAdmin();
-
-    if (!outcome.ok) {
-      return failure(`Delivery failed at "${outcome.stage}": ${outcome.error}`);
-    }
-
-    return success({ status: outcome.status, reusedAsset: outcome.reusedAsset });
-  } catch (error) {
-    return toFailure(error, 'Force re-send');
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Pre-generation and approval
-// ---------------------------------------------------------------------------
-
-/**
- * Marks a client's remaining campaign for pre-generation.
- *
- * Returns as soon as the rows are marked. It does not render anything, and that
- * is the point: a 30-day campaign is roughly ten minutes of fal.ai and satori
- * work, and a server action has nowhere near that long before the platform cuts
- * it off. The sweep's backlog phase drains the mark a few rows a minute, so the
- * work survives a restart, a deploy, or the operator closing the tab.
- *
- * The Drive folder is checked up front because its absence fails every single
- * render at the upload stage — thirty identical failures an hour after the click,
- * rather than one refusal at the moment of it.
- */
-export async function queueCampaignGeneration(
-  clientId: string,
-): Promise<ActionResult<{ queued: number; alreadyQueued: number }>> {
-  try {
-    const id = z.string().uuid().parse(clientId);
-
-    const client = await prisma.client.findUnique({
-      where: { id },
-      select: { companyName: true, gDriveFolderId: true },
-    });
-    if (!client) return failure('That client no longer exists.');
-    if (!client.gDriveFolderId) {
-      return failure(
-        `${client.companyName} has no Drive vault yet. Repair the Drive folder first — without it every render fails at upload.`,
-      );
-    }
-
-    // Legacy rows only. A marked campaign day would be rendered by the backlog
-    // phase straight into `gDriveFileId`, bypassing its poster versions.
-    const pending = { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: DeliveryStatus.PENDING };
-
-    const alreadyQueued = await prisma.contentCalendar.count({
-      where: { ...pending, generationQueuedAt: { not: null } },
-    });
-
-    const queued = await prisma.contentCalendar.updateMany({
-      where: { ...pending, generationQueuedAt: null },
-      data: { generationQueuedAt: new Date() },
-    });
-
-    if (queued.count === 0 && alreadyQueued === 0) {
-      return failure(
-        `Nothing to generate for ${client.companyName} — seed the calendar first, or every day already has a poster.`,
-      );
-    }
-
-    revalidateAdmin();
-    return success({ queued: queued.count, alreadyQueued });
-  } catch (error) {
-    return toFailure(error, 'Queueing campaign generation');
-  }
-}
-
-/**
- * Whether a poster's delivery window has already gone by.
- *
- * The sweep releases approved posters only during the minute matching their
- * client's `cronTime`, on their scheduled day. A poster approved after that
- * minute has no second chance today, and one approved for a day already past has
- * none at all — so both need their send booked here or they wait forever.
- */
-function hasMissedItsWindow(
-  scheduledDate: Date,
-  cronTime: string,
-  now: Date,
-  timeZone: string,
-): boolean {
-  const { start, end } = zonedDayRange(now, timeZone);
-  if (scheduledDate < start) return true;
-  if (scheduledDate >= end) return false;
-  // Both sides are zero-padded "HH:MM", so a lexicographic compare is a
-  // chronological one.
-  return toTimeString(now, timeZone) >= cronTime;
-}
-
-/**
- * Books a send for an approved poster the sweep will not pick up on its own.
- *
- * Conditional on `sendAfter: null` for the same reason the sweep's own release is:
- * if a sweep booked this row between the read and the write, overwriting its
- * timestamp would move the delivery for no reason and lose the jitter spread.
- */
-async function bookSendNow(calendarId: string): Promise<boolean> {
-  const claimed = await prisma.contentCalendar.updateMany({
-    where: {
-      id: calendarId,
-      ...LEGACY_CALENDAR,
-      deliveryStatus: DeliveryStatus.GENERATED,
-      approvedAt: { not: null },
-      sendAfter: null,
-    },
-    data: { sendAfter: nextSendDelay().sendAfter },
-  });
-
-  return claimed.count === 1;
-}
-
-/**
- * Approves one poster for delivery.
- *
- * Approval alone does not send anything. On a future day the row simply becomes
- * eligible, and the sweep releases it at the client's delivery minute — which is
- * what keeps `cronTime` meaning the time a client hears from us, rather than the
- * time an operator happened to finish reviewing.
- *
- * The exception is a poster whose window has already passed, which nothing would
- * ever pick up. That one is booked immediately, and the caller is told so it can
- * say which of the two happened.
- */
-export async function approveCreative(
-  calendarId: string,
-): Promise<ActionResult<{ sendsNow: boolean }>> {
-  try {
-    const id = z.string().uuid().parse(calendarId);
-
-    const entry = await prisma.contentCalendar.findUnique({
-      where: { id },
-      select: {
-        campaignId: true,
-        deliveryStatus: true,
-        scheduledDate: true,
-        approvedAt: true,
-        client: { select: { cronTime: true } },
-      },
-    });
-
-    if (!entry) return failure('That calendar entry no longer exists.');
-    if (entry.campaignId) return failure(CAMPAIGN_DAY_REFUSAL);
-    if (entry.approvedAt) return failure('That poster is already approved.');
-    if (entry.deliveryStatus !== DeliveryStatus.GENERATED) {
-      return failure(
-        entry.deliveryStatus === DeliveryStatus.PENDING
-          ? 'That poster has not been generated yet — there is nothing to look at.'
-          : `A ${entry.deliveryStatus.toLowerCase()} poster cannot be approved.`,
-      );
-    }
-
-    // Conditional on the status re-read, so a row generated-then-delivered by a
-    // sweep in the intervening milliseconds is not retroactively approved.
-    const approved = await prisma.contentCalendar.updateMany({
-      where: { id, ...LEGACY_CALENDAR, deliveryStatus: DeliveryStatus.GENERATED, approvedAt: null },
-      data: { approvedAt: new Date() },
-    });
-    if (approved.count === 0) {
-      return failure('That poster changed while you were looking at it. Refresh and retry.');
-    }
-
-    const now = new Date();
-    const sendsNow =
-      hasMissedItsWindow(
-        entry.scheduledDate,
-        entry.client.cronTime,
-        now,
-        getAppTimeZone(),
-      ) && (await bookSendNow(id));
-
-    revalidateAdmin();
-    return success({ sendsNow });
-  } catch (error) {
-    return toFailure(error, 'Approving poster');
-  }
-}
-
-/**
- * Approves every reviewed-and-waiting poster for one client.
- *
- * Deliberately does *not* book the overdue ones the way `approveCreative` does.
- * Approving a campaign whose first days have already gone by would otherwise put
- * a queue of back-dated posters on the wire at once — several messages to one
- * number in a few minutes, which is what the send jitter exists to avoid and what
- * a recipient reads as a malfunction. Those rows are counted and handed back, so
- * the operator releases them one at a time with "Send now" if that is what they
- * actually want.
- */
-export async function approveAllCreatives(
-  clientId: string,
-): Promise<ActionResult<{ approved: number; overdue: number }>> {
-  try {
-    const id = z.string().uuid().parse(clientId);
-
-    // Legacy rows only: a campaign day's approval lives on its poster versions.
-    const waiting = {
-      clientId: id,
-      ...LEGACY_CALENDAR,
-      deliveryStatus: DeliveryStatus.GENERATED,
-      approvedAt: null,
-    };
-
-    const rows = await prisma.contentCalendar.findMany({
-      where: waiting,
-      select: {
-        scheduledDate: true,
-        client: { select: { cronTime: true } },
-      },
-    });
-
-    if (rows.length === 0) return failure('Nothing is waiting for approval.');
-
-    const now = new Date();
-    const timeZone = getAppTimeZone();
-    const overdue = rows.filter((row) =>
-      hasMissedItsWindow(row.scheduledDate, row.client.cronTime, now, timeZone),
-    ).length;
-
-    const approved = await prisma.contentCalendar.updateMany({
-      where: waiting,
-      data: { approvedAt: now },
-    });
-
-    revalidateAdmin();
-    return success({ approved: approved.count, overdue });
-  } catch (error) {
-    return toFailure(error, 'Approving posters');
-  }
-}
-
-/**
- * Withdraws approval from a poster that has not gone out yet.
- *
- * Refused once a send is booked rather than racing it: `sendAfter` is non-null
- * from the moment a sweep may claim the row, and clearing approval after that
- * point would leave the operator believing they had stopped a delivery that was
- * already on its way to WhatsApp.
- */
-export async function unapproveCreative(calendarId: string): Promise<ActionResult> {
-  try {
-    const id = z.string().uuid().parse(calendarId);
-
-    const cleared = await prisma.contentCalendar.updateMany({
-      where: { id, ...LEGACY_CALENDAR, deliveryStatus: DeliveryStatus.GENERATED, sendAfter: null },
-      data: { approvedAt: null },
-    });
-
-    if (cleared.count === 0) {
-      const campaignDay = await prisma.contentCalendar.count({
-        where: { id, campaignId: { not: null } },
-      });
-      if (campaignDay > 0) return failure(CAMPAIGN_DAY_REFUSAL);
-      return failure('Too late to withdraw — that poster is already booked to send or has gone out.');
-    }
-
-    revalidateAdmin();
-    return success();
-  } catch (error) {
-    return toFailure(error, 'Withdrawing approval');
-  }
-}
-
-/**
- * Drops one calendar entry for good, freeing its `dayNumber`.
- *
- * Two shapes of row may be dropped, for different reasons:
- *
- *   A **failed or pending** row — the original case. Nobody has received
- *     anything, and an operator has decided not to chase it. Any Drive asset is
- *     left alone, matching what `applyCalendarImport` does when it rewrites a
- *     failed day.
- *
- *   A **manually-uploaded row that has not gone out**. This one is new, and it
- *     is the only way to correct a manual upload at all: there is no regenerate
- *     for it — no template, no brief, nothing to draw again — so a poster on the
- *     wrong day could previously only be fixed in the database by hand. Its Drive
- *     file *is* binned, because unlike a rendered poster it is artwork uploaded
- *     for this row alone and nothing else refers to it. Trashed rather than
- *     destroyed, so a mis-click is recoverable from Drive's bin for 30 days.
- *
- * **A DELIVERED row is refused in every case**, manual or not. It records what a
- * client actually received, which is the same rule `clearClientCalendar` applies
- * to a bulk clear — and the reason a row is dropped is never a reason to forget
- * that it was sent.
- *
- * The guard is new. This action used to delete whatever id it was handed and was
- * simply not offered on anything but a failed row, which made the console the
- * only thing standing between a stale tab and a deleted delivery record.
- */
-export async function deleteCalendarEntry(
-  calendarId: string,
-): Promise<ActionResult<{ dayNumber: number }>> {
-  try {
-    const id = z.string().uuid().parse(calendarId);
-
-    const entry = await prisma.contentCalendar.findUnique({
-      where: { id },
-      select: {
-        campaignId: true,
-        dayNumber: true,
-        deliveryStatus: true,
-        sourceType: true,
-        gDriveFileId: true,
-      },
-    });
-    if (!entry) return failure('That calendar entry no longer exists.');
-    if (entry.campaignId) return failure(CAMPAIGN_DAY_REFUSAL);
-
-    if (entry.deliveryStatus === DeliveryStatus.DELIVERED) {
-      return failure(
-        'That poster has already been delivered, so the day cannot be dropped — the row is ' +
-          'the record of what the client received.',
-      );
-    }
-
-    const manualAndUnsent =
-      entry.sourceType === ContentSourceType.MANUAL_UPLOAD &&
-      entry.deliveryStatus === DeliveryStatus.GENERATED;
-
-    if (
-      !manualAndUnsent &&
-      entry.deliveryStatus !== DeliveryStatus.PENDING &&
-      entry.deliveryStatus !== DeliveryStatus.FAILED
-    ) {
-      return failure(
-        'A generated poster cannot be dropped. Regenerate it, or withdraw its approval first.',
-      );
-    }
-
-    await prisma.contentCalendar.delete({ where: { id } });
-
-    /*
-     * Only the manual path bins its file, and only after the row is gone.
-     *
-     * A rendered poster's asset is left where it is, exactly as before — the
-     * pipeline can produce it again, and the file may already have been sent. A
-     * manually-uploaded one cannot be reproduced by anything here, and with its
-     * row deleted nothing points at it, so leaving it would silently grow the
-     * client's folder by one orphan per correction.
-     *
-     * After the delete, not before: `trashDriveFile` never throws, and binning a
-     * file for a row that then failed to delete would leave a live row pointing
-     * at a binned asset — which is the one outcome worse than an orphan.
-     */
-    if (manualAndUnsent && entry.gDriveFileId) {
-      await trashDriveFile(entry.gDriveFileId);
-    }
-
-    revalidateAdmin();
-    return success({ dayNumber: entry.dayNumber });
-  } catch (error) {
-    return toFailure(error, 'Deleting calendar entry');
-  }
-}
-
-/** Statuses a bulk clear may remove: nothing that owns a delivered creative. */
-const CLEARABLE: DeliveryStatus[] = [DeliveryStatus.PENDING, DeliveryStatus.FAILED];
-
-/**
- * Drops every unsent calendar day for one client.
- *
- * Scoped to PENDING and FAILED deliberately. GENERATED and DELIVERED rows are
- * the record of what a client actually received, so an operator correcting a
- * bad seed must not be able to erase delivery history with one button.
- *
- * This is the recovery path for the worst mistake the console allows — seeding
- * a whole campaign before extracting brand tokens. Without it, the only remedy
- * is deleting rows one at a time, because `generateContentCalendar` fills gaps
- * and never overwrites.
- */
-export async function clearClientCalendar(
-  clientId: string,
-): Promise<ActionResult<{ deleted: number; kept: number }>> {
-  try {
-    const id = z.string().uuid().parse(clientId);
-
-    // Legacy rows only. Campaign days are never cleared from here, whatever
-    // their status — they are removed with their campaign, not by this button.
-    const [removable, kept] = await Promise.all([
-      prisma.contentCalendar.findMany({
-        where: { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: { in: CLEARABLE } },
-        select: { id: true, gDriveFileId: true },
-      }),
-      prisma.contentCalendar.count({
-        where: { clientId: id, ...LEGACY_CALENDAR, deliveryStatus: { notIn: CLEARABLE } },
-      }),
-    ]);
-
-    if (removable.length === 0) {
-      return failure(
-        kept > 0
-          ? `Nothing to clear — all ${kept} day(s) are already generated or delivered, and those are never removed.`
-          : 'This client has no calendar days to clear.',
-      );
-    }
-
-    const { count } = await prisma.contentCalendar.deleteMany({
-      where: { id: { in: removable.map((row) => row.id) }, ...LEGACY_CALENDAR },
-    });
-
-    // A FAILED row can still own an asset — upload succeeded, broadcast did
-    // not. Bin those so the vault does not accumulate unreachable files.
-    // `trashDriveFile` never throws, so a Drive fault cannot fail the clear.
-    for (const row of removable) {
-      if (row.gDriveFileId) await trashDriveFile(row.gDriveFileId);
-    }
-
-    revalidateAdmin();
-    return success({ deleted: count, kept });
-  } catch (error) {
-    return toFailure(error, 'Clearing calendar');
-  }
-}
-
 /**
  * Removes a client outright. The only irreversible action in the console.
  *
@@ -1338,7 +655,7 @@ export async function clearClientCalendar(
  *  - The Drive folder is trashed, not purged. Drive treats a folder as a file,
  *    so `trashDriveFile` works unmodified and the contents go with it —
  *    recoverable from the bin for 30 days.
- *  - `ContentCalendar` cascades at the database level (schema.prisma).
+ *  - Campaigns and calendar days cascade at the database level (schema.prisma).
  *  - `UsageEvent.clientId` is SetNull, so spend survives and reappears on the
  *    spend panel under "Removed clients". Money spent still counts.
  */
@@ -1381,121 +698,99 @@ export async function deleteClient(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Demo workspace
-// ---------------------------------------------------------------------------
-
-const demoCreativeSchema = z.object({
-  theme: z.string().trim().min(2, 'Theme is required').max(120),
-  caption: z
-    .string()
-    .trim()
-    .min(10, 'Caption must be at least 10 characters')
-    .max(2_000, 'Caption is too long'),
-  hashtags: z.string().trim().max(400, 'Hashtags are too long').default(''),
-  imagePrompt: z
-    .string()
-    .trim()
-    .min(10, 'Image prompt must be at least 10 characters')
-    .max(2_000, 'Image prompt is too long'),
-});
-
-export type DemoCreativeInput = z.input<typeof demoCreativeSchema>;
+export interface ClearLegacyCalendarOutcome {
+  /** Unsent calendar rows from before campaigns that were deleted. */
+  deleted: number;
+  /** Their Drive files moved to the bin. */
+  filesBinned: number;
+  /** Their Drive files that could not be binned (the rows went anyway). */
+  filesNotBinned: number;
+  /** Older rows left in place: generated or delivered, so history. */
+  kept: number;
+}
 
 /**
- * Demo-only: writes one `ContentCalendar` row from hand-typed copy and runs the
- * creative pipeline on it immediately — fal.ai render, Drive upload, WhatsApp
- * send — instead of waiting for the tenant's cron minute.
+ * Deletes a client's unsent calendar days from before campaigns.
  *
- * The pipeline itself is untouched; this only supplies it a row to work on.
+ * Such a row still holds its day number, and `createCampaign` refuses a campaign
+ * whose day numbers are taken, so these rows block every new campaign.
  *
- * Refuses on a non-demo client. It bypasses every scheduling guard, and an
- * accidental send to a paying tenant's number cannot be recalled.
+ * Narrow on purpose: only rows with no campaign that are PENDING or FAILED — so
+ * never a campaign day, and never anything the client received (DELIVERED) or a
+ * poster that was made (GENERATED).
+ *
+ * Drive files are binned before the rows go, because once a row is gone nothing
+ * records its file; a retry after a timeout re-bins harmlessly. A file that
+ * cannot be binned does not stop the delete — it is counted and reported. A file
+ * another remaining row or poster version still points at is left alone.
  */
-export async function runDemoCreativeNow(
+export async function clearUnsentLegacyCalendarAction(
   clientId: string,
-  input: DemoCreativeInput,
-): Promise<
-  ActionResult<{
-    calendarId: string;
-    dayNumber: number;
-    status: string;
-    viewUrl: string | null;
-  }>
-> {
+): Promise<ActionResult<ClearLegacyCalendarOutcome>> {
   try {
     const id = z.string().uuid().parse(clientId);
-    const data = demoCreativeSchema.parse(input);
 
-    const client = await prisma.client.findUnique({
-      where: { id },
-      select: { isDemo: true, gDriveFolderId: true },
+    const client = await prisma.client.findUnique({ where: { id }, select: { id: true } });
+    if (!client) return failure('That client no longer exists.');
+
+    const unsentLegacy = {
+      clientId: id,
+      campaignId: null,
+      deliveryStatus: { in: [DeliveryStatus.PENDING, DeliveryStatus.FAILED] },
+    } satisfies Prisma.ContentCalendarWhereInput;
+
+    const rows = await prisma.contentCalendar.findMany({
+      where: unsentLegacy,
+      select: { id: true, gDriveFileId: true },
     });
+    const rowIds = rows.map((row) => row.id);
+    const fileIds = [
+      ...new Set(rows.map((row) => row.gDriveFileId).filter((fileId): fileId is string => Boolean(fileId))),
+    ];
 
-    if (!client) return failure('That demo tenant no longer exists.');
-    if (!client.isDemo) {
-      return failure('Instant sends are restricted to demo tenants.');
+    let filesToBin = fileIds;
+    if (fileIds.length > 0) {
+      const [sharedByDays, sharedByVersions] = await Promise.all([
+        prisma.contentCalendar.findMany({
+          where: { gDriveFileId: { in: fileIds }, id: { notIn: rowIds } },
+          select: { gDriveFileId: true },
+        }),
+        prisma.posterVersion.findMany({
+          where: { imageDriveFileId: { in: fileIds } },
+          select: { imageDriveFileId: true },
+        }),
+      ]);
+      const stillUsed = new Set<string | null>([
+        ...sharedByDays.map((row) => row.gDriveFileId),
+        ...sharedByVersions.map((version) => version.imageDriveFileId),
+      ]);
+      filesToBin = fileIds.filter((fileId) => !stillUsed.has(fileId));
     }
-    if (!client.gDriveFolderId) {
-      return failure(
-        'Provision the Drive folder first — the upload stage has nowhere to write.',
+
+    // `trashDriveFile` never throws, so `Promise.all` cannot abandon a chunk.
+    let filesNotBinned = 0;
+    for (let offset = 0; offset < filesToBin.length; offset += TRASH_CHUNK) {
+      const binned = await Promise.all(
+        filesToBin.slice(offset, offset + TRASH_CHUNK).map((fileId) => trashDriveFile(fileId)),
       );
+      filesNotBinned += binned.filter((ok) => !ok).length;
     }
 
-    // Appended after every existing row: @@unique([clientId, dayNumber]) means a
-    // fixed number would collide with the seeded calendar on the second send.
-    const last = await prisma.contentCalendar.findFirst({
-      where: { clientId: id },
-      orderBy: { dayNumber: 'desc' },
-      select: { dayNumber: true },
+    // The status filter is repeated so a row that changed since it was read stays.
+    const { count: deleted } = await prisma.contentCalendar.deleteMany({
+      where: { ...unsentLegacy, id: { in: rowIds } },
     });
-
-    const entry = await prisma.contentCalendar.create({
-      data: {
-        clientId: id,
-        dayNumber: (last?.dayNumber ?? 0) + 1,
-        // Dated now: a demo row is delivered on the spot, never queued for a day.
-        scheduledDate: new Date(),
-        theme: data.theme,
-        caption: data.caption,
-        hashtags: data.hashtags,
-        imagePrompt: data.imagePrompt,
-        // Approved at creation, because on this surface the two are one act: an
-        // operator typed this copy and pressed send while a prospect watched.
-        // Without it the pipeline would hold the row for a review that has, in
-        // every meaningful sense, already happened — and the demo would render a
-        // poster and quietly send nothing.
-        //
-        // Stamped rather than passing `ignoreApproval`, so the row does not read
-        // as delivered-but-never-approved in the ledger afterwards.
-        approvedAt: new Date(),
-      },
-      select: { id: true, dayNumber: true },
-    });
-
-    const outcome = await runCreativePipeline(entry.id, {
-      reuseExistingAsset: false,
-      allowRedelivery: true,
-    });
+    const kept = await prisma.contentCalendar.count({ where: { clientId: id, campaignId: null } });
 
     revalidateAdmin();
-
-    if (!outcome.ok) {
-      // The row is deliberately left behind: it carries the stage and error
-      // message, and its card offers re-send / regenerate / delete.
-      return failure(`Demo send failed at "${outcome.stage}": ${outcome.error}`);
-    }
-
     return success({
-      calendarId: entry.id,
-      dayNumber: entry.dayNumber,
-      status: outcome.status,
-      viewUrl: outcome.gDriveViewUrl,
+      deleted,
+      filesBinned: filesToBin.length - filesNotBinned,
+      filesNotBinned,
+      kept,
     });
   } catch (error) {
-    if (error instanceof z.ZodError) return toFailure(error, 'Demo send');
-    console.error('[ace:admin] Demo send failed:', describeError(error));
-    return failure(describeError(error));
+    return toFailure(error, 'Clearing older calendar days');
   }
 }
 
@@ -1606,8 +901,8 @@ export async function applyWebsiteColors(
 const HEX_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 
 /**
- * Layout directives ride in every calendar and poster-copy prompt, so an
- * unbounded list is recurring spend rather than a one-off.
+ * Layout directives ride in every Poster Studio prompt, so an unbounded list is
+ * recurring spend rather than a one-off.
  */
 const MAX_LAYOUT_DIRECTIVES = 8;
 
@@ -1718,283 +1013,6 @@ export async function applyManualBrandTokens(
   }
 }
 
-/**
- * Seeds `ContentCalendar` rows for a client. Runs the LLM copy stage in
- * sequential batches, so this is deliberately slow — it is the expensive call
- * in the whole system.
- */
-export async function seedContentCalendar(
-  clientId: string,
-  limit?: number,
-): Promise<
-  ActionResult<{
-    inserted: number;
-    requested: number;
-    remaining: number;
-    batches: number;
-  }>
-> {
-  try {
-    const result = await generateContentCalendar(z.string().uuid().parse(clientId), {
-      ...(limit === undefined ? {} : { limit: z.number().int().min(1).max(365).parse(limit) }),
-    });
-
-    revalidateAdmin();
-
-    if (result.requested === 0) {
-      return failure('This client already has a complete calendar.');
-    }
-
-    return success({
-      inserted: result.inserted,
-      requested: result.requested,
-      remaining: result.remaining,
-      batches: result.batches,
-    });
-  } catch (error) {
-    if (error instanceof z.ZodError) return toFailure(error, 'Generating calendar');
-    console.error('[ace:admin] Generating calendar failed:', describeError(error));
-    return failure(describeError(error));
-  }
-}
-
-/**
- * Re-runs generation from scratch, ignoring any previously uploaded asset.
- *
- * This is the reject button. Withdrawing approval before the render — rather than
- * after, or not at all — is what makes it one: the pipeline reads `approvedAt`
- * when deciding whether to broadcast, so a row cleared here produces a
- * replacement poster and holds it for another look. Left approved, a reject would
- * WhatsApp the client the very poster the operator had just turned down.
- *
- * `allowRedelivery` still passes, and now does only one job: lifting the
- * already-delivered short-circuit so a delivered day can be re-rendered at all.
- * Withholding the send is the approval guard's responsibility, not its.
- *
- * **The layout pin is left alone**, unlike its predecessor. `posterArchetype`
- * was written by the pipeline itself on first compose, so clearing it here was
- * the only way an operator could ever move a rendered day off whichever
- * composition the rotation first handed it. `posterTemplateId` is the opposite:
- * nothing but an imported sheet ever sets one, so it is an instruction rather
- * than a derivation, and discarding it because someone disliked a photograph
- * would silently undo a deliberate choice.
- *
- * A day with no pin re-resolves through the vertical's rotation on every render
- * anyway, so a newly approved template reaches it without help. A day that named
- * its template is changed by re-importing the sheet.
- */
-export async function regenerateCreative(
-  calendarId: string,
-): Promise<ActionResult<{ status: string }>> {
-  try {
-    const id = z.string().uuid().parse(calendarId);
-
-    /*
-     * A manually-uploaded poster has nothing to regenerate.
-     *
-     * There is no template, no photo brief and no copy model behind it — the row
-     * exists precisely because somebody drew the poster elsewhere. Running the
-     * pipeline over one would discard their artwork, then fail at the layout it
-     * cannot resolve, leaving a FAILED row whose Drive file has already been
-     * replaced. The console hides the button for these rows; this is the half
-     * that holds when a stale tab still shows it.
-     */
-    const entry = await prisma.contentCalendar.findUnique({
-      where: { id },
-      select: { sourceType: true, campaignId: true },
-    });
-    if (!entry) return failure('That calendar entry no longer exists.');
-    // Before the approval is cleared below: a refusal must leave the row as it was.
-    if (entry.campaignId) return failure(CAMPAIGN_DAY_REFUSAL);
-    if (entry.sourceType === ContentSourceType.MANUAL_UPLOAD) {
-      return failure(
-        'This poster was uploaded by hand, so there is nothing to regenerate — no template, ' +
-          'no photo brief, no copy. Delete the day and upload a replacement instead.',
-      );
-    }
-
-    const cleared = await prisma.contentCalendar.updateMany({
-      where: { id, ...LEGACY_CALENDAR },
-      data: { approvedAt: null, sendAfter: null },
-    });
-    if (cleared.count === 0) return failure('That calendar entry no longer exists.');
-
-    const outcome = await runCreativePipeline(id, {
-      reuseExistingAsset: false,
-      allowRedelivery: true,
-    });
-
-    revalidateAdmin();
-
-    if (!outcome.ok) {
-      return failure(`Regeneration failed at "${outcome.stage}": ${outcome.error}`);
-    }
-    return success({ status: outcome.status });
-  } catch (error) {
-    return toFailure(error, 'Regenerating creative');
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Operator-authored content import
-// ---------------------------------------------------------------------------
-
-/**
- * Bulk-writes calendar days from a sheet the Evokz team authored themselves —
- * theme, caption, hashtags, image prompt — instead of asking the generator for
- * them. No LLM call, so no spend and no waiting on sequential batches.
- *
- * The rows arrive already parsed and validated by the panel; everything is
- * re-checked here, because a server action is a public endpoint and the
- * browser's copy of the plan duration and seeded days may be stale.
- */
-export async function importCalendarEntries(
-  clientId: string,
-  input: CalendarImportInput,
-): Promise<ActionResult<CalendarImportResult>> {
-  try {
-    const result = await applyCalendarImport(z.string().uuid().parse(clientId), input);
-
-    revalidateAdmin();
-
-    if (result.created === 0 && result.updated === 0) {
-      // Every row bounced. Naming the reason matters: "already seeded" and
-      // "past the plan duration" call for completely different fixes.
-      return failure(describeImportRejection(result));
-    }
-
-    return success(result);
-  } catch (error) {
-    if (error instanceof z.ZodError) return toFailure(error, 'Importing calendar');
-    console.error('[ace:admin] Importing calendar failed:', describeError(error));
-    return failure(describeError(error));
-  }
-}
-
-function describeImportRejection(result: CalendarImportResult): string {
-  const reasons: string[] = [];
-
-  if (result.skippedExisting > 0) {
-    reasons.push(
-      `${result.skippedExisting} row(s) target days that are already written — switch the conflict mode to Overwrite to replace them`,
-    );
-  }
-  if (result.blockedDelivered > 0) {
-    reasons.push(
-      `${result.blockedDelivered} row(s) target days that are already generated or delivered, which an import will not rewrite`,
-    );
-  }
-  if (result.outOfRange > 0) {
-    reasons.push(
-      `${result.outOfRange} row(s) fall past the plan's ${result.totalDays}-day duration`,
-    );
-  }
-  if (result.noFreeDay > 0) {
-    reasons.push(
-      `${result.noFreeDay} row(s) asked to be appended but all ${result.totalDays} campaign days are already written — number them explicitly and overwrite instead`,
-    );
-  }
-  if (result.duplicateDay > 0) {
-    reasons.push(`${result.duplicateDay} row(s) repeat a day number claimed earlier in the file`);
-  }
-
-  return reasons.length > 0
-    ? `Nothing was imported: ${reasons.join('; ')}.`
-    : 'Nothing was imported.';
-}
-
-// ---------------------------------------------------------------------------
-// Manual template upload
-// ---------------------------------------------------------------------------
-
-/**
- * What happened to one manually-uploaded poster.
- *
- * `refused` is the fixed-behaviour outcome rather than a fault: the campaign ran
- * out of open delivery days, or the day was claimed while the file was in
- * flight. The panel lists these beside the successes so an operator can see
- * exactly which files did not land — which is the whole of the overflow
- * contract, and the reason this is not reported as an error.
- */
-export type ManualPosterOutcome =
-  | ({ ok: true } & Omit<StoredManualPoster, 'scheduledDate'> & { scheduledLabel: string })
-  | { ok: false; day: number; fileName: string; refused: string };
-
-/**
- * Stores one finished poster the operator uploaded from their own machine and
- * schedules it into the client's next open delivery day.
- *
- * One file per call, for the same reason the vertical template uploader works
- * that way: a Server Action body has a ceiling, a batch of posters would breach
- * it, and per-file sequencing is what lets the panel say which file failed.
- *
- * **Nothing about the creative pipeline is involved.** The row is written
- * straight to GENERATED with its Drive file attached and its approval already
- * stamped, so it is invisible to `claimAndPreGenerate` and flows out through
- * `releaseApproved` → `claimAndSend` like any other approved poster. See
- * `src/lib/manual-upload.ts` for why each of those fields is what it is.
- *
- * Always returns `ok: true` at the action layer when the *call* succeeded, with
- * the per-file verdict inside — a refusal is an outcome the operator reads, not
- * a failure of the request.
- */
-export async function uploadManualPoster(
-  clientId: string,
-  formData: FormData,
-): Promise<ActionResult<ManualPosterOutcome>> {
-  try {
-    const id = z.string().uuid().parse(clientId);
-
-    const file = formData.get('poster');
-    if (!(file instanceof File) || file.size === 0) {
-      return failure('Choose a poster image to upload.');
-    }
-
-    const day = z.coerce
-      .number()
-      .int()
-      .min(1)
-      .max(3650)
-      .parse(formData.get('day'));
-    const caption = z.string().parse(formData.get('caption') ?? '');
-    const link = z.string().parse(formData.get('link') ?? '');
-
-    try {
-      const stored = await storeManualPoster({
-        clientId: id,
-        day,
-        caption,
-        link,
-        fileName: file.name,
-        mimeType: file.type,
-        body: Buffer.from(await file.arrayBuffer()),
-      });
-
-      revalidateAdmin();
-
-      return success({
-        ok: true,
-        day: stored.day,
-        fileName: stored.fileName,
-        dayNumber: stored.dayNumber,
-        gDriveFileId: stored.gDriveFileId,
-        gDriveViewUrl: stored.gDriveViewUrl,
-        calendarId: stored.calendarId,
-        // Formatted here rather than in the panel: the app timezone is a server
-        // fact, and a browser in another zone would render the day before.
-        scheduledLabel: formatDisplayDate(stored.scheduledDate, getAppTimeZone()),
-      });
-    } catch (error) {
-      if (error instanceof ManualUploadRefusal) {
-        return success({ ok: false, day, fileName: file.name, refused: error.message });
-      }
-      throw error;
-    }
-  } catch (error) {
-    return toFailure(error, 'Uploading poster');
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Poster identity
 // ---------------------------------------------------------------------------
@@ -2037,31 +1055,40 @@ export interface LogoOutcome {
 // ---------------------------------------------------------------------------
 
 /**
- * Stores one reference poster against a vertical and reads its layout.
+ * Stores one reference poster against a vertical and reads its elements.
  *
- * `archetype` is still left null: which of the fifteen built-in compositions a
- * reference most resembles is a judgement an operator makes looking at it, and
- * guessing from a filename would put layouts into a client's rotation that
- * nobody chose.
+ * **Elements, not a layout.** A campaign poster is a clone of its template with
+ * only the words, the photo and the business identity changed, so what an upload
+ * needs is the list of those elements — `readTemplateElements`, run here on the
+ * stored (downscaled) file at its measured size, so the boxes describe the file
+ * that is actually served. The legacy layout reading that used to run here fed
+ * only the old code-drawn poster maker, which is retired: its columns
+ * (`layoutSpec`, `layoutReading`, `layoutApprovedAt`) are no longer written for a
+ * new template.
  *
- * The layout *spec* is different, because it is measured rather than judged —
- * the geometry is in the image, and extracting it is what makes the upload
- * worth more than storage. It runs here, inline, so an operator who uploads a
- * template can review it immediately instead of hunting for a second button.
+ * **The read never fails the upload.** The file is already in Drive by this
+ * point; refusing the row because a vision call timed out would lose the
+ * operator's work to a fault "Try again" on the card fixes in one click. A failed
+ * read stores no elements and a short reason in `elementsError`.
  *
- * **Extraction is best-effort and never fails the upload.** The file is already
- * in Drive by this point; refusing the row because a vision call timed out would
- * lose the operator's work to a fault that `extractTemplateLayout` can retry in
- * one click. A null spec simply leaves the template out of the rotation until a
- * layout is read from it — there is nothing behind it since the archetypes were
- * removed.
+ * This makes an upload take ten seconds to a minute longer. The panel sends one
+ * file per call and says so while it waits; the vertical page raises its
+ * `maxDuration` for the same reason.
  *
- * **No human approval.** See the note on `layoutApprovedAt` below.
+ * **No human approval.** An uploaded template is usable as it is.
  */
 export async function uploadVerticalTemplate(
   categoryId: string,
   formData: FormData,
-): Promise<ActionResult<{ id: string; label: string }>> {
+): Promise<
+  ActionResult<{
+    id: string;
+    label: string;
+    /** "headline · 3 features · logo", or null when the read failed. */
+    elementsSummary: string | null;
+    elementsError: string | null;
+  }>
+> {
   try {
     const id = z.string().uuid().parse(categoryId);
 
@@ -2086,9 +1113,6 @@ export async function uploadVerticalTemplate(
       where: { id },
       select: {
         name: true,
-        // The vertical's standard layout, when it has one: an upload inherits it
-        // instead of paying a vision call to estimate the same thing worse.
-        defaultLayoutSpec: true,
         _count: { select: { templates: true } },
         // At most 100 rows, served by @@index([categoryId, createdAt]). Needed to
         // suffix a colliding name rather than let the unique constraint reject an
@@ -2128,36 +1152,16 @@ export async function uploadVerticalTemplate(
       new Set(category.templates.map((existing) => normalizeTemplateLabel(existing.label))),
       uploaded.fileId.slice(0, 8),
     );
-    /*
-     * A vertical with a standard layout skips extraction entirely.
-     *
-     * Not an optimisation — a correctness change that happens to be free. The
-     * extraction is a vision model estimating geometry, and it does not measure:
-     * 59 of 60 boxes across the live library sat on a 0.05 grid. Where the
-     * vertical already knows what its templates look like, asking a model to
-     * guess is strictly worse than using the answer, and it costs a call.
-     *
-     * **Inherited is not authored, and this no longer claims it is.**
-     * `layoutAuthoredAt` used to be stamped here so that re-reading was refused
-     * on an inherited spec exactly as on a hand-authored one. That protected the
-     * spec and cost something worse: nobody had authored this layout *for this
-     * image*, so a genuinely different design uploaded into the vertical was
-     * given the standard layout, marked hand-authored, and then locked against
-     * the one action that could have corrected it. Fourteen Medicals templates
-     * reached production that way — every poster drew the same card, and the
-     * console reported all fourteen as "written by hand".
-     *
-     * So the stamp is left null and the protection moves to where it belongs:
-     * `isInheritedLayout` derives inheritance by comparing the stored spec with
-     * the vertical's default, and the *sweep* still skips those. A single
-     * "re-read" on one card is a deliberate act on a template somebody is
-     * looking at, and that is exactly the correction this needs to allow.
-     */
-    const standard = parseLayoutSpec(category.defaultLayoutSpec);
 
-    const draft = standard
-      ? null
-      : await readLayoutQuietly(stored.body, stored.mimeType, label, stored);
+    // Read before the row exists, so the template never appears half-read.
+    // Never throws: a failure comes back as a reason to store.
+    const reading = await readElementsQuietly({
+      bytes: stored.body,
+      mimeType: stored.mimeType,
+      label,
+      width: stored.width,
+      height: stored.height,
+    });
 
     const created = await prisma.categoryTemplate.create({
       data: {
@@ -2168,816 +1172,60 @@ export async function uploadVerticalTemplate(
         mimeType: stored.mimeType,
         width: stored.width,
         height: stored.height,
-        layoutSpec: standard
-          ? (standard as unknown as Prisma.InputJsonValue)
-          : (draft!.spec ?? Prisma.DbNull),
-        layoutReading: standard
-          ? `Inherited this vertical's standard layout "${standard.name}". No extraction was run.`
-          : draft!.reading,
-        // Never stamped on an upload. Only `layout:apply` authors a layout; an
-        // inherited one is recognised by `isInheritedLayout`, not by this column.
-        layoutAuthoredAt: null,
-        /*
-         * Templates need no human approval: an uploaded template is usable.
-         *
-         * Campaign posters never read this column — they send the template image
-         * itself to the image model. Only the older code-drawn pipeline does, and
-         * for it a layout is approved whenever it can draw at all. A structural
-         * fault (`problems`) is still left unapproved, because `parseLayoutSpec`
-         * refuses that spec at render time and an approved-but-undrawable
-         * template would fail every day it was picked. The extraction's risk
-         * checks no longer hold a template back.
-         */
-        layoutApprovedAt:
-          standard || (draft!.spec && draft!.problems.length === 0) ? new Date() : null,
+        ...elementsCreateData(reading),
       },
       select: { id: true, label: true },
     });
 
     revalidateAdmin();
 
-    return success(created);
+    return success({
+      ...created,
+      elementsSummary: reading.ok ? reading.summary : null,
+      elementsError: reading.ok ? null : reading.error,
+    });
   } catch (error) {
     return toFailure(error, 'Uploading template');
   }
 }
 
-interface LayoutDraft {
-  spec: Prisma.InputJsonValue | null;
-  /** Operator-facing: the model's reading, or why there isn't one. */
-  reading: string;
-  problems: string[];
-  /**
-   * Faults that render fine and are wrong — see `assessAutoApproval`.
-   *
-   * Separate from `problems` because they mean something different to the
-   * caller: a problem makes the spec inert, while a risk makes it *plausible*.
-   * Only auto-approval reads this; an operator may still approve past it by
-   * hand, having looked.
-   */
-  risks: string[];
-}
-
 /**
- * Runs extraction and swallows every failure into a readable note.
+ * Reads a stored template's elements again, from its file in Drive.
  *
- * Separate from `extractLayoutSpec` because that function is right to throw —
- * a caller asking for a spec should hear about a missing API key. This is the
- * wrapper for the two callers who must not: an upload that has already written
- * to Drive, and a re-extract whose job is to report what happened rather than
- * to crash the console.
- */
-async function readLayoutQuietly(
-  bytes: Buffer,
-  mimeType: string,
-  label: string,
-  /**
-   * The stored file's measured dimensions, which become the spec's `aspect` and
-   * therefore the shape of every poster drawn from this template.
-   *
-   * Passed in rather than re-measured here so the number that reaches the spec
-   * is the same one stored on `CategoryTemplate.width/height` — a spec claiming
-   * a different ratio from the row beside it would be impossible to debug from
-   * the console, which shows both.
-   */
-  dimensions: { width: number | null; height: number | null },
-): Promise<LayoutDraft> {
-  try {
-    const result = await extractLayoutSpec({
-      bytes,
-      mimeType,
-      label,
-      width: dimensions.width,
-      height: dimensions.height,
-    });
-    const problems = result.problems.map(
-      (problem) => `${problem.path} ${problem.message}`,
-    );
-
-    return {
-      // A structurally invalid draft is still stored. It is far more useful to
-      // an operator as something to correct than as a blank grid, and
-      // `parseLayoutSpec` refuses it at render time regardless, so a bad spec
-      // cannot reach a client even if somebody approves it by mistake.
-      spec: result.spec as unknown as Prisma.InputJsonValue,
-      reading: result.reading,
-      problems,
-      risks: assessAutoApproval(result.spec, result.reading).map((risk) => risk.message),
-    };
-  } catch (error) {
-    const message = describeError(error);
-    console.warn(`[ace:layout] extraction failed for "${label}": ${message}`);
-    return {
-      spec: null,
-      reading: `Layout could not be read automatically: ${message}`,
-      problems: [message],
-      risks: [],
-    };
-  }
-}
-
-/**
- * Re-reads a stored template's layout, replacing any existing draft.
+ * Reached from the template card: "Read now" on a template uploaded before
+ * elements existed, "Try again" after a failed read, and "Re-read" in the
+ * elements dialog, which asks first because a reading is non-deterministic and a
+ * new one can differ slightly from the one it replaces.
  *
- * **Clears `layoutApprovedAt`.** An approval refers to the spec that was on
- * screen when it was given; carrying it across to a freshly extracted one would
- * publish geometry no human has seen, which is the single thing the approval
- * gate exists to prevent.
+ * **A failed re-read keeps the reading on file** and records only why — see
+ * `elementsUpdateData`. The failure is returned as well, so the card can show it
+ * before its refresh lands.
  */
-export async function extractTemplateLayout(
+export async function readTemplateElementsAction(
   templateId: string,
-  /**
-   * Proceed even though this template's layout was written by hand.
-   *
-   * Set by the console's second click, matching how deleting a template is
-   * confirmed. Never defaulted true: the whole point is that discarding an
-   * authored layout has to be something somebody chose.
-   */
-  replaceAuthored = false,
-): Promise<ActionResult<{ approved: false; problems: string[] }>> {
+): Promise<ActionResult<{ summary: string; count: number }>> {
   try {
     const id = z.string().uuid().parse(templateId);
 
-    const template = await prisma.categoryTemplate.findUnique({
-      where: { id },
-      select: {
-        gDriveFileId: true,
-        mimeType: true,
-        label: true,
-        width: true,
-        height: true,
-        layoutAuthoredAt: true,
-      },
-    });
-    if (!template) return failure('That template no longer exists.');
-
-    /*
-     * An authored layout is not a draft to be refreshed.
-     *
-     * Extraction exists because an operator can upload any reference and the
-     * system has to work out what it is. A hand-authored spec is the opposite:
-     * it is a fixture, rendered at every preset by `check:layouts` on every run,
-     * and it cannot carry a vision model's confident mistake because no model
-     * produced it. Replacing one with an extraction is always a downgrade.
-     *
-     * It is refused rather than warned about because the failure was silent and
-     * expensive: fourteen templates were re-extracted over an authored layout in
-     * five minutes of clicking, every poster in the vertical went back to a
-     * misread geometry, and nothing anywhere said so.
-     */
-    if (template.layoutAuthoredAt !== null && !replaceAuthored) {
-      return failure(
-        `"${template.label}" has a hand-authored layout, which is more reliable than ` +
-          'anything reading the image can produce. Re-reading would replace it with an ' +
-          'extraction. Click "Re-read" again if that is really what you want.',
-      );
-    }
-
-    // Read back from Drive rather than kept in memory: this action is reached
-    // from a template row that may have been uploaded weeks ago.
-    let bytes: Buffer;
-    try {
-      bytes = await downloadDriveFile(template.gDriveFileId);
-    } catch (error) {
-      return failure(
-        'That template could not be read back from Drive — ' +
-          `${describeError(error)}. Check the service account still has access ` +
-          'to the vertical template folder.',
-      );
-    }
-
-    /*
-     * Re-measured from the bytes just read back, falling back to the stored
-     * columns.
-     *
-     * The row's dimensions were written at upload and are almost always right,
-     * but a template uploaded before those columns were populated carries nulls
-     * — and a null there would leave the re-read spec with no aspect, which is
-     * exactly the state re-reading is meant to fix.
-     */
-    const measured = readImageDimensions(bytes);
-    const draft = await readLayoutQuietly(bytes, template.mimeType, template.label, {
-      width: measured?.width ?? template.width,
-      height: measured?.height ?? template.height,
-    });
-    if (!draft.spec) {
-      await prisma.categoryTemplate.update({
-        where: { id },
-        data: { layoutReading: draft.reading, layoutApprovedAt: null },
-      });
-      revalidateAdmin();
-      return failure(draft.reading);
-    }
-
-    await prisma.categoryTemplate.update({
-      where: { id },
-      data: {
-        layoutSpec: draft.spec,
-        // Whatever was authored is gone the moment an extraction lands on top of
-        // it, so the marker goes with it — leaving it would guard a spec that no
-        // longer exists and refuse the next honest re-read.
-        layoutAuthoredAt: null,
-        layoutReading: draft.reading,
-        layoutApprovedAt: null,
-      },
-    });
+    const outcome = await refreshTemplateElements(id);
+    if (!outcome) return failure('That template no longer exists.');
 
     revalidateAdmin();
-    return success({ approved: false as const, problems: draft.problems });
+
+    const { reading } = outcome;
+    if (!reading.ok) return failure(reading.error);
+    return success({ summary: reading.summary, count: reading.doc.elements.length });
   } catch (error) {
-    return toFailure(error, 'Reading template layout');
-  }
-}
-
-/**
- * Attaches a clean plate to a template.
- *
- * The plate is the template's artwork with its own words and photography erased
- * and the photo areas made transparent. Once one is approved the poster stops
- * being rebuilt from the grid and starts being *composited* — the artwork is the
- * background, the generated frame shows through the holes, and the type is drawn
- * on top. Every treatment the grid cannot express survives as pixels.
- *
- * **Stored as uploaded, not through `prepareTemplateImage`.** That helper
- * re-encodes to WebP, and while WebP does carry alpha, the resize-and-recompress
- * it performs is exactly wrong here: a plate's value is its edges, and the
- * anti-aliased rim of a mask is what makes a composited photograph look cut
- * rather than pasted. The size cap still applies.
- *
- * Photo regions are measured from the file rather than asked of a model — see
- * `findPlateHoles`. Text regions are left empty for the operator or a later
- * extraction pass to fill, which is why this returns the hole count: an operator
- * who cut three holes and sees "1 region" knows the export flattened them.
- */
-export async function uploadTemplatePlate(
-  templateId: string,
-  formData: FormData,
-): Promise<ActionResult<{ regions: number; found: number }>> {
-  try {
-    const id = z.string().uuid().parse(templateId);
-
-    const file = formData.get('plate');
-    if (!(file instanceof File) || file.size === 0) {
-      return failure('Choose a plate image to upload.');
-    }
-    if (file.type !== 'image/png') {
-      return failure(
-        `"${file.type || 'unknown'}" cannot carry transparency. Export the plate as a PNG ` +
-          'with the photo areas erased.',
-      );
-    }
-    if (file.size > MAX_TEMPLATE_BYTES) {
-      return failure(
-        `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${
-          MAX_TEMPLATE_BYTES / 1024 / 1024
-        } MB.`,
-      );
-    }
-
-    const template = await prisma.categoryTemplate.findUnique({
-      where: { id },
-      select: {
-        label: true,
-        plateDriveFileId: true,
-        plateSpec: true,
-        category: { select: { name: true } },
-      },
-    });
-    if (!template) return failure('That template no longer exists.');
-
-    const bytes = Buffer.from(await file.arrayBuffer());
-
-    const holes = await findPlateHoles(bytes);
-    if (!holes) {
-      return failure('That file could not be decoded as an image.');
-    }
-
-    const folderId = await ensureVerticalTemplateFolder(template.category.name);
-    const uploaded = await uploadClientAsset({
-      folderId,
-      fileName: `${template.label} — plate.png`,
-      body: bytes,
-      mimeType: 'image/png',
-      // Unpublished, exactly like the reference: a plate never leaves the
-      // console, and publishing it would let anyone holding the Drive id read
-      // the client's template library.
-      publish: false,
-    });
-
-    /*
-     * An existing draft's text regions survive a re-upload; only the geometry
-     * measured from the file is replaced. Re-exporting a plate to nudge one mask
-     * is common, and making the operator re-place every text box afterwards
-     * would make that a punishing edit.
-     */
-    const previous = parsePlateDraft(template.plateSpec).spec;
-
-    const spec = {
-      version: 1 as const,
-      name: previous?.name ?? template.label,
-      aspect: holes.width / holes.height,
-      photos: holes.regions,
-      text: previous?.text ?? [],
-      featureCount: previous?.featureCount ?? 3,
-      featureStyle: previous?.featureStyle ?? ('labelAndBody' as const),
-      ctaShape: previous?.ctaShape ?? ('pill' as const),
-      headlineEmphasis: previous?.headlineEmphasis ?? [],
-      headlineCase: previous?.headlineCase ?? ('upper' as const),
-    };
-
-    await prisma.categoryTemplate.update({
-      where: { id },
-      data: {
-        plateDriveFileId: uploaded.fileId,
-        plateViewUrl: uploaded.viewUrl,
-        plateWidth: holes.width,
-        plateHeight: holes.height,
-        plateSpec: spec as unknown as Prisma.InputJsonValue,
-        // Never set here. Approval means a human saw the plate composited, and
-        // nobody has at this point — the same rule as `layoutApprovedAt`.
-        plateApprovedAt: null,
-      },
-    });
-
-    // Trashed after the row points at the replacement, so a failure above leaves
-    // the operator with the plate they had rather than none.
-    if (template.plateDriveFileId) {
-      await trashDriveFile(template.plateDriveFileId).catch((error: unknown) => {
-        console.warn(`[ace:plate] could not trash the previous plate: ${describeError(error)}`);
-      });
-    }
-
-    revalidateAdmin();
-    return success({ regions: holes.regions.length, found: holes.found });
-  } catch (error) {
-    return toFailure(error, 'Uploading clean plate');
-  }
-}
-
-/**
- * Publishes or withdraws a template's clean plate.
- *
- * Separate from `setTemplateLayoutApproval` because the two describe different
- * artefacts: a template can have a sound grid and a plate whose headline box
- * sits across somebody's face, and withdrawing one must not withdraw the other.
- * Withdrawing a plate drops the template back to the grid path, which is the fix
- * an operator reaches for when a composited poster comes out wrong.
- */
-export async function setTemplatePlateApproval(
-  templateId: string,
-  approved: boolean,
-): Promise<ActionResult<{ approved: boolean }>> {
-  try {
-    const id = z.string().uuid().parse(templateId);
-
-    const template = await prisma.categoryTemplate.findUnique({
-      where: { id },
-      select: { plateSpec: true, plateDriveFileId: true },
-    });
-    if (!template) return failure('That template no longer exists.');
-
-    if (approved) {
-      if (!template.plateDriveFileId) {
-        return failure('Upload a clean plate before approving one.');
-      }
-      const spec = parsePlateSpec(template.plateSpec);
-      if (!spec) {
-        return failure(
-          'This plate has no usable region map yet. Every plate needs at least a headline ' +
-            'region before it can be composited.',
-        );
-      }
-    }
-
-    await prisma.categoryTemplate.update({
-      where: { id },
-      data: { plateApprovedAt: approved ? new Date() : null },
-    });
-
-    revalidateAdmin();
-    return success({ approved });
-  } catch (error) {
-    return toFailure(error, 'Approving clean plate');
-  }
-}
-
-/**
- * Proposes where the day's copy goes on a plate, by reading the reference it was
- * cut from.
- *
- * **The step that makes the plate path usable at all.** A plate's photo regions
- * are measured from its own transparency, but its text regions have nothing to
- * measure — the words are erased from the plate by definition. Until this
- * existed `uploadTemplatePlate` stored `text: []` and there was no way to fill
- * it, so every plate failed `validatePlateSpec` on "must position exactly one
- * headline, found 0" and could never be approved.
- *
- * Reads the **reference**, not the plate: the reference still has its type on
- * it, and both images are the same composition, so normalised boxes carry across
- * unchanged.
- *
- * **Replaces the whole text map, and says so in the console.** A merge would be
- * kinder to an operator who has already dragged three boxes, but there is no
- * honest way to reconcile a hand-placed headline with a proposed one — and the
- * usual order is propose first, correct after, where there is nothing to lose.
- * The measured `photos` and `aspect` are kept: those are properties of the plate
- * file and this pass never sees it.
- */
-export async function extractTemplatePlateRegions(
-  templateId: string,
-): Promise<
-  ActionResult<{ regions: number; spec: string; reading: string; problems: string[] }>
-> {
-  try {
-    const id = z.string().uuid().parse(templateId);
-
-    const template = await prisma.categoryTemplate.findUnique({
-      where: { id },
-      select: {
-        label: true,
-        gDriveFileId: true,
-        mimeType: true,
-        plateSpec: true,
-        plateDriveFileId: true,
-      },
-    });
-    if (!template) return failure('That template no longer exists.');
-
-    if (!template.plateDriveFileId) {
-      return failure(
-        'Upload the clean plate first. The regions are stored on the plate, and its ' +
-          'transparency is what fixes the photo areas they sit around.',
-      );
-    }
-
-    // The stored spec carries the measured geometry this pass must not touch.
-    const previous = parsePlateDraft(template.plateSpec).spec;
-    if (!previous) {
-      return failure(
-        'This plate has no stored region map to update. Re-upload the plate, which ' +
-          'measures its photo areas again.',
-      );
-    }
-
-    let bytes: Buffer;
-    try {
-      bytes = await downloadDriveFile(template.gDriveFileId);
-    } catch (error) {
-      return failure(
-        'The reference template could not be read back from Drive — ' +
-          `${describeError(error)}. Check the service account still has access to the ` +
-          'vertical template folder.',
-      );
-    }
-
-    /*
-     * Measured from the pixels, then named by the model.
-     *
-     * The same two-stage read `autoplate-vertical.ts` performs, and it has to be
-     * the same or the console and the script disagree about where a template's
-     * type is — with the operator's button being the one that quietly writes the
-     * worse answer. Its predecessor asked a vision model for both at once and
-     * got a grid of tenths back for the geometry.
-     */
-    let regions: PlateTextRegion[];
-    let shape: Awaited<ReturnType<typeof labelTextBlocks>>;
-    try {
-      const detection = await detectTextBlocks(bytes);
-      if (!detection || detection.blocks.length === 0) {
-        return failure(
-          'No blocks of type could be measured on this reference. If the poster really ' +
-            'does carry words, its type may be too small or too low-contrast to detect — ' +
-            'the boxes can still be drawn by hand in the editor.',
-        );
-      }
-
-      shape = await labelTextBlocks({
-        bytes,
-        mimeType: template.mimeType,
-        label: template.label,
-        blocks: detection.blocks,
-      });
-      regions = unionIntoRegions(shape.labelled);
-    } catch (error) {
-      return failure(`The regions could not be read — ${describeError(error)}.`);
-    }
-
-    if (regions.length === 0) {
-      return failure(
-        'Every block measured on this reference was identified as artwork rather than ' +
-          'type. Check the template is the reference poster and not its clean plate.',
-      );
-    }
-
-    const spec = normalizePlateSpec({
-      ...previous,
-      text: regions,
-      featureCount: shape.featureCount,
-      featureStyle: shape.featureStyle,
-      ctaShape: shape.ctaShape,
-      // Measured regions carry no line-by-line emphasis; each region's own ink
-      // colour is sampled by `sampleRegionInk` instead.
-      headlineEmphasis: [],
-      headlineCase: shape.headlineCase,
-    });
-
-    await prisma.categoryTemplate.update({
-      where: { id },
-      data: {
-        plateSpec: spec as unknown as Prisma.InputJsonValue,
-        // Same rule as everywhere else here: approval refers to the map that was
-        // replaced, and nobody has seen this one composited.
-        plateApprovedAt: null,
-      },
-    });
-
-    revalidateAdmin();
-    return success({
-      regions: spec.text.length,
-      /*
-       * The stored spec, serialised the same way the page serialises it.
-       *
-       * The editor is an open dialog holding its own copy of the boxes, and
-       * `revalidateAdmin` refreshes the card behind it rather than the dialog's
-       * state. Without this the operator would press "read regions", see the
-       * boxes not move, and press it again.
-       */
-      spec: JSON.stringify(spec, null, 2),
-      /*
-       * Returned rather than stored, unlike `layoutReading`.
-       *
-       * The reading is worth exactly one reading — it is read while correcting
-       * the boxes it produced, in the editor that is already open when this
-       * returns. A column for it would be a migration on every deployment for a
-       * string whose whole audience is the operator who pressed the button.
-       */
-      reading:
-        `Measured ${shape.labelled.length} block(s) from the pixels; the model named ` +
-        `${regions.length} of them and rejected ` +
-        `${shape.labelled.filter((entry) => entry.label === 'ignore').length} as artwork.`,
-      problems: validatePlateSpec(spec).map((problem) => `${problem.path} ${problem.message}`),
-    });
-  } catch (error) {
-    return toFailure(error, 'Reading plate regions');
-  }
-}
-
-/**
- * Replaces a plate's region map with the operator's corrected version.
- *
- * Posts the whole spec rather than a patch, exactly as `setTemplateLayoutSpec`
- * does and for the same reason.
- *
- * **Unlike the layout editor, this saves a spec that still has problems.** The
- * two surfaces are used differently: a layout arrives whole from the extractor
- * and is corrected in one pass, while a region map is built up box by box, and
- * refusing to save until it is complete would mean an operator placing six boxes
- * could not stop halfway. Storing an incomplete map is safe because approval is
- * a separate gate — `setTemplatePlateApproval` re-parses strictly and refuses,
- * and `readPlate` requires the approval before a plate composites at all — so
- * the worst an unfinished draft can do is leave the template on the grid path.
- * The problems come back with the result and are shown beside the boxes.
- */
-export async function setTemplatePlateSpec(
-  templateId: string,
-  specJson: string,
-): Promise<ActionResult<{ problems: string[] }>> {
-  try {
-    const id = z.string().uuid().parse(templateId);
-
-    let raw: unknown;
-    try {
-      raw = JSON.parse(specJson);
-    } catch {
-      return failure('That is not valid JSON.');
-    }
-
-    const parsed = posterPlateSpecSchema.safeParse(raw);
-    if (!parsed.success) {
-      const first = parsed.error.issues[0];
-      return failure(
-        first
-          ? `${first.path.join('.') || 'spec'}: ${first.message}`
-          : 'That is not a readable plate spec.',
-      );
-    }
-
-    const template = await prisma.categoryTemplate.findUnique({
-      where: { id },
-      select: { plateDriveFileId: true },
-    });
-    if (!template) return failure('That template no longer exists.');
-    if (!template.plateDriveFileId) {
-      return failure('This template has no clean plate to place regions on.');
-    }
-
-    const spec = normalizePlateSpec(parsed.data);
-
-    await prisma.categoryTemplate.update({
-      where: { id },
-      data: {
-        plateSpec: spec as unknown as Prisma.InputJsonValue,
-        plateApprovedAt: null,
-      },
-    });
-
-    revalidateAdmin();
-    return success({
-      problems: validatePlateSpec(spec).map((problem) => `${problem.path} ${problem.message}`),
-    });
-  } catch (error) {
-    return toFailure(error, 'Saving plate regions');
-  }
-}
-
-/**
- * Re-measures the ink colour inside one region, from the reference.
- *
- * The colour is sampled when the regions are proposed, and a proposal's boxes
- * are then dragged — so by the time a box is where the operator wants it, the
- * colour on it was measured somewhere else. That is not a rounding error: a
- * headline box nudged up off a photograph carries the photograph's grey until
- * this is pressed, and under `paletteSource: "template"` that grey is what the
- * headline is set in.
- *
- * Takes the box rather than a region index because the editor's boxes are
- * unsaved while they are being dragged, and making an operator save before they
- * could see a colour would invert the order the panel is used in.
- */
-export async function resampleTemplateRegionInk(
-  templateId: string,
-  box: { x: number; y: number; w: number; h: number },
-): Promise<ActionResult<{ color: string | null }>> {
-  try {
-    const id = z.string().uuid().parse(templateId);
-    const region = z
-      .object({
-        x: z.number().min(-1).max(2).finite(),
-        y: z.number().min(-1).max(2).finite(),
-        w: z.number().positive().max(3).finite(),
-        h: z.number().positive().max(3).finite(),
-      })
-      .parse(box);
-
-    const template = await prisma.categoryTemplate.findUnique({
-      where: { id },
-      select: { gDriveFileId: true },
-    });
-    if (!template) return failure('That template no longer exists.');
-
-    let bytes: Buffer;
-    try {
-      bytes = await downloadDriveFile(template.gDriveFileId);
-    } catch (error) {
-      return failure(`The reference could not be read back — ${describeError(error)}.`);
-    }
-
-    // Null is a real answer, not a failure: a box over flat artwork has no ink
-    // in it, and the region falls back to the client's theme.
-    return success({ color: await sampleRegionInk(bytes, region) });
-  } catch (error) {
-    return toFailure(error, 'Sampling the ink colour');
-  }
-}
-
-/** Chooses whether a template's posters take the reference's colours or the client's. */
-export async function setTemplatePaletteSource(
-  templateId: string,
-  source: 'template' | 'client',
-): Promise<ActionResult<{ source: string }>> {
-  try {
-    const id = z.string().uuid().parse(templateId);
-    const value = z.enum(['template', 'client']).parse(source);
-
-    await prisma.categoryTemplate.update({
-      where: { id },
-      data: { paletteSource: value },
-    });
-
-    revalidateAdmin();
-    return success({ source: value });
-  } catch (error) {
-    return toFailure(error, 'Setting palette source');
-  }
-}
-
-/**
- * Publishes or withdraws a template's extracted layout.
- *
- * Approving is what puts the template's own geometry into its vertical's
- * rotation — until then the row is inert and the vertical falls back to
- * archetypes. Withdrawing takes it straight back out, which is the fix an
- * operator reaches for when a client's posters come out wrong.
- *
- * Refuses to approve a spec that `validateLayoutSpec` rejects. That check is
- * duplicated at render time, deliberately: this one gives the operator a
- * sentence explaining what to fix, and that one guarantees a bad spec never
- * draws a poster whatever route it took into the column.
- */
-export async function setTemplateLayoutApproval(
-  templateId: string,
-  approved: boolean,
-): Promise<ActionResult<{ approved: boolean }>> {
-  try {
-    const id = z.string().uuid().parse(templateId);
-
-    const template = await prisma.categoryTemplate.findUnique({
-      where: { id },
-      select: { layoutSpec: true },
-    });
-    if (!template) return failure('That template no longer exists.');
-
-    if (approved) {
-      const spec = parseLayoutSpec(template.layoutSpec);
-      if (!spec) {
-        return failure(
-          'This template has no usable layout yet. Re-read the layout, and if it ' +
-            'still reports problems, correct them before approving.',
-        );
-      }
-    }
-
-    await prisma.categoryTemplate.update({
-      where: { id },
-      data: { layoutApprovedAt: approved ? new Date() : null },
-    });
-
-    revalidateAdmin();
-    return success({ approved });
-  } catch (error) {
-    return toFailure(error, 'Approving template layout');
-  }
-}
-
-/**
- * Replaces a template's layout spec with an operator's corrected version.
- *
- * The console's editor posts the whole spec rather than a patch: a layout is a
- * tree, and a field-level patch protocol over a tree is a great deal of surface
- * for something an operator edits a handful of times per template.
- *
- * Validated here and not merely parsed, because this is the one path where a
- * human can write geometry directly — the extractor's output at least came from
- * a schema-constrained model.
- */
-export async function setTemplateLayoutSpec(
-  templateId: string,
-  specJson: string,
-): Promise<ActionResult<{ problems: string[] }>> {
-  try {
-    const id = z.string().uuid().parse(templateId);
-
-    let raw: unknown;
-    try {
-      raw = JSON.parse(specJson);
-    } catch {
-      return failure('That is not valid JSON.');
-    }
-
-    const parsed = posterLayoutSpecSchema.safeParse(raw);
-    if (!parsed.success) {
-      const first = parsed.error.issues[0];
-      return failure(
-        first
-          ? `${first.path.join('.') || 'spec'}: ${first.message}`
-          : 'That is not a readable layout spec.',
-      );
-    }
-
-    const spec = normalizeLayoutSpec(parsed.data);
-    const problems = validateLayoutSpec(spec);
-    if (problems.length > 0) {
-      return failure(problems.map((p) => `${p.path} ${p.message}`).join(' · '));
-    }
-
-    await prisma.categoryTemplate.update({
-      where: { id },
-      data: {
-        layoutSpec: spec as unknown as Prisma.InputJsonValue,
-        // Same reasoning as `extractTemplateLayout`: the approval on file refers
-        // to the spec that was replaced.
-        layoutApprovedAt: null,
-      },
-    });
-
-    revalidateAdmin();
-    return success({ problems: [] });
-  } catch (error) {
-    return toFailure(error, 'Saving template layout');
+    return toFailure(error, 'Reading template elements');
   }
 }
 
 /**
  * Renames a reference template.
  *
- * The name matters now in a way it did not when it was a caption: a calendar
- * sheet chooses a layout by typing it, so it has to be unique within the vertical
- * and worth typing. Uploads derive it from a filename, which almost never is.
- *
- * **Renaming invalidates saved sheets.** Any spreadsheet still naming the old
- * label is rejected on its next import — the unavoidable cost of a pin keyed on
- * an id and a sheet keyed on a name, and the panel says so where the rename
- * happens.
+ * Uploads derive the name from a filename, which is rarely one worth reading on
+ * a campaign board. It stays unique within the vertical so two templates can
+ * always be told apart.
  */
 export async function renameVerticalTemplate(
   templateId: string,
@@ -3002,8 +1250,7 @@ export async function renameVerticalTemplate(
      * `@@unique([categoryId, label])` is case-sensitive — Prisma cannot express a
      * functional index, and a shadow one it did not know about would trap the next
      * person to run `migrate diff`. So the application carries the other half:
-     * "Grand Opening" and "grand opening" are the same name to anyone typing one
-     * into a sheet, and allowing both would make an import ambiguous.
+     * "Grand Opening" and "grand opening" are the same name to anyone reading one.
      *
      * `mode: 'insensitive'` emits ILIKE, which the unique index cannot serve —
      * but with the categoryId predicate and at most 100 rows the planner filters
@@ -3020,7 +1267,7 @@ export async function renameVerticalTemplate(
     if (clash) {
       return failure(
         `"${clash.label}" is already the name of another template in this vertical. ` +
-          'Names have to be unique because a calendar sheet picks a layout by typing one.',
+          'Template names are unique within a vertical.',
       );
     }
 
@@ -3517,268 +1764,5 @@ function logoExtension(mimeType: string): string {
       return '.svg';
     default:
       return '.png';
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Image generation key (operator-supplied fal.ai credential)
-// ---------------------------------------------------------------------------
-
-/**
- * Copy for a deployment that cannot encrypt.
- *
- * Refusing outright is the whole point. An operator who pasted a key and saw
- * "Saved" would reasonably assume it was protected, and a plaintext credential in a
- * table that lands in every nightly dump is worse than not shipping the panel.
- */
-const ENCRYPTION_UNAVAILABLE =
-  'Cannot save: SETTINGS_ENCRYPTION_KEY is not set on this deployment, and this panel will ' +
-  'not store a key in plain text. Generate one with `node scripts/hash-password.mjs ' +
-  '--settings-key`, add it to .env, then run `docker compose up -d app` — a plain restart ' +
-  'does not re-read .env. Nothing was saved.';
-
-/**
- * Validates a pasted key.
- *
- * No message below may echo the value: `toFailure` writes `describeError(error)`
- * straight to the container log, so a validator that quoted its input would put the
- * key on disk in the one case where the operator most expects it not to be.
- */
-const falApiKeySchema = z.object({
-  key: z
-    .string()
-    .trim()
-    .min(1, 'Paste your fal.ai key first.')
-    .transform(normalizeFalKey)
-    .refine(
-      (value) => FAL_KEY_PATTERN.test(value),
-      'That does not look like a fal.ai key. It is two parts joined by a colon — ' +
-        '"<key id>:<key secret>" — copied whole from fal.ai → Settings → API Keys.',
-    ),
-  label: z
-    .string()
-    .trim()
-    .max(80, 'Label must be 80 characters or fewer')
-    .optional()
-    .transform((value) => value?.trim() || null),
-});
-
-export type FalApiKeyInput = z.input<typeof falApiKeySchema>;
-
-/**
- * Stores the operator's own fal.ai key, encrypted.
- *
- * Takes effect on the next render — there is no process restart and no redeploy,
- * because the pipeline resolves the credential per call rather than at boot.
- */
-export async function saveFalApiKey(
-  input: FalApiKeyInput,
-): Promise<ActionResult<FalKeyStatus>> {
-  try {
-    const data = falApiKeySchema.parse(input);
-
-    // Checked before the database is touched, so a deployment that cannot encrypt
-    // never half-writes a row.
-    if (!isSecretEncryptionConfigured()) {
-      return failure(ENCRYPTION_UNAVAILABLE);
-    }
-
-    const cipher = encryptSecret(data.key, FAL_KEY_PURPOSE);
-
-    await prisma.appSetting.upsert({
-      where: { id: APP_SETTING_ID },
-      create: {
-        id: APP_SETTING_ID,
-        falKeyCipher: cipher,
-        falKeyLast4: secretLast4(data.key),
-        falKeyLabel: data.label,
-        falKeyUpdatedAt: new Date(),
-      },
-      update: {
-        falKeyCipher: cipher,
-        falKeyLast4: secretLast4(data.key),
-        falKeyLabel: data.label,
-        falKeyUpdatedAt: new Date(),
-      },
-    });
-
-    revalidateAdmin();
-    return success(await loadFalKeyStatus());
-  } catch (error) {
-    return toFailure(error, 'Saving the fal.ai key');
-  }
-}
-
-/*
- * There is deliberately no `clearFalApiKey`.
- *
- * The switch to an operator key is one-way from the console: once saved, a key can
- * be *replaced* by another of the operator's own, but generation never returns to
- * the platform FAL_KEY from here. Hiding a button would not be enough — Next.js
- * publishes Server Action IDs in the client bundle, so an action that existed would
- * be invocable by anyone who loaded the page, whatever the UI showed. The
- * enforcement is the absence of the action, not the absence of the control.
- *
- * Reverting is an operator task with server access, not a console gesture:
- *
- *   docker compose exec db psql -U evokz -d evokz_ace \
- *     -c 'UPDATE "AppSetting" SET "falKeyCipher" = NULL, "falKeyLast4" = NULL,
- *         "falKeyLabel" = NULL, "falKeyUpdatedAt" = NULL;'
- *
- * See DEPLOY_VPS.md §10.
- */
-
-/**
- * Proves a key works by spending one small render on it.
- *
- * With no argument this tests **whatever the pipeline would actually use** — the
- * saved key if there is one, the platform key otherwise — which is more useful than
- * testing only the saved key, and gives an operator a way to check FAL_KEY too.
- */
-export async function testFalApiKey(input?: { key?: string }): Promise<
-  ActionResult<{
-    scope: 'entered' | 'saved' | 'platform';
-    endpoint: string;
-    renderEndpoint: string;
-    elapsedMs: number;
-  }>
-> {
-  const entered = input?.key?.trim() ?? '';
-
-  try {
-    const credentials = entered
-      ? (() => {
-          const key = falApiKeySchema.shape.key.parse(entered);
-          return { key, source: UsageKeySource.BYO, last4: secretLast4(key) };
-        })()
-      : await resolveFalCredentials();
-
-    const probe = await probeFalKey(credentials);
-
-    // Real money on a real account. The ledger's contract is that it is a faithful
-    // record of what was spent, so a probe belongs in it — and repeated testing
-    // becomes visible rather than invisible. No client, so it lands unattributed.
-    await recordImageUsage(probe.endpoint, {}, credentials.source);
-
-    revalidateAdmin();
-    return success({
-      scope: entered
-        ? 'entered'
-        : credentials.source === UsageKeySource.BYO
-          ? 'saved'
-          : 'platform',
-      endpoint: probe.endpoint,
-      renderEndpoint: getFalEndpoint(),
-      elapsedMs: probe.elapsedMs,
-    });
-  } catch (error) {
-    // `probeFalKey` has already redacted. Map the statuses an operator can act on;
-    // anything else falls through to the generic handler.
-    const message = describeError(error);
-
-    // Both of these already carry operator-legible copy and no key material, so
-    // pass them through rather than let `toFailure` flatten them into "check the
-    // server logs" — the server log would say exactly what the panel just hid.
-    if (error instanceof SecretDecryptionError || error instanceof MissingEnvError) {
-      return failure(message);
-    }
-    if (/responded (401|403)\b/.test(message)) {
-      return failure(
-        'fal.ai rejected that key. Check you copied both halves — "<key id>:<key secret>" — ' +
-          'from fal.ai → Settings → API Keys, and that the key has not been revoked.',
-      );
-    }
-    if (/responded 402\b/.test(message) || /\bbalance\b/i.test(message)) {
-      return failure(
-        'fal.ai accepted the key but the account has no balance. Top up at fal.ai → Billing.',
-      );
-    }
-    if (/timed out/i.test(message)) {
-      return failure(
-        'fal.ai did not respond within 30s. The key may still be fine — try again.',
-      );
-    }
-    return toFailure(error, 'Testing the fal.ai key');
-  }
-}
-
-/**
- * Re-reads every template in a vertical whose layout was not written by hand.
- *
- * **One button instead of one per card.** A vertical holds a dozen or more
- * templates, each carrying an approval control, a re-read, an editor and a plate
- * section — a wall of buttons an operator has to scan before finding the one
- * they want. Re-reading is the only action that is ever wanted for all of them
- * at once, so it is the one that belongs at the top.
- *
- * **Authored layouts are skipped, not confirmed past.** The per-card button asks
- * before replacing one, because there a human is looking at that template and
- * can mean it. A bulk action has no such intent behind it: nobody pressing
- * "re-read all" is asking to discard fourteen hand-authored specs, and there is
- * no confirmation that could make it safe to guess otherwise. They are counted
- * and named in the result instead.
- *
- * Sequential rather than parallel, matching the pipeline's own image loop: each
- * one is a vision call, and firing a vertical's worth at once is how a key hits
- * a rate limit.
- */
-export async function extractVerticalLayouts(
-  categoryId: string,
-): Promise<
-  ActionResult<{ read: number; failed: number; skippedAuthored: string[] }>
-> {
-  try {
-    const id = z.string().uuid().parse(categoryId);
-
-    const templates = await prisma.categoryTemplate.findMany({
-      where: { categoryId: id },
-      orderBy: { label: 'asc' },
-      select: { id: true, label: true, layoutAuthoredAt: true, layoutSpec: true },
-    });
-
-    if (templates.length === 0) {
-      return failure('This vertical has no templates to read.');
-    }
-
-    /*
-     * The sweep protects inherited layouts as well as authored ones.
-     *
-     * An inherited spec is no longer stamped `layoutAuthoredAt` — see the upload
-     * path for why that claim was false — so without this the first "re-read all"
-     * would replace every inherited layout with a vision estimate, which is the
-     * downgrade this sweep exists to avoid. A *single* re-read is still allowed
-     * on an inherited template: that is one deliberate click on a card somebody
-     * is looking at, and it is how a design that is not the vertical's standard
-     * gets corrected.
-     */
-    const category = await prisma.category.findUnique({
-      where: { id },
-      select: { defaultLayoutSpec: true },
-    });
-
-    const skippedAuthored: string[] = [];
-    let read = 0;
-    let failed = 0;
-
-    for (const template of templates) {
-      if (
-        template.layoutAuthoredAt !== null ||
-        isInheritedLayout(template.layoutSpec, category?.defaultLayoutSpec)
-      ) {
-        skippedAuthored.push(template.label);
-        continue;
-      }
-
-      // `replaceAuthored` stays false: the filter above is the only thing that
-      // decides, so a template that becomes authored mid-sweep is still safe.
-      const outcome = await extractTemplateLayout(template.id);
-      if (outcome.ok) read += 1;
-      else failed += 1;
-    }
-
-    revalidateAdmin();
-    return success({ read, failed, skippedAuthored });
-  } catch (error) {
-    return failure(describeError(error));
   }
 }

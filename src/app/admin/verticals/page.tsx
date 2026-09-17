@@ -4,7 +4,7 @@ import { CategoryManager, type CategoryRow } from '@/components/admin/CategoryMa
 import { PageHeader } from '@/components/admin/PageHeader';
 import { DatabaseErrorState } from '@/components/admin/SystemNotices';
 import { Card, CardContent } from '@/components/ui/card';
-import { describeError } from '@/lib/ai-pipeline';
+import { describeError } from '@/lib/errors';
 import { prisma } from '@/lib/prisma';
 
 export const dynamic = 'force-dynamic';
@@ -23,7 +23,7 @@ export default async function AdminVerticalsPage() {
         icon={Database}
         eyebrow="Configuration"
         title="Vertical target ingestion"
-        description="Niche industries used to steer creative direction. Each client is bound to exactly one vertical, which feeds the image prompt and copy stages. Open one to manage its reference templates."
+        description="Industries your clients work in. Each client belongs to one vertical, and its campaign posters are cloned from that vertical's templates. Open one to upload and manage its templates."
       />
 
       <Card className="max-w-3xl">

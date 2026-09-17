@@ -1,11 +1,10 @@
-import { DeliveryStatus } from '@prisma/client';
+import { CampaignDeliveryStatus, CampaignStatus, DeliveryStatus, type Prisma } from '@prisma/client';
 import Link from 'next/link';
 
 import {
   AlertTriangle,
-  CalendarClock,
+  CalendarRange,
   CheckCircle2,
-  Eye,
   Gauge,
   ShieldAlert,
   Users,
@@ -13,10 +12,8 @@ import {
 } from 'lucide-react';
 
 import { ClientRoster, type ClientRosterRow } from '@/components/admin/ClientRoster';
-import { ImageKeyPanel } from '@/components/admin/ImageKeyPanel';
 import { PageHeader } from '@/components/admin/PageHeader';
-import { QueueLedger, type QueueEntry } from '@/components/admin/QueueLedger';
-import { RetryFailedButton } from '@/components/admin/RetryFailedButton';
+import { SpendPanel } from '@/components/admin/SpendPanel';
 import { StatTile } from '@/components/admin/StatTile';
 import { ConfigWarning, DatabaseErrorState } from '@/components/admin/SystemNotices';
 import { Button } from '@/components/ui/button';
@@ -27,8 +24,14 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { SpendPanel } from '@/components/admin/SpendPanel';
-import { describeError, getFalEndpoint } from '@/lib/ai-pipeline';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import {
   loadCostReport,
   parseProvider,
@@ -36,26 +39,18 @@ import {
   type CostReport,
 } from '@/lib/cost-report';
 import { findUnsetIntegrationKeys } from '@/lib/env';
-import { loadFalKeyStatus, type FalKeyStatus } from '@/lib/fal-credentials';
+import { describeError } from '@/lib/errors';
 import { prisma } from '@/lib/prisma';
-import { queueSelect, toQueueEntry } from '@/lib/queue-entry';
-import {
-  formatDisplayDate,
-  formatDisplayDateTime,
-  getAppTimeZone,
-  zonedDayRange,
-} from '@/lib/time';
+import { formatDisplayDate, formatDisplayDateTime, getAppTimeZone } from '@/lib/time';
 
 /** Live operational console — never cached. */
 export const dynamic = 'force-dynamic';
 
-const UPCOMING_LIMIT = 24;
-const FAILURE_LIMIT = 8;
-/** Drill-down panels page in more rows than the always-on feeds above them. */
+/** Rows a drill-down lists at once. */
 const DETAIL_LIMIT = 60;
 
 /** Which counter the operator expanded, carried in `?view=`. */
-const STAT_VIEWS = ['clients', 'today', 'approvals', 'delivered', 'failed'] as const;
+const STAT_VIEWS = ['clients', 'failed'] as const;
 type StatView = (typeof STAT_VIEWS)[number];
 
 function parseView(raw: string | string[] | undefined): StatView | null {
@@ -96,6 +91,19 @@ interface DashboardSearchParams {
   spendProvider?: string | string[];
 }
 
+/**
+ * A client's sends: campaign days whose delivery went out, plus the delivered
+ * history of the retired daily poster maker (calendar rows with no campaign).
+ * The two never overlap — a campaign day's delivery lives on `CampaignDelivery`,
+ * never on `ContentCalendar.deliveryStatus`.
+ */
+const SENT_CALENDAR_ROW: Prisma.ContentCalendarWhereInput = {
+  OR: [
+    { delivery: { is: { status: CampaignDeliveryStatus.SENT } } },
+    { campaignId: null, deliveryStatus: DeliveryStatus.DELIVERED },
+  ],
+};
+
 export default async function AdminDashboardPage({
   searchParams,
 }: {
@@ -103,7 +111,6 @@ export default async function AdminDashboardPage({
 }) {
   const timeZone = getAppTimeZone();
   const now = new Date();
-  const { start: todayStart, end: todayEnd } = zonedDayRange(now, timeZone);
   const view = parseView(searchParams.view);
 
   const spendClient = Array.isArray(searchParams.spendClient)
@@ -113,10 +120,9 @@ export default async function AdminDashboardPage({
   let data: DashboardData;
   let detail: DetailData | null = null;
   let costReport: CostReport;
-  let falKeyStatus: FalKeyStatus;
   try {
-    [data, costReport, falKeyStatus] = await Promise.all([
-      loadDashboardData({ todayStart, todayEnd, timeZone }),
+    [data, costReport] = await Promise.all([
+      loadDashboardData(),
       loadCostReport(
         {
           range: parseRange(searchParams.range),
@@ -125,10 +131,9 @@ export default async function AdminDashboardPage({
         },
         now,
       ),
-      loadFalKeyStatus(),
     ]);
     if (view) {
-      detail = await loadDetail({ view, todayStart, todayEnd, timeZone });
+      detail = await loadDetail({ view, timeZone });
     }
   } catch (error) {
     return <DatabaseErrorState message={describeError(error)} />;
@@ -139,8 +144,8 @@ export default async function AdminDashboardPage({
       <PageHeader
         icon={Gauge}
         eyebrow="Operations"
-        title="Dispatch overview"
-        description={`Snapshot taken ${formatDisplayDateTime(now, timeZone)}. Counters cover every tenant — select one to break it down; the queue feed previews the next scheduled sends.`}
+        title="Overview"
+        description={`Snapshot taken ${formatDisplayDateTime(now, timeZone)}. Counters cover every client — select one to break it down. Posters are generated, approved and sent from each campaign's board.`}
       >
         <Button asChild variant="outline" size="sm">
           <Link href="/admin/clients">
@@ -150,14 +155,10 @@ export default async function AdminDashboardPage({
         </Button>
       </PageHeader>
 
-      {/* An operator key supersedes FAL_KEY entirely, so listing it as unset
-          would be a permanent false alarm on a correctly configured box. */}
-      <ConfigWarning
-        missing={findUnsetIntegrationKeys(falKeyStatus.configured ? ['FAL_KEY'] : [])}
-      />
+      <ConfigWarning missing={findUnsetIntegrationKeys()} />
 
       {/* ---- Operational counters ---- */}
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatTile
           icon={Users}
           label="Active clients"
@@ -167,40 +168,25 @@ export default async function AdminDashboardPage({
           active={view === 'clients'}
         />
         <StatTile
-          icon={CalendarClock}
-          label="Due today"
-          value={data.pendingToday}
-          hint="PENDING entries scheduled today"
+          icon={CalendarRange}
+          label="Active campaigns"
+          value={data.activeCampaigns}
+          hint={`${data.scheduledDeliveries} poster${data.scheduledDeliveries === 1 ? '' : 's'} booked to send`}
           tone="amber"
-          href={tileHref('today', view, searchParams)}
-          active={view === 'today'}
-        />
-        {/* Sits between "due" and "delivered" because that is where it sits in the
-            pipeline: a poster stuck here never becomes either. */}
-        <StatTile
-          icon={Eye}
-          label="Awaiting approval"
-          value={data.awaitingApproval}
-          hint="Rendered, nobody has released it"
-          tone={data.awaitingApproval > 0 ? 'amber' : 'slate'}
-          href={tileHref('approvals', view, searchParams)}
-          active={view === 'approvals'}
         />
         <StatTile
           icon={CheckCircle2}
-          label="Delivered"
-          value={data.statusCounts[DeliveryStatus.DELIVERED]}
-          hint="All-time WhatsApp sends"
+          label="Sent"
+          value={data.sentDeliveries}
+          hint="Posters delivered to WhatsApp, including days from before campaigns"
           tone="emerald"
-          href={tileHref('delivered', view, searchParams)}
-          active={view === 'delivered'}
         />
         <StatTile
           icon={AlertTriangle}
-          label="Failed"
-          value={data.statusCounts[DeliveryStatus.FAILED]}
-          hint="Awaiting manual intervention"
-          tone={data.statusCounts[DeliveryStatus.FAILED] > 0 ? 'red' : 'slate'}
+          label="Failed deliveries"
+          value={data.failedDeliveries}
+          hint="Retry or cancel them from the campaign board"
+          tone={data.failedDeliveries > 0 ? 'red' : 'slate'}
           href={tileHref('failed', view, searchParams)}
           active={view === 'failed'}
         />
@@ -211,50 +197,6 @@ export default async function AdminDashboardPage({
 
       {/* ---- Cost & credit consumption ---- */}
       <SpendPanel report={costReport} viewParam={view} />
-
-      {/* ---- Failures first: they need a human ---- */}
-      {/* Suppressed while the failed drill-down is open — same rows, twice. */}
-      {view !== 'failed' && data.failures.length > 0 && (
-        <Card className="border-danger/25">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-danger-ink">
-              <ShieldAlert className="h-4 w-4" />
-              Failed deliveries
-            </CardTitle>
-            <CardDescription>
-              Most recent {data.failures.length} failure
-              {data.failures.length === 1 ? '' : 's'}. Re-send reuses the stored Drive asset
-              when one exists; delete drops an entry you do not intend to chase.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <RetryFailedButton
-              failedCount={data.statusCounts[DeliveryStatus.FAILED]}
-            />
-            <QueueLedger entries={data.failures} />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ---- Upcoming queue ---- */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <CalendarClock className="h-4 w-4 text-brand-to" />
-            Event queue feed
-          </CardTitle>
-          <CardDescription>
-            Next {UPCOMING_LIMIT} scheduled entries across all clients, previewed from their
-            Google Drive assets.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <QueueLedger entries={data.upcoming} />
-        </CardContent>
-      </Card>
-
-      {/* ---- Image generation key ---- */}
-      <ImageKeyPanel status={falKeyStatus} endpoint={getFalEndpoint()} />
     </>
   );
 }
@@ -290,10 +232,60 @@ function DetailPanel({ detail }: { detail: DetailData }) {
         {detail.kind === 'clients' ? (
           <ClientRoster clients={detail.clients} />
         ) : (
-          <QueueLedger entries={detail.entries} emptyMessage={detail.emptyMessage} />
+          <FailedDeliveryTable rows={detail.rows} />
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function FailedDeliveryTable({ rows }: { rows: FailedDeliveryRow[] }) {
+  if (rows.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed border-border bg-muted/60 px-4 py-10 text-center text-xs text-muted-foreground">
+        No failed deliveries. Every booked campaign poster that was due went out.
+      </p>
+    );
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Client</TableHead>
+            <TableHead>Campaign</TableHead>
+            <TableHead className="w-28">Day</TableHead>
+            <TableHead>Reason</TableHead>
+            <TableHead className="w-40 text-right">Last attempt</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => (
+            <TableRow key={row.id}>
+              <TableCell className="text-xs text-foreground">{row.companyName}</TableCell>
+              <TableCell>
+                <Link
+                  href={row.boardHref}
+                  className="text-xs font-medium text-foreground underline-offset-4 decoration-primary/40 transition-colors duration-200 hover:underline hover:decoration-primary"
+                >
+                  {row.campaignName}
+                </Link>
+              </TableCell>
+              <TableCell className="whitespace-nowrap font-mono text-[11px] text-muted-foreground">
+                Day {row.dayNumber} · {row.dateLabel}
+              </TableCell>
+              <TableCell className="max-w-md text-[11px] text-danger-ink">
+                {row.failureReason ?? 'No reason recorded'}
+              </TableCell>
+              <TableCell className="whitespace-nowrap text-right font-mono text-[11px] text-muted-foreground">
+                {row.lastAttemptLabel ?? '—'}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
 }
 
@@ -302,20 +294,12 @@ function DetailPanel({ detail }: { detail: DetailData }) {
 // ---------------------------------------------------------------------------
 
 interface DashboardData {
-  upcoming: QueueEntry[];
-  failures: QueueEntry[];
-  statusCounts: Record<DeliveryStatus, number>;
   activeClients: number;
   totalClients: number;
-  pendingToday: number;
-  /**
-   * Rendered posters nobody has approved, fleet-wide.
-   *
-   * Its own counter rather than a slice of `statusCounts`, because approval is a
-   * separate axis from delivery status: a GENERATED row is either waiting out its
-   * send delay or waiting on a human, and only one of those is anybody's job.
-   */
-  awaitingApproval: number;
+  activeCampaigns: number;
+  scheduledDeliveries: number;
+  sentDeliveries: number;
+  failedDeliveries: number;
 }
 
 interface DetailShell {
@@ -327,78 +311,46 @@ interface DetailShell {
   total: number;
 }
 
+interface FailedDeliveryRow {
+  id: string;
+  companyName: string;
+  campaignName: string;
+  boardHref: string;
+  dayNumber: number;
+  dateLabel: string;
+  failureReason: string | null;
+  lastAttemptLabel: string | null;
+}
+
 type DetailData =
   | (DetailShell & { kind: 'clients'; clients: ClientRosterRow[] })
-  | (DetailShell & { kind: 'queue'; entries: QueueEntry[]; emptyMessage: string });
+  | (DetailShell & { kind: 'failed'; rows: FailedDeliveryRow[] });
 
-async function loadDashboardData({
-  todayStart,
-  todayEnd,
-  timeZone,
-}: {
-  todayStart: Date;
-  todayEnd: Date;
-  timeZone: string;
-}): Promise<DashboardData> {
+async function loadDashboardData(): Promise<DashboardData> {
   const [
     totalClients,
     activeClients,
-    upcomingRecords,
-    failureRecords,
-    statusGroups,
-    pendingToday,
-    awaitingApproval,
+    activeCampaigns,
+    scheduledDeliveries,
+    sentDeliveries,
+    failedDeliveries,
   ] = await Promise.all([
     prisma.client.count(),
     prisma.client.count({ where: { isActive: true } }),
-    prisma.contentCalendar.findMany({
-      where: {
-        scheduledDate: { gte: todayStart },
-        deliveryStatus: { not: DeliveryStatus.FAILED },
-      },
-      orderBy: [{ scheduledDate: 'asc' }, { dayNumber: 'asc' }],
-      take: UPCOMING_LIMIT,
-      select: queueSelect,
-    }),
-    prisma.contentCalendar.findMany({
-      where: { deliveryStatus: DeliveryStatus.FAILED },
-      orderBy: { updatedAt: 'desc' },
-      take: FAILURE_LIMIT,
-      select: queueSelect,
-    }),
-    prisma.contentCalendar.groupBy({
-      by: ['deliveryStatus'],
-      _count: { _all: true },
-    }),
-    prisma.contentCalendar.count({
-      where: {
-        scheduledDate: { gte: todayStart, lt: todayEnd },
-        deliveryStatus: DeliveryStatus.PENDING,
-      },
-    }),
-    prisma.contentCalendar.count({
-      where: { deliveryStatus: DeliveryStatus.GENERATED, approvedAt: null },
-    }),
+    prisma.campaign.count({ where: { status: CampaignStatus.ACTIVE } }),
+    prisma.campaignDelivery.count({ where: { status: CampaignDeliveryStatus.SCHEDULED } }),
+    // Same definition as the roster, client list and cost report, so totals agree.
+    prisma.contentCalendar.count({ where: SENT_CALENDAR_ROW }),
+    prisma.campaignDelivery.count({ where: { status: CampaignDeliveryStatus.FAILED } }),
   ]);
 
-  const statusCounts: Record<DeliveryStatus, number> = {
-    [DeliveryStatus.PENDING]: 0,
-    [DeliveryStatus.GENERATED]: 0,
-    [DeliveryStatus.DELIVERED]: 0,
-    [DeliveryStatus.FAILED]: 0,
-  };
-  for (const group of statusGroups) {
-    statusCounts[group.deliveryStatus] = group._count._all;
-  }
-
   return {
-    upcoming: upcomingRecords.map((entry) => toQueueEntry(entry, timeZone)),
-    failures: failureRecords.map((entry) => toQueueEntry(entry, timeZone)),
-    statusCounts,
     activeClients,
     totalClients,
-    pendingToday,
-    awaitingApproval,
+    activeCampaigns,
+    scheduledDeliveries,
+    sentDeliveries,
+    failedDeliveries,
   };
 }
 
@@ -410,17 +362,13 @@ async function loadDashboardData({
  */
 async function loadDetail({
   view,
-  todayStart,
-  todayEnd,
   timeZone,
 }: {
   view: StatView;
-  todayStart: Date;
-  todayEnd: Date;
   timeZone: string;
 }): Promise<DetailData> {
   if (view === 'clients') {
-    const [clientRecords, deliveredGroups] = await Promise.all([
+    const [clientRecords, sentGroups] = await Promise.all([
       prisma.client.findMany({
         orderBy: [{ isActive: 'desc' }, { companyName: 'asc' }],
         select: {
@@ -438,13 +386,13 @@ async function loadDetail({
       }),
       prisma.contentCalendar.groupBy({
         by: ['clientId'],
-        where: { deliveryStatus: DeliveryStatus.DELIVERED },
+        where: SENT_CALENDAR_ROW,
         _count: { _all: true },
       }),
     ]);
 
-    const deliveredByClient = new Map(
-      deliveredGroups.map((group) => [group.clientId, group._count._all]),
+    const sentByClient = new Map(
+      sentGroups.map((group) => [group.clientId, group._count._all]),
     );
 
     const clients = clientRecords.map(
@@ -461,7 +409,7 @@ async function loadDetail({
         )}`,
         isActive: client.isActive,
         hasDriveFolder: Boolean(client.gDriveFolderId),
-        deliveredCount: deliveredByClient.get(client.id) ?? 0,
+        deliveredCount: sentByClient.get(client.id) ?? 0,
         totalDays: client.plan.durationDays,
       }),
     );
@@ -470,89 +418,55 @@ async function loadDetail({
       kind: 'clients',
       icon: Users,
       title: 'Client roster',
-      description:
-        'Every tenant, live first. Paused rows still count toward the onboarded total but are skipped by the dispatch sweep.',
+      description: 'Every client, live first. Paused clients still count toward the onboarded total.',
       clients,
       shown: clients.length,
       total: clients.length,
     };
   }
 
-  const where =
-    view === 'today'
-      ? {
-          scheduledDate: { gte: todayStart, lt: todayEnd },
-          deliveryStatus: DeliveryStatus.PENDING,
-        }
-      : view === 'approvals'
-        ? { deliveryStatus: DeliveryStatus.GENERATED, approvedAt: null }
-        : {
-            deliveryStatus:
-              view === 'delivered' ? DeliveryStatus.DELIVERED : DeliveryStatus.FAILED,
-          };
-
-  const orderBy =
-    view === 'today' || view === 'approvals'
-      ? ([{ scheduledDate: 'asc' }, { dayNumber: 'asc' }] as const)
-      : ([{ updatedAt: 'desc' }] as const);
-
+  const where = { status: CampaignDeliveryStatus.FAILED };
   const [records, total] = await Promise.all([
-    prisma.contentCalendar.findMany({
+    prisma.campaignDelivery.findMany({
       where,
-      orderBy: [...orderBy],
+      orderBy: [{ lastAttemptAt: 'desc' }, { scheduledFor: 'desc' }],
       take: DETAIL_LIMIT,
-      select: queueSelect,
+      select: {
+        id: true,
+        failureReason: true,
+        lastAttemptAt: true,
+        campaign: {
+          select: { id: true, name: true, clientId: true, client: { select: { companyName: true } } },
+        },
+        calendarDay: { select: { dayNumber: true, scheduledDate: true } },
+      },
     }),
-    prisma.contentCalendar.count({ where }),
+    prisma.campaignDelivery.count({ where }),
   ]);
 
-  const entries = records.map((entry) => toQueueEntry(entry, timeZone));
-  const shell = DETAIL_COPY[view];
+  const rows = records.map(
+    (record): FailedDeliveryRow => ({
+      id: record.id,
+      companyName: record.campaign.client.companyName,
+      campaignName: record.campaign.name,
+      boardHref: `/admin/clients/${record.campaign.clientId}/campaigns/${record.campaign.id}?status=failed`,
+      dayNumber: record.calendarDay.dayNumber,
+      dateLabel: formatDisplayDate(record.calendarDay.scheduledDate, timeZone),
+      failureReason: record.failureReason,
+      lastAttemptLabel: record.lastAttemptAt
+        ? formatDisplayDateTime(record.lastAttemptAt, timeZone)
+        : null,
+    }),
+  );
 
   return {
-    kind: 'queue',
-    ...shell,
-    entries,
-    shown: entries.length,
-    total,
-  };
-}
-
-const DETAIL_COPY = {
-  today: {
-    icon: CalendarClock,
-    title: 'Due today',
-    description:
-      'PENDING entries whose scheduled date falls today. Each fires at its client’s delivery minute — or immediately, via “Send now”.',
-    emptyMessage: 'Nothing pending for today. Every entry scheduled today has already run.',
-  },
-  approvals: {
-    icon: Eye,
-    title: 'Awaiting approval',
-    description:
-      'Rendered posters nobody has released, across every client, soonest scheduled first. Nothing here will send on its own — approve a poster and the sweep delivers it at its client’s time on its own day.',
-    emptyMessage:
-      'Nothing waiting. Every rendered poster has been reviewed and released.',
-  },
-  delivered: {
-    icon: CheckCircle2,
-    title: 'Delivered',
-    description: 'Every creative that reached WhatsApp, most recent first.',
-    emptyMessage: 'No deliveries yet. The first send will appear here.',
-  },
-  failed: {
+    kind: 'failed',
     icon: ShieldAlert,
     title: 'Failed deliveries',
     description:
-      'Entries the pipeline could not complete, most recent first. Re-send reuses the stored Drive asset when one exists; delete drops an entry you do not intend to chase.',
-    emptyMessage: 'No failures. Every entry the pipeline touched went through.',
-  },
-} as const satisfies Record<
-  Exclude<StatView, 'clients'>,
-  {
-    icon: React.ComponentType<{ className?: string }>;
-    title: string;
-    description: string;
-    emptyMessage: string;
-  }
->;
+      'Campaign posters whose WhatsApp send failed, most recent first. Open the campaign to retry or cancel each one.',
+    rows,
+    shown: rows.length,
+    total,
+  };
+}

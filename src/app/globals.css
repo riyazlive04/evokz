@@ -196,7 +196,7 @@
    Added to <html> by ThemeToggle for ~260ms around the class flip, then
    removed. Deliberately NOT a permanent `* { transition: all }`, which would
    lag every hover and focus ring in the console and fight the
-   `transition-all duration-300` already on StatTile, Card and QueueLedger.
+   `transition-all duration-300` already on StatTile and Card.
    Because the class is absent until the first click, a cold load can never
    fade in either.
 

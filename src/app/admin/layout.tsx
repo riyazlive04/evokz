@@ -59,7 +59,7 @@ export default function AdminLayout({
                   the two buttons for a row that has no space for either, so it
                   drops out below `sm` rather than pushing them onto a third line. */}
               <p className="hidden text-[11px] text-muted-foreground sm:block">
-                Dispatch window evaluated in{' '}
+                Times shown in{' '}
                 <span className="font-mono text-foreground/70">{timeZone}</span>
               </p>
               <ThemeToggle />

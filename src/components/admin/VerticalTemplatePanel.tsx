@@ -3,23 +3,31 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 
-import { Check, ImagePlus, Loader2, Pencil, Trash2, Upload } from 'lucide-react';
+import { ImagePlus, Loader2, Pencil, Trash2, Upload } from 'lucide-react';
 
-import { deleteVerticalTemplate, renameVerticalTemplate, uploadVerticalTemplate } from '@/app/admin/dashboard/actions';
-import { setTemplateActiveAction, setTemplatePromptAction } from '@/app/admin/campaigns/actions';
+import {
+  deleteVerticalTemplate,
+  readTemplateElementsAction,
+  renameVerticalTemplate,
+  uploadVerticalTemplate,
+} from '@/app/admin/dashboard/actions';
+import { setTemplateActiveAction } from '@/app/admin/campaigns/actions';
+import { TemplateElementsDialog } from '@/components/admin/TemplateElementsDialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useAction } from '@/hooks/use-action';
-import { MAX_TEMPLATE_PROMPT_LENGTH, MAX_TEMPLATES_PER_CATEGORY } from '@/lib/template-limits';
+import { cloneSizeFor } from '@/lib/poster-studio/clone-size';
+import { MAX_TEMPLATES_PER_CATEGORY } from '@/lib/template-limits';
+import type { TemplateElementsState } from '@/lib/templates/elements-view';
 
 /**
  * Reference-poster library for one vertical.
  *
  * A template is usable as soon as it is uploaded — there is no approval step.
- * Campaign posters send the template image to the image model as the visual
- * reference, together with the day's content and the template's own prompt, so
- * the only things an admin manages here are the image, its name, its prompt and
- * whether it is active.
+ * Each upload is read once for its elements (its words, photo and business
+ * details), which campaign posters copy the template around, so the things an
+ * admin manages here are the image, its name, that reading and whether it is
+ * active. The template prompt box is retired: the elements replace it.
  *
  * Every card refreshes the page itself after a successful change
  * (`router.refresh()`), as the campaign screens do, rather than relying on the
@@ -40,16 +48,13 @@ export interface VerticalTemplateRow {
   viewUrl: string;
   width: number | null;
   height: number | null;
-  /** The admin's standing instruction for this template, or null. */
-  prompt: string | null;
   /** Whether campaign days may be newly mapped to this template. */
   isActive: boolean;
   /** Days of open campaigns currently using it (manual or auto). */
   campaignDays: number;
+  /** What its element reading found, or why there is none. */
+  elements: TemplateElementsState;
 }
-
-const TEXTAREA_CLASS =
-  'w-full resize-y rounded-md border border-input bg-background px-2.5 py-2 text-xs leading-relaxed shadow-sm transition-colors placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background';
 
 export function VerticalTemplatePanel({
   categoryId,
@@ -94,7 +99,10 @@ export function VerticalTemplatePanel({
     }
 
     for (const [index, file] of queue.entries()) {
-      setProgress(`Uploading ${index + 1} of ${queue.length} — ${file.name}`);
+      // "and reading": each call also reads the template's elements, which is
+      // most of its ten seconds to a minute. Without saying so the button looks
+      // stuck.
+      setProgress(`Uploading and reading ${index + 1} of ${queue.length} — ${file.name}…`);
       const body = new FormData();
       body.set('template', file);
       const result = await upload.run(categoryId, body);
@@ -133,8 +141,8 @@ export function VerticalTemplatePanel({
       </div>
 
       <p className="text-[11px] text-muted-foreground/70">
-        PNG, JPEG or WebP · up to 6 MB each · select several at once. A template can be used as soon
-        as it is uploaded.
+        PNG, JPEG or WebP · up to 6 MB each · select several at once. Each one is read for its words,
+        photo and business details as it uploads, which takes up to a minute per template.
       </p>
 
       {full && (
@@ -175,10 +183,11 @@ export function VerticalTemplatePanel({
  * preset width and this card knows nothing about any client.
  */
 function describeShape(width: number, height: number): string {
+  // The same shape names the clone uses (2:3, not "1:1.50 portrait").
+  const named = cloneSizeFor(width, height)?.aspectLabel;
+  if (named === '1:1') return 'Square';
+  if (named) return named;
   const aspect = width / height;
-  if (Math.abs(aspect - 1) < 0.02) return 'Square';
-  if (Math.abs(aspect - 0.5625) < 0.02) return '9:16';
-  if (Math.abs(aspect - 0.8) < 0.02) return '4:5';
   return aspect > 1 ? `${aspect.toFixed(2)}:1 landscape` : `1:${(1 / aspect).toFixed(2)} portrait`;
 }
 
@@ -257,7 +266,7 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
           </p>
         )}
 
-        <TemplatePrompt template={template} />
+        <TemplateElementsLine template={template} />
 
         <TemplateStatus template={template} />
       </div>
@@ -332,105 +341,99 @@ function TemplateName({ template }: { template: VerticalTemplateRow }) {
 }
 
 /**
- * The admin's instruction for this template, sent with the template image every
- * time a campaign poster is generated from it.
+ * The template's elements in one line: what the reading found, with "View" for
+ * the full list over the image; or "Not read yet" / the failure, with a button to
+ * read it now.
+ *
+ * The card owns the read rather than the dialog, so a read started from the
+ * dialog keeps its pending state and error when the dialog is closed. The page is
+ * refreshed after every read, failed ones included: a failure is stored too, and
+ * the card should settle on the stored state rather than on this call's result.
  */
-function TemplatePrompt({ template }: { template: VerticalTemplateRow }) {
+function TemplateElementsLine({ template }: { template: VerticalTemplateRow }) {
   const router = useRouter();
-  const save = useAction(setTemplatePromptAction);
-  // What is stored. Updated from the action's own result, so the box settles the
-  // moment the save lands instead of waiting for the page refresh.
-  const [saved, setSaved] = React.useState(template.prompt ?? '');
-  const [draft, setDraft] = React.useState(template.prompt ?? '');
-  const [justSaved, setJustSaved] = React.useState(false);
+  const read = useAction(readTemplateElementsAction);
+  const [open, setOpen] = React.useState(false);
+  const state = template.elements;
 
-  React.useEffect(() => {
-    setSaved(template.prompt ?? '');
-    setDraft(template.prompt ?? '');
-  }, [template.prompt]);
-
-  React.useEffect(() => {
-    if (!justSaved) return undefined;
-    const timer = setTimeout(() => setJustSaved(false), 2_500);
-    return () => clearTimeout(timer);
-  }, [justSaved]);
-
-  const dirty = draft.trim() !== saved.trim();
-  const tooLong = draft.trim().length > MAX_TEMPLATE_PROMPT_LENGTH;
-  const id = `template-prompt-${template.id}`;
-
-  async function commit() {
-    const result = await save.run(template.id, draft);
-    if (!result.ok) return;
-    setSaved(result.data.prompt ?? '');
-    setDraft(result.data.prompt ?? '');
-    setJustSaved(true);
+  async function runRead(): Promise<void> {
+    await read.run(template.id);
     router.refresh();
   }
 
+  const storedError =
+    state.status === 'failed' ? state.error : state.status === 'read' ? state.lastError : null;
+  // This call's own error, shown only until the refreshed page carries the same
+  // text — or for good, when it was never stored (a dropped connection, a
+  // template deleted mid-read).
+  const liveError = read.error && read.error !== storedError ? read.error : null;
+
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <label
-          htmlFor={id}
-          className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground"
-        >
-          Template prompt
-        </label>
-        <span className={`font-mono text-[10px] ${tooLong ? 'text-danger-ink' : 'text-muted-foreground/70'}`}>
-          {draft.trim().length} / {MAX_TEMPLATE_PROMPT_LENGTH}
-        </span>
-      </div>
-
-      <textarea
-        id={id}
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && dirty && !tooLong) void commit();
-        }}
-        rows={3}
-        placeholder="e.g. Keep the curved blue footer, doctor on the right, white headline top-left."
-        className={TEXTAREA_CLASS}
-      />
-
-      <div className="flex min-h-7 items-center justify-between gap-2">
-        <p className="text-[10px] text-muted-foreground/70">Used with this template in every AI poster.</p>
-        {dirty ? (
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 px-2 text-[11px]"
-              disabled={save.pending}
-              onClick={() => setDraft(saved)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              className="h-7 px-3 text-[11px]"
-              disabled={save.pending || tooLong}
-              onClick={() => void commit()}
-            >
-              {save.pending && <Loader2 className="h-3 w-3 animate-spin" />}
-              Save
-            </Button>
-          </div>
-        ) : (
-          justSaved && (
-            <span className="flex shrink-0 items-center gap-1 text-[10px] text-success-ink">
-              <Check className="h-3 w-3" />
-              Saved
-            </span>
-          )
-        )}
-      </div>
-
-      {save.error && (
-        <p role="alert" className="text-[10px] text-danger-ink">
-          {save.error}
+    <div className="-mt-1 space-y-1">
+      {read.pending ? (
+        <p role="status" className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+          Reading elements… up to a minute
         </p>
+      ) : state.status === 'read' ? (
+        <div className="flex items-start justify-between gap-2">
+          <p className="line-clamp-2 min-w-0 text-[11px] leading-snug text-muted-foreground" title={state.summary}>
+            {state.summary}
+          </p>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="shrink-0 rounded text-[11px] font-medium text-brand-to underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={`View the elements of ${template.label}`}
+          >
+            View
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-start justify-between gap-2">
+          {state.status === 'failed' ? (
+            <p className="line-clamp-2 min-w-0 text-[11px] leading-snug text-warning-ink" title={state.error}>
+              {state.error}
+            </p>
+          ) : (
+            <p className="min-w-0 text-[11px] leading-snug text-muted-foreground">Not read yet</p>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 shrink-0 px-2 text-[11px]"
+            onClick={() => void runRead()}
+          >
+            {state.status === 'failed' ? 'Try again' : 'Read now'}
+          </Button>
+        </div>
+      )}
+
+      {state.status === 'read' && state.lastError && !read.pending && (
+        <p className="line-clamp-2 text-[10px] leading-snug text-warning-ink" title={state.lastError}>
+          Re-read failed, previous reading kept: {state.lastError}
+        </p>
+      )}
+      {liveError && !read.pending && !open && (
+        <p role="alert" className="text-[10px] text-danger-ink">
+          {liveError}
+        </p>
+      )}
+
+      {state.status === 'read' && (
+        <TemplateElementsDialog
+          open={open}
+          onOpenChange={setOpen}
+          label={template.label}
+          imageUrl={template.viewUrl}
+          doc={state.doc}
+          readAt={state.readAt}
+          lastError={state.lastError}
+          campaignDays={template.campaignDays}
+          rereading={read.pending}
+          rereadError={liveError}
+          onReread={runRead}
+        />
       )}
     </div>
   );

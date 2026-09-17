@@ -47,6 +47,7 @@ function candidate(overrides: Partial<DeliveryCandidate> = {}): DeliveryCandidat
   return {
     campaignId: 'campaign-1',
     campaignStatus: 'ACTIVE' as CampaignStatus,
+    clientActive: true,
     contentReady: true,
     hasTemplate: true,
     dayContentRevision: 3,
@@ -78,6 +79,10 @@ section('The approval gate');
     t(`a ${status} campaign delivers nothing`, refusalOf({ campaignStatus: status }) === 'campaign-not-active');
   }
 
+  t('a paused client delivers nothing, automatic or manual (the gate is the same)', refusalOf({ clientActive: false }) === 'client-paused');
+  t('…a paused campaign is reported first', refusalOf({ clientActive: false, campaignStatus: 'PAUSED' }) === 'campaign-not-active');
+  t('…and a paused client before any poster problem', refusalOf({ clientActive: false, contentReady: false, activeVersion: null }) === 'client-paused');
+  t('the paused-client refusal says so plainly', /^Client is paused/.test(DELIVERY_REFUSAL_MESSAGES['client-paused']));
   t('content that is not ready blocks delivery', refusalOf({ contentReady: false }) === 'content-not-ready');
   t('a day with no template and no poster is refused', refusalOf({ hasTemplate: false, activeVersion: null }) === 'no-template');
   t('a poster already made keeps delivering after its mapping went away', refusalOf({ hasTemplate: false }) === 'eligible');

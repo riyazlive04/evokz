@@ -42,6 +42,16 @@ export interface StructuredRequest {
    */
   imageDataUri?: string;
   /**
+   * Further images, attached after `imageDataUri` in this order and at the same
+   * `detail`. Ignored without `imageDataUri`.
+   *
+   * Used by the template element reader, which sends the clean poster — to read
+   * the words exactly — and the same poster with its measured text boxes drawn
+   * and numbered, so the model can say which box holds which words without the
+   * numbering sitting on top of the letters it has to read.
+   */
+  additionalImageDataUris?: string[];
+  /**
    * JSON Schema the response is constrained to. Under `strict: true` every
    * object needs `additionalProperties: false` and must list *all* of its
    * properties in `required` — optional fields are not supported.
@@ -67,6 +77,19 @@ export interface StructuredRequest {
    * billed to any client — used by callers with no tenant in scope.
    */
   bill?: UsageContext & { operation: UsageOperation };
+  /**
+   * Longest one request may take, in milliseconds. Omit for the SDK's default
+   * (ten minutes). A caller that runs inside a claimed, time-bounded job — the
+   * clone text check — sets it so a slow answer cannot outlive the claim.
+   */
+  timeoutMs?: number;
+  /**
+   * How many requests in total, overriding `OPENAI_MAX_ATTEMPTS`. When given, the
+   * SDK's own retries are switched off too, so this is the real request count:
+   * `1` means exactly one request and no retry of any kind. Omit for the default
+   * behaviour (our attempts, each with the SDK's own retries).
+   */
+  maxAttempts?: number;
 }
 
 export class LlmError extends Error {
@@ -96,6 +119,17 @@ function getClient(): OpenAI {
   return cachedClient;
 }
 
+/**
+ * Whether a model takes a `temperature` other than its default.
+ *
+ * Reasoning models — the o-series and the gpt-5 family, except their `chat`
+ * aliases — reject anything but 1, so a caller that wants deterministic output
+ * from a classic model passes `temperature: supportsTemperature(model) ? 0 : undefined`.
+ */
+export function supportsTemperature(model: string): boolean {
+  return !/^(o\d|gpt-5)/.test(model) || /chat/.test(model);
+}
+
 export function getModel(): string {
   return optionalEnv('OPENAI_MODEL', DEFAULT_MODEL);
 }
@@ -109,7 +143,12 @@ export function getModel(): string {
 export async function generateStructured<T>(request: StructuredRequest): Promise<T> {
   const client = getClient();
   const model = request.model ?? getModel();
-  const maxAttempts = Math.max(1, intEnv('OPENAI_MAX_ATTEMPTS', 3));
+  const maxAttempts = Math.max(1, request.maxAttempts ?? intEnv('OPENAI_MAX_ATTEMPTS', 3));
+  // Per-request options for the SDK; empty keeps its defaults for every other caller.
+  const requestOptions: { timeout?: number; maxRetries?: number } = {
+    ...(request.timeoutMs !== undefined ? { timeout: Math.max(1, request.timeoutMs) } : {}),
+    ...(request.maxAttempts !== undefined ? { maxRetries: 0 } : {}),
+  };
   // gpt-4o-mini caps output at 16,384 tokens; clamp so an over-large env value
   // becomes a 400 at request time rather than a confusing truncation.
   const maxTokens = Math.min(
@@ -137,6 +176,10 @@ export async function generateStructured<T>(request: StructuredRequest): Promise
                     type: 'image_url',
                     image_url: { url: request.imageDataUri, detail: 'high' },
                   },
+                  ...(request.additionalImageDataUris ?? []).map((url) => ({
+                    type: 'image_url' as const,
+                    image_url: { url, detail: 'high' as const },
+                  })),
                 ]
               : request.userPrompt,
           },
@@ -149,7 +192,7 @@ export async function generateStructured<T>(request: StructuredRequest): Promise
             strict: true,
           },
         },
-      });
+      }, requestOptions);
 
       const choice = response.choices[0];
       if (!choice) {
@@ -167,7 +210,7 @@ export async function generateStructured<T>(request: StructuredRequest): Promise
 
       if (choice.finish_reason === 'length') {
         throw new LlmError(
-          `${request.label}: response hit the ${maxTokens}-token cap and is incomplete. Reduce CALENDAR_BATCH_SIZE or raise OPENAI_MAX_TOKENS.`,
+          `${request.label}: response hit the ${maxTokens}-token cap and is incomplete. Ask for less in one request, or raise the request's token limit (OPENAI_MAX_TOKENS by default).`,
           'truncated',
         );
       }

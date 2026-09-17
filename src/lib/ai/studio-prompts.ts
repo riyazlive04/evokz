@@ -1,4 +1,11 @@
 import { STUDIO_ASPECT_RATIOS, type StudioAspectRatio } from '@/lib/poster-studio/limits';
+import {
+  isBrandBound,
+  legacyContentFields,
+  type ElementBox,
+  type ResolvedElement,
+  type TemplateElementKind,
+} from '@/lib/types/template-elements';
 
 /**
  * Prompt construction for the AI Poster Studio.
@@ -11,6 +18,8 @@ import { STUDIO_ASPECT_RATIOS, type StudioAspectRatio } from '@/lib/poster-studi
  *   EDIT       the change, applied fully, and the untouched areas left alone
  *   VARIATION  a new creative direction for the same campaign: the message and
  *              brand mood survive, the concept, imagery and layout do not
+ *   CLONE      the attached template reproduced exactly, with only a numbered
+ *              list of its elements changed (`buildClonePrompt`)
  *
  * Every builder ends with the same "no invented branding" rule. Exact identity —
  * logo, company name, tagline, contact details — is composited deterministically
@@ -216,6 +225,210 @@ export function buildVariationPrompt(input: VariationPromptInput): string {
   sections.push(noInventedBrandingSection('create', band !== null, 'source'));
 
   return sections.join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
+// Clone
+// ---------------------------------------------------------------------------
+
+export interface ClonePromptInput {
+  /** Every template element with what the day does to it, from `resolveDayElements`. */
+  resolved: readonly ResolvedElement[];
+  /**
+   * Brand Canvas colours to recolour to; null or empty keeps the template's own
+   * colours. Only accent roles are used — see `cloneAccentColors`.
+   */
+  brandColors: ReadonlyArray<{ hex: string; role: string }> | null;
+  /**
+   * Who prints the business name, tagline, phone and website. `ai` gives the
+   * image model the exact strings; `code` has it clear those places so
+   * `composeCloneIdentity` can draw them afterwards.
+   */
+  identity: 'ai' | 'code';
+  /** The output frame in words, e.g. "vertical 4:5". */
+  orientation: string;
+  /**
+   * One sentence correcting a rejected earlier version (`rejectionGuidance`),
+   * placed last. Null or absent adds nothing.
+   */
+  correction?: string | null;
+}
+
+/**
+ * Colour roles that describe a surface or type rather than an accent. Recolouring
+ * a template's background to a brand "background" turned dark templates light in
+ * the Phase 0 spike (0d10ad31 D, b58b0a93 D) — a different poster. Only accents
+ * are recoloured.
+ */
+const NON_ACCENT_ROLE = /background|surface|neutral|base|text|foreground|ink|white|black/i;
+
+/** The brand colours a clone may recolour to: accent roles only, background and neutral roles removed. */
+export function cloneAccentColors(
+  colors: ReadonlyArray<{ hex: string; role: string }> | null | undefined,
+): Array<{ hex: string; role: string }> {
+  return (colors ?? []).filter((color) => /^#[0-9a-f]{3,8}$/i.test(color.hex.trim()) && !NON_ACCENT_ROLE.test(color.role));
+}
+
+/**
+ * Identity text code can draw exactly: the brand-bound kinds that are words.
+ * The logo is always composited by code, whichever way `identity` is set.
+ */
+export function isCodeDrawnIdentity(kind: TemplateElementKind): boolean {
+  return isBrandBound(kind) && kind !== 'logo';
+}
+
+/**
+ * A template reproduced exactly, with only its listed elements changed.
+ *
+ * The opposite stance to every other builder here. Generate treats a reference as
+ * inspiration and Variation asks for a different poster; a clone *is* the
+ * template, and anything the model redesigns is a defect. So the prompt names what
+ * must survive in concrete terms — layout, type, shapes, effects — and then gives
+ * the changes as a short numbered list, one line per element, because a model
+ * editing an image follows an explicit list far better than prose.
+ *
+ * Elements the day keeps are not listed at all: naming them invites the model to
+ * "improve" them. Each listed element is located by its label and its position in
+ * words — the model cannot use coordinates — and a photograph also by what it
+ * shows, since a poster can hold two.
+ *
+ * Kept short on purpose (under 4,000 characters for twenty elements): shared
+ * rules — text fitting its area, orphaned icons and empty shapes, empty logo
+ * areas — are stated once rather than repeated on every line.
+ */
+export function buildClonePrompt(input: ClonePromptInput): string {
+  const headline = legacyContentFields(input.resolved).headline;
+  // The day's image prompt describes the poster's main photograph. A second,
+  // smaller picture — a cut-out portrait, an inset — gets a new subject suited to
+  // the poster instead of a copy of the main one's description.
+  const photos = input.resolved.filter((item) => item.action.type === 'photo');
+  const mainPhoto = photos.reduce<ResolvedElement | null>(
+    (largest, item) => (!largest || item.element.box.w * item.element.box.h > largest.element.box.w * largest.element.box.h ? item : largest),
+    null,
+  );
+  const changes = input.resolved
+    .map((item) => cloneChangeLine(item, input.identity, headline, item === mainPhoto))
+    .filter((line): line is string => line !== null);
+
+  const colors = cloneAccentColors(input.brandColors);
+  const hasLogo = input.resolved.some((item) => item.action.type === 'logo');
+  const correction = input.correction?.trim() || null;
+
+  return [
+    'Recreate the attached poster exactly. Keep its layout and composition, typography (typeface style, weight, size, colour, case and alignment), spacing, shapes, icons, buttons, backgrounds and effects, so the result reads as the same poster.',
+    `Output frame: ${input.orientation}, the same shape as the attached poster. Do not crop, stretch or rearrange it.`,
+    changes.length > 0
+      ? [
+          `Change only these ${changes.length === 1 ? 'thing' : `${changes.length} things`}:`,
+          ...changes.map((line, index) => `${index + 1}. ${line}`),
+        ].join('\n')
+      : 'Change nothing: reproduce every element as it is.',
+    changes.length > 0
+      ? [
+          'Replaced text keeps the style of the text it replaces: typeface, weight, size, colour, case, alignment and line arrangement. Longer text may wrap or get smaller, but stays inside the area of the text it replaces.',
+          'Erased elements leave clean background that matches their surroundings. An icon, bullet, label or divider that only served an erased element goes with it. If a bar, pill, card, button or badge is left with nothing in it, remove that shape as well, or let the content beside it close up, so no empty shapes or orphaned icons remain.',
+          hasLogo ? "The space left for the client's logo stays clean and empty: no text, shape or picture may move into it." : null,
+          'Everything not listed stays exactly as it is.',
+        ]
+          .filter((line): line is string => line !== null)
+          .join(' ')
+      : null,
+    colors.length > 0
+      ? `Colours: recolour only the design's accent colours (shapes, bars, buttons, icons and highlighted words) to this palette: ${colors
+          .map((color) => `${color.role} ${color.hex}`)
+          .join(', ')}. Keep the lightness of every area: dark areas and backgrounds stay dark, light ones stay light. Keep photographs natural and every text clearly readable against its background.`
+      : 'Colours: keep every colour exactly as in the original.',
+    'Do not add any new text, logos, badges, QR codes or watermarks. Spell every provided text exactly as written.',
+    correction,
+  ]
+    .filter((part): part is string => part !== null)
+    .join('\n\n');
+}
+
+/** Contact details that templates print beside an icon of their own. */
+const CONTACT_DETAIL_KINDS: ReadonlySet<TemplateElementKind> = new Set(['phone', 'website', 'email', 'address', 'social']);
+
+function cloneChangeLine(
+  item: ResolvedElement,
+  identity: 'ai' | 'code',
+  headline: string | null,
+  mainPhoto: boolean,
+): string | null {
+  const { element, action } = item;
+  const where = describeBoxPosition(element.box);
+  const shows = element.description ? `, ${element.description}` : '';
+  const quoted = element.text ? `"${element.text}"` : 'the text';
+
+  switch (action.type) {
+    case 'keep':
+      return null;
+    case 'replace':
+      if (identity === 'code' && isCodeDrawnIdentity(element.kind)) {
+        return `${item.label} (${where}): erase ${quoted} and leave its space empty, keeping any bar, button or shape behind it.`;
+      }
+      return `${item.label} (${where}): replace ${quoted} with "${action.text}".`;
+    case 'remove':
+      if (element.kind === 'photo') {
+        return `${item.label} (${where}${shows}): erase this photograph and fill its space naturally with the surrounding background.`;
+      }
+      if (element.kind === 'logo') {
+        return `${item.label} (${where}${shows}): remove this logo completely and leave clean background.`;
+      }
+      // A contact detail usually sits beside its own icon (a map pin, a phone, a
+      // globe); the end-to-end run left the pin behind with nothing after it.
+      if (CONTACT_DETAIL_KINDS.has(element.kind)) {
+        return `${item.label} (${where}): erase ${quoted} together with its icon, such as a map pin, phone or globe symbol, and close the space naturally.`;
+      }
+      return `${item.label} (${where}): erase ${quoted} and close the space naturally.`;
+    case 'logo':
+      if (action.name) {
+        return `${item.label} (${where}${shows}): remove this logo and all of its lettering, keeping the badge or pill shape behind it. At the left end of the badge, leave a square as tall as the badge as clean, empty background; the client's logo is placed there afterwards. Write "${action.name}" in the rest of the badge, in the style of the original lettering.`;
+      }
+      return `${item.label} (${where}${shows}): remove this logo mark completely and leave its area as clean, empty background matching its surroundings; the client's logo is placed there afterwards.`;
+    case 'photo': {
+      const subject =
+        action.prompt && mainPhoto
+          ? `one of ${action.prompt}`
+          : `realistic one suited to ${headline ? `the headline "${headline}"` : "the poster's message"}`;
+      return `${item.label} (${where}${shows}): replace this photograph with a new ${subject}. ${PHOTO_RULE}`;
+    }
+  }
+}
+
+/**
+ * What every replaced photograph must do.
+ *
+ * Measured in the Phase 0 spike (2026-09-17): "a new, different photograph …
+ * never the same people" left the template's doctor recognisably in place on
+ * three of four renders — the edit endpoint holds on to faces it is given — and
+ * kept a urology wall chart and a logo printed on a coat. The rule therefore names
+ * what "different" means for a person, and forbids the old photograph's own words
+ * and marks, which belong to the template's business. It says "even in a small
+ * cut-out portrait" because the urology template kept its doctor in the inset
+ * portrait as well as in the main photograph (variant D).
+ *
+ * The Phase 2 end-to-end run (2026-09-17) changed the inset doctor but still kept
+ * the main photograph's doctor face for face: asking to "keep its crop" let the
+ * model retouch the old people in place. The rule now calls the photograph a new
+ * shoot, re-casts every person as a different gender or a clearly different age,
+ * and keeps only the photograph's place, framing and light — not its people.
+ */
+const PHOTO_RULE =
+  'This is a new photo shoot, not a retouch: re-cast every person with a clearly different person (a different gender or a clearly different age, a different face, hairstyle and clothing), so nobody from the original is recognisable, even in a small cut-out portrait. Keep no logo, sign or printed words from the old photograph. Keep only its position, framing, lighting and colour treatment.';
+
+/**
+ * Where a box sits, in words an image model can use: "top left", "bottom centre",
+ * "across the top". Thirds of the poster, by the box's centre; a box spanning most
+ * of the width is "across" its band instead.
+ */
+export function describeBoxPosition(box: ElementBox): string {
+  const centreX = box.x + box.w / 2;
+  const centreY = box.y + box.h / 2;
+  const band = centreY < 1 / 3 ? 'top' : centreY > 2 / 3 ? 'bottom' : 'middle';
+  if (box.w >= 0.8) return `across the ${band}`;
+  const side = centreX < 1 / 3 ? 'left' : centreX > 2 / 3 ? 'right' : 'centre';
+  if (band === 'middle') return side === 'centre' ? 'centre' : `middle ${side}`;
+  return `${band} ${side}`;
 }
 
 /**

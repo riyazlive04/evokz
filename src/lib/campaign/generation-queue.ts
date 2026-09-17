@@ -1,6 +1,7 @@
 import type { PosterGenerationStatus } from '@prisma/client';
 
 import { intEnv } from '@/lib/env';
+import { AUTOMATIC_CAMPAIGNS } from '@/lib/campaign/delivery-service';
 import { STALE_GENERATION_MS, type PosterBlockReason } from '@/lib/campaign/poster-generation';
 import {
   generateCampaignDayPoster,
@@ -153,9 +154,16 @@ export interface GenerationSweepResult {
   claimed: number;
   generated: Array<{ campaignId: string; dayNumber: number }>;
   failed: Array<{ campaignId: string; dayNumber: number; message: string }>;
-  skipped: Array<{ campaignId: string; dayNumber: number; reason: string }>;
+  skipped: Array<{ campaignId: string; dayNumber: number; reason: string; message: string }>;
   /** A credential/configuration/billing failure stopped the sweep early. */
   stopped: boolean;
+  /** The time budget ran out: days listed but not started stay QUEUED for the next tick. */
+  budgetExhausted: boolean;
+}
+
+/** An empty sweep result. */
+export function emptyGenerationSweep(): GenerationSweepResult {
+  return { claimed: 0, generated: [], failed: [], skipped: [], stopped: false, budgetExhausted: false };
 }
 
 interface QueuedDay {
@@ -168,27 +176,50 @@ interface QueuedDay {
  * Generates queued campaign posters. Called once per cron tick.
  *
  * Bounded twice over: at most `generationBatchLimit()` days per tick, at most
- * `generationConcurrency()` at a time. Only ACTIVE campaigns are considered, so
- * pausing a campaign stops its queue without touching a row — and resuming lets
- * the same queued days continue, with no duplicates, because the rows never
- * moved.
+ * `generationConcurrency()` at a time. Only ACTIVE campaigns are considered — and,
+ * for the cron sweep (no `campaignId`), only those of active, non-demo clients —
+ * so pausing a campaign or its client stops its queue at once. A paused client's
+ * queued days stay QUEUED and continue, with no duplicates, when it is resumed; a
+ * paused campaign's queue is released (`releaseQueuedForInactiveCampaigns`), so
+ * its days do not look as if they were being generated while it is paused.
  *
  * A configuration, credential or billing failure stops the sweep: every later
  * day would fail the same way, and marking them all FAILED would bury the cause.
  * They stay QUEUED for the next tick.
+ *
+ * With `budgetMs`, no day is started once that much wall-clock time has passed
+ * since the sweep began; the day in flight finishes, and the rest stay QUEUED.
+ * Each day's claim is stamped with the sweep's `now` advanced by the time
+ * already spent, so a day started late in a long sweep does not look stale early.
  */
 export async function runQueuedCampaignGenerations(
   db: CampaignDb,
-  options: PosterLoadOptions & { deps?: PosterGenerationDeps; limit?: number; concurrency?: number } = {},
+  options: PosterLoadOptions & {
+    deps?: PosterGenerationDeps;
+    limit?: number;
+    concurrency?: number;
+    /** Only this campaign's queue — the board driving its own bulk run one poster at a time. */
+    campaignId?: string;
+    /** Stop starting days after this many wall-clock milliseconds. */
+    budgetMs?: number;
+    /** The wall clock the budget is measured on, in milliseconds. Tests pass a fake. */
+    clock?: () => number;
+  } = {},
 ): Promise<GenerationSweepResult> {
   const now = options.now ?? new Date();
   const limit = options.limit ?? generationBatchLimit();
-  const result: GenerationSweepResult = { claimed: 0, generated: [], failed: [], skipped: [], stopped: false };
+  const clock = options.clock ?? Date.now;
+  const sweepStartedAt = clock();
+  const result = emptyGenerationSweep();
 
   const queued = await db.contentCalendar.findMany({
     where: {
-      campaignId: { not: null },
-      campaign: { status: 'ACTIVE' },
+      campaignId: options.campaignId ?? { not: null },
+      // The cron sweep generates only for active, non-demo clients, so pausing a
+      // client stops its queue (the days stay QUEUED and continue on resume). The
+      // board driving its own campaign's bulk run is an operator's explicit
+      // request and is not filtered by the client.
+      campaign: options.campaignId ? { status: 'ACTIVE' } : AUTOMATIC_CAMPAIGNS,
       OR: [
         { generationStatus: 'QUEUED' },
         // An attempt whose worker died: recoverable once it is stale.
@@ -207,13 +238,19 @@ export async function runQueuedCampaignGenerations(
 
   await mapWithLimit(days, options.concurrency ?? generationConcurrency(), async (day) => {
     if (stop) return;
+    const elapsed = Math.max(0, clock() - sweepStartedAt);
+    if (options.budgetMs !== undefined && elapsed >= options.budgetMs) {
+      // Out of time: left QUEUED, untouched, for the next tick.
+      result.budgetExhausted = true;
+      return;
+    }
     try {
       const outcome = await generateCampaignDayPoster(db, day.campaignId, day.id, {
         ...options,
         mode: 'regenerate',
         explicit: true,
         acceptQueued: true,
-        now,
+        now: new Date(now.getTime() + elapsed),
       });
 
       if (outcome.outcome === 'generated') {
@@ -229,8 +266,18 @@ export async function runQueuedCampaignGenerations(
           result.stopped = true;
         }
       } else {
-        result.skipped.push({ campaignId: day.campaignId, dayNumber: outcome.dayNumber, reason: outcome.reason });
+        result.skipped.push({ campaignId: day.campaignId, dayNumber: outcome.dayNumber, reason: outcome.reason, message: outcome.message });
         logGeneration('skipped', day, { reason: outcome.reason });
+        /*
+         * A queued day that can no longer be generated — its template was never
+         * read, its date passed — would otherwise stay QUEUED and be picked again
+         * on every tick (and by the board's own run, forever). It is released
+         * instead, and the board shows why it is blocked. A conflict is another
+         * worker's claim and is left alone.
+         */
+        if (outcome.reason !== 'conflict' && outcome.reason !== 'generating') {
+          await db.contentCalendar.updateMany({ where: { id: day.id, generationStatus: 'QUEUED' }, data: { generationStatus: 'NOT_REQUESTED' } });
+        }
       }
     } catch (error) {
       // One day's unexpected throw must not lose the rest of the sweep.
@@ -243,12 +290,76 @@ export async function runQueuedCampaignGenerations(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// The cron step: one sweep at a time, within a budget
+// ---------------------------------------------------------------------------
+
+/**
+ * How long, from the start of a cron sweep, its generation step keeps starting
+ * new days: 150 seconds. The booking sync and due sends run first and use part
+ * of it, and a sweep shares one request with a 300-second ceiling (Vercel's
+ * `maxDuration`, the host cron's `curl -m 300`), so the day still in flight when
+ * the budget runs out has room to finish.
+ */
+export const CRON_GENERATION_BUDGET_MS = 150_000;
+
+/**
+ * How long the lock's transaction may stay open: the budget plus one clone in
+ * flight (a 5-minute image request, the 90-second text check, Drive writes),
+ * with room to spare. If it ever expires the lock is released early, which only
+ * reopens the race the claim itself already refuses.
+ */
+const GENERATION_LOCK_TRANSACTION_MS = 15 * 60_000;
+
+/** SQL that takes the generation step's lock for the current transaction, if free. */
+const TRY_GENERATION_LOCK = `SELECT pg_try_advisory_xact_lock(hashtext('evokz:campaign-generation-sweep')) AS locked`;
+
+export type ExclusiveGenerationSweep = GenerationSweepResult & {
+  /** Another sweep was already generating, so this one generated nothing. */
+  lockHeld: boolean;
+};
+
+/**
+ * `runQueuedCampaignGenerations` for the cron sweep: only one sweep generates at
+ * a time. The cron fires every minute and a clone takes minutes, so overlapping
+ * sweeps are normal; the second one skips generation instead of working the
+ * same queue beside the first.
+ *
+ * The guard is a Postgres transaction-level advisory lock
+ * (`pg_try_advisory_xact_lock`): it is taken without waiting, held by a
+ * transaction that does nothing else while the queue is worked through the
+ * ordinary client, and released when that transaction ends — commit, rollback,
+ * a thrown error or a dropped connection alike — so it can never be left behind.
+ * The database pool must allow at least two connections (the lock holds one).
+ */
+export async function runQueuedCampaignGenerationsExclusively(
+  db: CampaignDb,
+  options: Parameters<typeof runQueuedCampaignGenerations>[1] = {},
+): Promise<ExclusiveGenerationSweep> {
+  if (!('$transaction' in db)) {
+    // Already inside a caller's transaction: its connection is the only one.
+    const locked = await db.$queryRawUnsafe<Array<{ locked: boolean }>>(TRY_GENERATION_LOCK);
+    if (!locked[0]?.locked) return { ...emptyGenerationSweep(), lockHeld: true };
+    return { ...(await runQueuedCampaignGenerations(db, options)), lockHeld: false };
+  }
+  return db.$transaction(
+    async (tx) => {
+      const locked = await tx.$queryRawUnsafe<Array<{ locked: boolean }>>(TRY_GENERATION_LOCK);
+      if (!locked[0]?.locked) return { ...emptyGenerationSweep(), lockHeld: true };
+      return { ...(await runQueuedCampaignGenerations(db, options)), lockHeld: false };
+    },
+    { timeout: GENERATION_LOCK_TRANSACTION_MS, maxWait: 10_000 },
+  );
+}
+
 /**
  * Releases queued work for campaigns that are no longer ACTIVE.
  *
- * Pausing already stops the worker (it selects only ACTIVE campaigns), so this
- * is tidiness rather than safety: it keeps a paused campaign from showing days
- * as "queued" forever. Days being generated are left to settle on their own.
+ * The worker already skips them (it selects only ACTIVE campaigns); releasing
+ * keeps a paused campaign from showing its days as "being generated" forever —
+ * which also locks their editing — so the cron sweep calls this every tick and
+ * pausing a campaign releases its own queue at once. Days being generated are
+ * left to settle on their own.
  */
 export async function releaseQueuedForInactiveCampaigns(db: CampaignDb): Promise<number> {
   const released = await db.contentCalendar.updateMany({

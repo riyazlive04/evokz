@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, type PosterStudioMode } from '@prisma/client';
 
 import { StudioError } from '@/lib/poster-studio/errors';
 import type { StudioMode } from '@/lib/poster-studio/limits';
@@ -17,7 +17,8 @@ export const STUDIO_HISTORY_LIMIT = 24;
 
 export interface StudioHistoryItem {
   id: string;
-  mode: StudioMode;
+  /** Includes CLONE, which only campaign clone generation writes; the studio form offers the other three. */
+  mode: PosterStudioMode;
   prompt: string;
   sentPrompt: string;
   aspectRatio: string;

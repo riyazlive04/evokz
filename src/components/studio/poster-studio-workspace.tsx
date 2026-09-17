@@ -145,10 +145,11 @@ const MODE_COPY: Record<
 
 const MODES: StudioMode[] = ['GENERATE', 'EDIT', 'VARIATION'];
 
-const MODE_BADGE: Record<StudioMode, string> = {
+const MODE_BADGE: Record<StudioHistoryItem['mode'], string> = {
   GENERATE: 'Generated',
   EDIT: 'Edit',
   VARIATION: 'Variation',
+  CLONE: 'Template clone',
 };
 
 export function PosterStudioWorkspace({

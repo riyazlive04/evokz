@@ -25,10 +25,16 @@ import {
 } from '@/lib/campaign/template-mapping';
 import { optionalEnv } from '@/lib/env';
 import { resolveImageSizePreset } from '@/lib/image-sizes';
-import { MAX_TEMPLATE_PROMPT_LENGTH } from '@/lib/template-limits';
 
 /**
  * Campaign template mapping — database operations of Phase 3.
+ *
+ * The Auto Map and Manual Map screens are retired: a campaign's days are filled
+ * with template clones (`clone-queue.ts`). What stays in use is
+ * `loadMappingContext` (how a day resolves its template, read by poster
+ * generation), the template status and delete guards, and the Auto Map /
+ * manual mapping writers, which the campaign database checks use as fixtures
+ * and which still resolve the one AUTO-mode campaign's suggestions.
  *
  * Loads a campaign's days and its vertical's templates into the shapes
  * `template-mapping.ts` plans over, and writes the results. Like `service.ts`,
@@ -546,26 +552,4 @@ export async function setTemplateActive(
   const updated = await db.categoryTemplate.updateMany({ where: { id: templateId }, data: { isActive: active } });
   if (updated.count === 0) throw new CampaignDomainError('not-found', 'Template does not exist.');
   return { active, campaignDaysAffected: await countOpenCampaignDaysUsingTemplate(db, templateId) };
-}
-
-/**
- * Saves the admin's prompt for a template, used by every campaign poster
- * generated from it from now on. Blank clears it. Posters already generated keep
- * the prompt they were made with — it is recorded in their `sentPrompt`.
- */
-export async function setTemplatePrompt(
-  db: CampaignDb,
-  templateId: string,
-  prompt: string,
-): Promise<{ prompt: string | null }> {
-  const cleaned = prompt.trim() || null;
-  if (cleaned && cleaned.length > MAX_TEMPLATE_PROMPT_LENGTH) {
-    throw new CampaignDomainError(
-      'invalid-input',
-      `A template prompt can be at most ${MAX_TEMPLATE_PROMPT_LENGTH} characters.`,
-    );
-  }
-  const updated = await db.categoryTemplate.updateMany({ where: { id: templateId }, data: { prompt: cleaned } });
-  if (updated.count === 0) throw new CampaignDomainError('not-found', 'Template does not exist.');
-  return { prompt: cleaned };
 }

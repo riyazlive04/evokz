@@ -57,6 +57,16 @@ export type UsageOperation =
   // vertical still accruing `plate-regions` is one whose templates were read
   // before the split, which is worth being able to see.
   | 'plate-labels'
+  // Reading a template's changeable elements — its words, photo and identity —
+  // once per upload, for clone mode. Distinct from the plate and layout reads
+  // it retires, so a vertical's move from one to the other shows in the ledger.
+  | 'template-elements'
+  // Reading a cloned poster's words back after generation to compare them with
+  // what was asked for. Once per clone, so it scales with posters, not templates.
+  | 'text-check'
+  // "Rewrite with AI" on a cloned campaign poster: fresh wording for the
+  // template's words, one short text call per day.
+  | 'clone-rewrite'
   // One image from the AI Poster Studio (gpt-image-2 generate or edit). Its own
   // operation, not `image`: that one is fal.ai's per-image render on the delivery
   // pipeline, and the cost report counts studio rows separately because they may

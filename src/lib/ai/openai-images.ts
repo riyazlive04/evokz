@@ -63,6 +63,26 @@ export interface StudioImageRequest {
   size: string;
   /** When present the request goes through `images.edit` with this image attached. */
   image?: StudioImageInput | null;
+  /**
+   * Overrides `POSTER_STUDIO_IMAGE_QUALITY` for this request. Clone mode renders
+   * at `high`: small type redrawn at `low` is where a template stops looking like
+   * itself.
+   */
+  quality?: StudioImageQuality;
+  /**
+   * How closely an edit holds to the input image's detail and faces. Edit only;
+   * omitted, the API default applies — exactly as before this option existed.
+   *
+   * **Not for `STUDIO_IMAGE_MODEL`.** gpt-image-2 answers it with a 400
+   * (`invalid_input_fidelity_model`) before generating — measured 2026-09-17. It
+   * is here for the gpt-image-1.x models that accept it.
+   */
+  inputFidelity?: 'high' | 'low';
+  /**
+   * PNG the same size as `image`, fully transparent where the edit may change the
+   * image and opaque elsewhere. Edit only; omitted, the whole image is editable.
+   */
+  mask?: { bytes: Buffer } | null;
 }
 
 export interface StudioImageResult {
@@ -108,7 +128,7 @@ export function assertStudioImageConfigured(): void {
 
 export async function renderStudioImage(request: StudioImageRequest): Promise<StudioImageResult> {
   const client = getClient();
-  const quality = getStudioImageQuality();
+  const quality = request.quality ?? getStudioImageQuality();
 
   try {
     const response: ImagesResponse = request.image
@@ -124,6 +144,12 @@ export async function renderStudioImage(request: StudioImageRequest): Promise<St
           size: request.size,
           quality,
           output_format: 'png',
+          // Spread only when set, so a request without them is byte-for-byte the
+          // request every existing caller has always sent.
+          ...(request.inputFidelity ? { input_fidelity: request.inputFidelity } : {}),
+          ...(request.mask
+            ? { mask: await OpenAI.toFile(request.mask.bytes, 'mask.png', { type: 'image/png' }) }
+            : {}),
         })
       : await client.images.generate({
           model: STUDIO_IMAGE_MODEL,

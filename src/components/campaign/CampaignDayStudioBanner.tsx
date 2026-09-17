@@ -17,7 +17,7 @@ import type { StudioHistoryItem } from '@/lib/poster-studio/history';
  * Poster Studio itself is unchanged: an Edit or Variation made here is an
  * ordinary history item. Only "Save to Day N" turns the selected poster into the
  * day's new active version — explicitly, and only for a poster of the campaign's
- * client in the campaign's format.
+ * client in the day's poster shape.
  */
 export function CampaignDayStudioBanner({
   context,
@@ -37,8 +37,8 @@ export function CampaignDayStudioBanner({
     ? 'Select a poster to save it to this day.'
     : current.clientId !== context.clientId
       ? `The selected poster was not made for ${context.companyName}.`
-      : current.aspectRatio !== context.aspectRatio
-        ? `The selected poster is ${current.aspectRatio}; this campaign's posters are ${context.aspectRatio ?? 'not a Poster Studio format'}.`
+      : current.aspectRatio !== context.posterAspect
+        ? `The selected poster is ${current.aspectRatio}; this day's posters are ${context.posterAspect ?? 'a shape posters cannot be made in'}.`
         : current.id === context.activeGenerationId
           ? `The selected poster is already Day ${context.dayNumber}'s active version.`
           : null;

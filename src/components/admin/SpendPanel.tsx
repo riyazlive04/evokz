@@ -407,11 +407,7 @@ function ClientSplit({ report }: { report: CostReport }) {
                   <div className="flex items-center gap-2">
                     {row.clientId ? (
                       <Link
-                        href={
-                          row.isDemo
-                            ? `/admin/demo?tenant=${row.clientId}`
-                            : `/admin/clients/${row.clientId}`
-                        }
+                        href={`/admin/clients/${row.clientId}`}
                         className="font-medium text-foreground underline-offset-4 decoration-primary/40 transition-colors duration-200 hover:underline hover:decoration-primary"
                       >
                         {row.companyName}

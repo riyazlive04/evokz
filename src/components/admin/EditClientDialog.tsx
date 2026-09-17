@@ -35,14 +35,11 @@ export function EditClientDialog({
   clientId,
   companyName,
   whatsappNumber,
-  kind = 'client',
 }: {
   clientId: string;
   companyName: string;
   /** E.164 digits without the leading `+`. */
   whatsappNumber: string;
-  /** Demo tenants use the same record and the same editor. */
-  kind?: 'client' | 'demo tenant';
 }) {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState(companyName);
@@ -105,11 +102,11 @@ export function EditClientDialog({
 
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Edit {kind} details</DialogTitle>
+          <DialogTitle>Edit client details</DialogTitle>
           <DialogDescription>
             The name and number recorded at onboarding. Delivery time, plan, vertical
-            and spend cap are edited under Operations; the phone printed on the poster
-            is on the brand canvas.
+            and spend cap are edited under Operations; the phone printed on posters is
+            on the brand canvas.
           </DialogDescription>
         </DialogHeader>
 

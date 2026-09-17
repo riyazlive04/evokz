@@ -1,5 +1,6 @@
 import type { CampaignApprovalPolicy, CampaignStatus, PosterApprovalStatus, PosterVersionSource } from '@prisma/client';
 
+import { bookCampaignDayQuietly, type DayBookingOutcome, type DeliveryDeps } from '@/lib/campaign/delivery-service';
 import { campaignAllowsChanges, isVersionCurrent } from '@/lib/campaign/model';
 import { POSTER_STATE_LABELS, type PosterState } from '@/lib/campaign/poster-generation';
 import {
@@ -285,12 +286,23 @@ async function loadActiveForReview(db: CampaignDb, dayId: string, versionId: str
  * stay exactly as they are, and the day keeps this poster as its active one so
  * it can be edited or regenerated. An approved poster is withdrawn first
  * (APPROVED → PENDING → REJECTED), because Phase 1 allows no direct move.
+ *
+ * A booking for that poster is withdrawn with it (`bookCampaignDay` cancels a
+ * SCHEDULED delivery whose poster is rejected), so a rejected poster is not left
+ * armed until the sender refuses it. A delivery already sent or sending is
+ * never touched.
  */
-export async function rejectCampaignDayPoster(db: CampaignDb, dayId: string, versionId: string, input: RejectionInput): Promise<{ note: string }> {
+export async function rejectCampaignDayPoster(
+  db: CampaignDb,
+  dayId: string,
+  versionId: string,
+  input: RejectionInput,
+  options: { deliveryDeps?: DeliveryDeps } = {},
+): Promise<{ note: string }> {
   const note = buildRejectionNote(input);
   if (!note.ok) throw new CampaignDomainError('invalid-input', note.error);
 
-  return runInCampaignTransaction(db, async (tx) => {
+  const result = await runInCampaignTransaction(db, async (tx) => {
     const day = await loadActiveForReview(tx, dayId, versionId);
     const current = day.activePosterVersion!.approvalStatus;
     if (current === 'REJECTED') throw new CampaignDomainError('invalid-transition', 'This poster is already rejected.');
@@ -298,20 +310,31 @@ export async function rejectCampaignDayPoster(db: CampaignDb, dayId: string, ver
     await reviewPosterVersion(tx, versionId, 'REJECTED', note.note);
     return { note: note.note };
   });
+
+  await bookCampaignDayQuietly(db, dayId, { deps: options.deliveryDeps });
+  return result;
 }
 
 export interface BulkApprovalResult extends BulkApprovalPlan {
   approved: number[];
   /** Days that were eligible when planned but changed before the write. */
   conflicts: number[];
+  /** What booking each approved day did, in approval order. */
+  bookings: DayBookingOutcome[];
 }
 
 /**
  * Approves the active poster of every selected day that may be approved, and
  * reports the rest by reason. Each day is re-checked at the moment it is
  * written, so a day that changed meanwhile is reported rather than approved.
+ * Each approval books its day exactly as a single approval does.
  */
-export async function approveCampaignDayPosters(db: CampaignDb, campaignId: string, dayIds: readonly string[], options: PosterLoadOptions = {}): Promise<BulkApprovalResult> {
+export async function approveCampaignDayPosters(
+  db: CampaignDb,
+  campaignId: string,
+  dayIds: readonly string[],
+  options: PosterLoadOptions & { deliveryDeps?: DeliveryDeps } = {},
+): Promise<BulkApprovalResult> {
   const overview = await loadPosterOverview(db, campaignId, options);
   if (!campaignAllowsChanges(overview.campaign.status)) {
     throw new CampaignDomainError('campaign-closed', `The campaign is ${overview.campaign.status}.`);
@@ -323,12 +346,14 @@ export async function approveCampaignDayPosters(db: CampaignDb, campaignId: stri
   const plan = planBulkApproval(overview.days.map(toReviewRow), dayIds, overview.campaign.status);
   const approved: number[] = [];
   const conflicts: number[] = [];
+  const bookings: DayBookingOutcome[] = [];
 
   for (const entry of plan.approve) {
     try {
       // Phase 4's own approval, so one rule decides every approval.
-      await approveCampaignDayPoster(db, entry.dayId, entry.versionId);
+      const { booking } = await approveCampaignDayPoster(db, entry.dayId, entry.versionId, { deliveryDeps: options.deliveryDeps });
       approved.push(entry.dayNumber);
+      if (booking) bookings.push(booking);
     } catch (error) {
       if (error instanceof CampaignDomainError) {
         conflicts.push(entry.dayNumber);
@@ -338,5 +363,5 @@ export async function approveCampaignDayPosters(db: CampaignDb, campaignId: stri
     }
   }
 
-  return { ...plan, approved, conflicts };
+  return { ...plan, approved, conflicts, bookings };
 }

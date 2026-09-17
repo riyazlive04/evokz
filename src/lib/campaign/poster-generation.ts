@@ -1,12 +1,13 @@
 import type {
-  CampaignContentStatus,
+  CampaignDeliveryStatus,
   CampaignStatus,
   PosterApprovalStatus,
   PosterGenerationStatus,
 } from '@prisma/client';
 
 import { isVersionCurrent } from '@/lib/campaign/model';
-import { ASPECT_TOLERANCE, needsAction, type DayMappingState, type MappingIssue } from '@/lib/campaign/template-mapping';
+import { ASPECT_TOLERANCE, type DayMappingState, type MappingIssue } from '@/lib/campaign/template-mapping';
+import { cloneSizeFor, type CloneSize } from '@/lib/poster-studio/clone-size';
 import {
   MAX_STUDIO_PROMPT_LENGTH,
   STUDIO_ASPECT_RATIO_KEYS,
@@ -14,6 +15,7 @@ import {
   type StudioAspectRatio,
 } from '@/lib/poster-studio/limits';
 import { addZonedDays, startOfZonedDay } from '@/lib/time';
+import { parseTemplateElements } from '@/lib/types/template-elements';
 
 /**
  * Rolling campaign poster generation — the pure rules of Phase 4.
@@ -54,13 +56,23 @@ export function isInWindow(scheduledDate: Date, window: GenerationWindow): boole
   return scheduledDate.getTime() >= window.start.getTime() && scheduledDate.getTime() < window.end.getTime();
 }
 
-/** A GENERATING claim that is still live, as opposed to one left behind by a crash. */
+/**
+ * A GENERATING claim that is still live, as opposed to one left behind by a
+ * crash — or a QUEUED day waiting for a worker.
+ *
+ * The worker only takes days of ACTIVE campaigns, so given the campaign's status
+ * a QUEUED day of a campaign that is not ACTIVE is not in progress: nothing will
+ * pick it up until the campaign is resumed, and showing it as "being generated"
+ * would lock its editing for nothing. Without the status, QUEUED counts as in
+ * progress (the cautious answer for a caller that does not know).
+ */
 export function isGenerationInProgress(
   status: PosterGenerationStatus | null,
   startedAt: Date | null,
   now: Date,
+  campaignStatus?: CampaignStatus,
 ): boolean {
-  if (status === 'QUEUED') return true;
+  if (status === 'QUEUED') return campaignStatus === undefined || campaignStatus === 'ACTIVE';
   if (status !== 'GENERATING') return false;
   return startedAt !== null && now.getTime() - startedAt.getTime() < STALE_GENERATION_MS;
 }
@@ -70,9 +82,9 @@ export function isGenerationInProgress(
 // ---------------------------------------------------------------------------
 
 /**
- * The Poster Studio format for a client's output shape, or null when there is
- * none: the studio renders 9:16, 1:1 and 16:9 only, and a poster must not be
- * delivered at a shape the client did not ask for.
+ * The Poster Studio format (9:16, 1:1 or 16:9) for a shape, or null when there
+ * is none. Only Poster Studio's own Generate/Edit/Variation formats: a campaign
+ * clone's shape is its template's (`templateOutputSize`), not one of these.
  */
 export function studioAspectFor(aspect: number): StudioAspectRatio | null {
   if (!Number.isFinite(aspect) || aspect <= 0) return null;
@@ -91,22 +103,45 @@ export interface BrandCanvasReadiness {
 }
 
 /**
- * Whether a client's Brand Canvas holds what a campaign poster is built from.
+ * Whether a client's Brand Canvas holds what a cloned campaign poster needs.
  *
- * The brand colours must have been extracted: without them the prompt carries no
- * brand direction and the identity footer falls back to generic colours, which
- * is an unbranded poster. The logo, tagline, website and phone are optional —
- * the footer prints the company name when there is no logo, exactly as Poster
- * Studio does. Whether the logo is actually readable is checked by the overlay
- * pre-flight at generation time, before anything is paid for.
+ * Only the company name is required: it replaces the template's business name.
+ * Brand colours are optional — without them a clone keeps the template's own
+ * colours (a user decision, 2026-09-17). The logo, tagline, website and phone
+ * are optional too: a template element bound to one that is missing is erased.
+ * Whether the logo is actually readable is checked at generation time, before
+ * anything is paid for.
  */
-export function brandCanvasReadiness(client: { companyName: string; brandColorCount: number }): BrandCanvasReadiness {
+export function brandCanvasReadiness(client: { companyName: string }): BrandCanvasReadiness {
   if (!client.companyName.trim()) return { available: false, reason: 'the client has no company name' };
-  if (client.brandColorCount === 0) {
-    return { available: false, reason: 'no brand colours have been extracted — run Brand Canvas extraction for this client' };
-  }
   return { available: true, reason: null };
 }
+
+/** A day's template as clone mode sees it. */
+export interface DayTemplateShape {
+  label: string;
+  /** The template's elements have been read (`CategoryTemplate.elements` parses). */
+  readable: boolean;
+  /** The template image's measured size; null when unmeasured. */
+  width: number | null;
+  height: number | null;
+}
+
+/**
+ * The output size of a day's clone, from its template's own shape — never from
+ * the client's output preset: a clone comes out in its template's shape.
+ */
+export function templateOutputSize(template: Pick<DayTemplateShape, 'width' | 'height'> | null): CloneSize | null {
+  return template ? cloneSizeFor(template.width, template.height) : null;
+}
+
+/** A template row's clone facts: the read elements parse, and its size (the read's own when unmeasured). */
+export function templateShapeOf(row: { label: string; width: number | null; height: number | null; elements: unknown }): DayTemplateShape {
+  const doc = parseTemplateElements(row.elements);
+  return { label: row.label, readable: doc !== null, width: row.width ?? doc?.width ?? null, height: row.height ?? doc?.height ?? null };
+}
+
+export const TEMPLATE_NOT_READ_MESSAGE = 'Template not read yet — open the vertical and press Read now.';
 
 // ---------------------------------------------------------------------------
 // Eligibility
@@ -124,15 +159,15 @@ export type PosterBlockReason =
   | 'campaign-not-active'
   | 'generating'
   | 'in-the-past'
+  | 'day-locked'
   | 'outside-window'
   | 'already-generated'
   | 'outdated'
-  | 'content-not-generated'
-  | 'content-needs-review'
   | 'no-template'
   | 'template-inactive'
   | 'template-unavailable'
   | 'template-incompatible'
+  | 'template-not-read'
   | 'unsupported-aspect'
   | 'brand-canvas-unavailable';
 
@@ -142,6 +177,7 @@ const ATTENTION_REASONS: ReadonlySet<PosterBlockReason> = new Set([
   'template-inactive',
   'template-unavailable',
   'template-incompatible',
+  'template-not-read',
   'unsupported-aspect',
   'brand-canvas-unavailable',
 ]);
@@ -154,19 +190,23 @@ export interface PosterEligibilityInput {
   window: GenerationWindow;
   campaignStatus: CampaignStatus;
   scheduledDate: Date;
-  contentStatus: CampaignContentStatus;
   /** Phase 3: the day's effective template and what is wrong with it. */
   mapping: DayMappingState;
   /** Phase 3: why no template could be mapped, when none is. */
   unmappedReason: MappingIssue | null;
-  studioAspect: StudioAspectRatio | null;
-  /** "9:16" — for the message. */
-  targetAspectLabel: string;
+  /** The effective template's clone facts; null when there is no template row. */
+  template: DayTemplateShape | null;
   brandCanvas: BrandCanvasReadiness;
   generationStatus: PosterGenerationStatus | null;
   generationStartedAt: Date | null;
   dayRevision: number;
   activeVersion: { contentRevision: number } | null;
+  /**
+   * The day's delivery status, when it has a booking. A poster that has been sent,
+   * or is being sent right now, is final: it is never generated again. Absent or
+   * null means no booking.
+   */
+  deliveryStatus?: CampaignDeliveryStatus | null;
   /**
    * The caller is the background worker draining the queue (Phase 7), so a day
    * sitting in QUEUED is work to pick up rather than work in progress.
@@ -234,19 +274,25 @@ export function evaluatePosterEligibility(input: PosterEligibilityInput): Poster
   if (hasPoster && input.mode === 'upcoming' && !outdated) {
     return blocked('already-generated', 'Already generated.');
   }
+  // A sent poster is what the client received; one being sent is on its way.
+  // Neither is ever replaced (a past day is already refused above).
+  if (input.deliveryStatus === 'SENT') {
+    return blocked('day-locked', "This day's poster has been sent, so it can no longer change.");
+  }
+  if (input.deliveryStatus === 'SENDING') {
+    return blocked('day-locked', "This day's poster is being sent right now, so it can no longer change.");
+  }
 
-  if (input.contentStatus === 'NOT_GENERATED') {
-    return blocked('content-not-generated', 'Content not ready — no content has been written for this day.');
-  }
-  if (input.contentStatus !== 'READY') {
-    return blocked('content-needs-review', 'Content not ready — it needs review first.');
-  }
+  // No content gate: a clone's content is its template's own words, or an
+  // admin's edit of them, so a day with a read template is always READY.
 
   if (!input.mapping.templateId) {
     return blocked('no-template', `No template mapped${input.unmappedReason ? ` — ${input.unmappedReason.detail}` : '.'}`);
   }
-  if (needsAction(input.mapping)) {
-    const issue = input.mapping.issues.find((candidate) => candidate.severity === 'action')!;
+  // A clone comes out in its template's shape, so the client's output preset no
+  // longer makes a template incompatible: an aspect finding is not a blocker.
+  const issue = input.mapping.issues.find((candidate) => candidate.severity === 'action' && candidate.code !== 'aspect-mismatch');
+  if (issue) {
     const reason: PosterBlockReason =
       issue.code === 'template-inactive'
         ? 'template-inactive'
@@ -255,11 +301,17 @@ export function evaluatePosterEligibility(input: PosterEligibilityInput): Poster
           : 'template-incompatible';
     return blocked(reason, `${issue.title}: ${issue.detail}`);
   }
-
-  if (!input.studioAspect) {
+  if (!input.template) {
+    return blocked('template-unavailable', 'Template unavailable — action required: the assigned template could not be found. Choose another.');
+  }
+  if (!input.template.readable) {
+    return blocked('template-not-read', TEMPLATE_NOT_READ_MESSAGE);
+  }
+  if (!templateOutputSize(input.template)) {
+    const measured = input.template.width && input.template.height ? `${input.template.width}×${input.template.height}` : 'unmeasured';
     return blocked(
       'unsupported-aspect',
-      `This client's ${input.targetAspectLabel} output is not a Poster Studio format (9:16, 1:1 or 16:9). Change the client's output size.`,
+      `Template “${input.template.label}” is ${measured}: clones are made between 1:3 and 3:1, from a measured template. Use another template.`,
     );
   }
   if (!input.brandCanvas.available) {

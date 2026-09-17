@@ -726,9 +726,10 @@ async function renderBand(band: BandLayout, plan: StudioOverlayPlan, palette: Fo
 /**
  * Scales the logo into its box. Scaling only: no trim, no recolour. A vector
  * logo is rasterised at a density that renders it at the target size directly,
- * rather than resampling a small raster up.
+ * rather than resampling a small raster up. Shared with `composeCloneIdentity`,
+ * which places the same logo into a template's own logo box.
  */
-async function rasterizeLogo(logo: ResolvedStudioLogo, width: number, height: number): Promise<Buffer> {
+export async function rasterizeLogo(logo: ResolvedStudioLogo, width: number, height: number): Promise<Buffer> {
   if (logo.isSvg) {
     const intrinsic = Math.max(logo.width, logo.height) || 1;
     const density = Math.min(2400, Math.max(72, Math.ceil((Math.max(width, height) / intrinsic) * 72 * 2)));

@@ -501,11 +501,12 @@ the client is already generated.
 | `npm run build` | `prisma generate` + production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint (next/core-web-vitals) |
-| `npm run check:secret-box` | Fixture suite for the at-rest encryption — no database needed |
-| `npm run check:plate` | Compositing, hole detection and ink sampling for the clean-plate path |
-| `npm run check:risk` | The auto-approval gate, against four real templates that render fine and are wrong |
-| `npm run layouts:read <vertical>` | Read a layout for every template in a vertical that has none, approving the clean ones. One vision call per template |
-| `npm run layouts:approve <vertical>` | Approve every stored layout in a vertical that would render. `--dry-run` to preview; never un-approves |
-| `npm run check:fleet -- ./review` | Render every stored spec, approved or not, to a folder. The review surface |
+| `npm run check:campaign-board` / `check:campaign-board-db` | The one-screen campaign board: its pure rules / its services against the database |
+| `npm run check:campaign-clone` / `check:campaign-clone-db` | Clone mode's campaign rules (clone into queue, element edits, rewrite) / its services and actions against the database |
+| `npm run check:campaign-clone-edit-db` | Poster Studio's template poster editor services against the database |
+| `npm run check:clone-editor-view` | The template poster editor's view model (form sections, unsaved changes, status chip) — no database needed |
+| `npm run check:template-elements` / `check:template-elements-view` | Template clone mode's element contract, reader and clone prompt / how a reading is shown on the vertical page |
+| `npm run check:legacy-calendar-clear-db` | Clearing a client's unsent pre-campaign calendar days, against the database |
+| `npm run templates:read-elements -- --yes` | Read the elements of every template that has none. One billed vision call each; without `--yes` it only lists what it would read |
 | `npm run prisma:push` | Push schema without migrations |
 | `npm run prisma:studio` | Browse/seed data |

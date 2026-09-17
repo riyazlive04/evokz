@@ -1,4 +1,4 @@
-import { DeliveryStatus } from '@prisma/client';
+import { CampaignDeliveryStatus, DeliveryStatus } from '@prisma/client';
 import { Users } from 'lucide-react';
 
 import { ClientMatrix, type ClientRow } from '@/components/admin/ClientMatrix';
@@ -6,10 +6,9 @@ import { CreateClientDialog } from '@/components/admin/CreateClientDialog';
 import { PageHeader } from '@/components/admin/PageHeader';
 import { DatabaseErrorState } from '@/components/admin/SystemNotices';
 import { Card, CardContent } from '@/components/ui/card';
-import { describeError } from '@/lib/ai-pipeline';
+import { describeError } from '@/lib/errors';
 import { prisma } from '@/lib/prisma';
 import { formatDisplayDate, getAppTimeZone } from '@/lib/time';
-import { parseBrandGuideline } from '@/lib/types/brand';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +28,7 @@ export default async function AdminClientsPage() {
         icon={Users}
         eyebrow="Tenants"
         title="Client matrix"
-        description="Every tenant, its campaign window, and its per-client dispatch minute. Delivery times are editable inline; select a company to open its detail view."
+        description="Every client, its plan window and the delivery time its new campaigns start from. Delivery times are editable inline; select a company to open its detail view."
       >
         <CreateClientDialog
           plans={data.planOptions}
@@ -54,13 +53,12 @@ interface ClientsData {
 }
 
 async function loadClients(timeZone: string): Promise<ClientsData> {
-  const [clientRecords, planRecords, categoryRecords, deliveredGroups, calendarGroups] =
+  const [clientRecords, planRecords, categoryRecords, sentGroups] =
     await Promise.all([
       prisma.client.findMany({
-        // Demo tenants live in their own section; mixing them into the matrix
-        // would put a prospect's throwaway record next to paying campaigns.
-        where: { isDemo: false },
-        orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],
+        // Demo tenants are listed too, badged: the demo workspace that used to
+        // hold them is retired, and this is now the only place to manage one.
+        orderBy: [{ isDemo: 'asc' }, { isActive: 'desc' }, { createdAt: 'desc' }],
         select: {
           id: true,
           companyName: true,
@@ -70,7 +68,7 @@ async function loadClients(timeZone: string): Promise<ClientsData> {
           endDate: true,
           isActive: true,
           gDriveFolderId: true,
-          brandGuideline: true,
+          isDemo: true,
           plan: { select: { name: true, durationDays: true } },
           category: { select: { name: true } },
         },
@@ -83,24 +81,23 @@ async function loadClients(timeZone: string): Promise<ClientsData> {
         orderBy: { name: 'asc' },
         select: { id: true, name: true },
       }),
+      // Sends per client: campaign days whose delivery went out, plus the
+      // delivered history of the retired daily poster maker (rows with no
+      // campaign). A campaign day never uses `deliveryStatus`, so no overlap.
       prisma.contentCalendar.groupBy({
         by: ['clientId'],
-        where: { deliveryStatus: DeliveryStatus.DELIVERED },
-        _count: { _all: true },
-      }),
-      // Total seeded rows per client, any status — drives the "calendar not
-      // written yet" prompt in the matrix.
-      prisma.contentCalendar.groupBy({
-        by: ['clientId'],
+        where: {
+          OR: [
+            { delivery: { is: { status: CampaignDeliveryStatus.SENT } } },
+            { campaignId: null, deliveryStatus: DeliveryStatus.DELIVERED },
+          ],
+        },
         _count: { _all: true },
       }),
     ]);
 
-  const deliveredByClient = new Map(
-    deliveredGroups.map((group) => [group.clientId, group._count._all]),
-  );
-  const calendarByClient = new Map(
-    calendarGroups.map((group) => [group.clientId, group._count._all]),
+  const sentByClient = new Map(
+    sentGroups.map((group) => [group.clientId, group._count._all]),
   );
 
   return {
@@ -116,11 +113,8 @@ async function loadClients(timeZone: string): Promise<ClientsData> {
         endDateLabel: formatDisplayDate(client.endDate, timeZone),
         isActive: client.isActive,
         hasDriveFolder: Boolean(client.gDriveFolderId),
-        // Narrowed here rather than shipping the raw Json column: ClientMatrix
-        // is a client component, and parseBrandGuideline should stay server-side.
-        hasBrandTokens: parseBrandGuideline(client.brandGuideline).colors.length > 0,
-        deliveredCount: deliveredByClient.get(client.id) ?? 0,
-        calendarCount: calendarByClient.get(client.id) ?? 0,
+        isDemo: client.isDemo,
+        deliveredCount: sentByClient.get(client.id) ?? 0,
         totalDays: client.plan.durationDays,
       }),
     ),

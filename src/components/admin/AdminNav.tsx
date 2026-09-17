@@ -7,7 +7,6 @@ import {
   Database,
   Gauge,
   Layers,
-  MonitorPlay,
   Sparkles,
   Users,
   type LucideIcon,
@@ -36,11 +35,6 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/admin/plans', label: 'Plan', icon: Layers },
   { href: '/admin/verticals', label: 'Verticals', icon: Database },
   { href: '/admin/clients', label: 'Clients', icon: Users, nested: true },
-];
-
-/** Pinned to the far end of the bar — a sales surface, not a console section. */
-const TRAILING_NAV_ITEMS: NavItem[] = [
-  { href: '/admin/demo', label: 'Generate Now', icon: MonitorPlay, nested: true },
 ];
 
 export function AdminNav() {
@@ -75,7 +69,7 @@ export function AdminNav() {
         '-mb-px flex gap-1 overflow-x-auto',
         // Bleeds to the viewport edges on mobile so the row scrolls past the
         // layout's own padding instead of clipping the last tab against it. The
-        // negative margin is cancelled at `sm`, where all six fit unscrolled.
+        // negative margin is cancelled at `sm`, where every tab fits unscrolled.
         '-mx-4 px-4 sm:mx-0 sm:px-0',
         // The horizontal bar sits directly under the header's own border, and a
         // permanent scrollbar gutter on desktop-class browsers would read as a
@@ -84,14 +78,6 @@ export function AdminNav() {
       )}
     >
       {NAV_ITEMS.map(renderItem)}
-      {/*
-        `ml-auto` only from `sm`. Inside a scrolling flex row it resolves against
-        the *content* width, not the visible width, so on mobile it added a gap
-        the operator had to scroll through to reach Posters and Demo.
-      */}
-      <span className="flex gap-1 pl-2 sm:ml-auto sm:pl-6">
-        {TRAILING_NAV_ITEMS.map(renderItem)}
-      </span>
     </nav>
   );
 }
