@@ -33,6 +33,7 @@ import { SAMPLE_LAYOUT_SPEC } from '@/lib/poster/sample-layout';
 import { renderPoster } from '@/lib/poster/render';
 import { EMPTY_BRAND_GUIDELINE } from '@/lib/types/brand';
 import {
+  clampHeadlineEmphasis,
   countPhotoSlots,
   normalizeLayoutSpec,
   parseLayoutSpec,
@@ -342,6 +343,25 @@ function validationChecks(): void {
   check(
     'normalisation leaves a photo cell bleeding',
     unpadded.rows[1]?.cells[0]?.padded === false,
+  );
+
+  // A five-line reference headline used to fail the parse outright and store no
+  // layout at all — seen on a real upload, and re-reading reproduced it.
+  const fiveLines = clampHeadlineEmphasis({
+    ...(spec([row([cell(['headline'])], 'flex')]) as Record<string, unknown>),
+    headlineEmphasis: ['heavy', 'plain', 'plain', 'accent', 'plain'],
+  });
+  const clamped = posterLayoutSpecSchema.safeParse(fiveLines);
+  check(
+    'a five-line headline emphasis is clamped to four and parses',
+    clamped.success &&
+      clamped.data.headlineEmphasis.join(',') === 'heavy,plain,plain,accent',
+    clamped.success ? clamped.data.headlineEmphasis.join(',') : clamped.error.message,
+  );
+  const threeLines = { headlineEmphasis: ['plain', 'heavy', 'plain'] };
+  check(
+    'a headline emphasis within the limit is passed through untouched',
+    clampHeadlineEmphasis(threeLines) === threeLines,
   );
 
   check('a null column parses to null', parseLayoutSpec(null) === null);

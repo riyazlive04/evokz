@@ -101,7 +101,6 @@ async function suite(): Promise<void> {
   const { LEGACY_CALENDAR } = await import('@/lib/calendar-scope');
   const { CampaignDomainError, addPosterVersion, changeCampaignStatus, createCampaign, selectDayTemplate } = service;
 
-  const noHtml = { htmlAspectFor: async () => null };
   async function expectDomainError(name: string, code: string, work: () => Promise<unknown>) {
     try {
       await work();
@@ -154,10 +153,12 @@ async function suite(): Promise<void> {
   const tB = await template('B');
   const tC = await template('C promo', { contentTypes: ['promo'] });
   const tInactive = await template('Inactive', { isActive: false });
-  const tDraft = await template('Draft', { layoutApprovedAt: null });
+  // No approved layout. Created inactive so the rotation below stays A, B, C;
+  // 'templates need no approval' activates it and uses it.
+  const tDraft = await template('Draft', { layoutApprovedAt: null, isActive: false });
   const tSquare = await template('Square', { layoutSpec: square, width: 1080, height: 1080 });
   const tForeign = await template('Foreign', { categoryId: otherVertical.id });
-  await template('Empty draft', { categoryId: emptyVertical.id, layoutApprovedAt: null });
+  await template('Empty inactive', { categoryId: emptyVertical.id, isActive: false });
 
   const client = (name: string, data: Partial<Prisma.ClientUncheckedCreateInput> = {}) =>
     tx.client.create({
@@ -187,14 +188,14 @@ async function suite(): Promise<void> {
   const campaignRows = (campaignId: string) => tx.contentCalendar.findMany({ where: { campaignId }, orderBy: { dayNumber: 'asc' } });
   const campaignCBefore = snapshot(await campaignRows(campaignC));
   const day = async (campaignId: string, n: number) => (await service.findCampaignDay(tx, campaignId, n))!;
-  const overview = (campaignId: string) => mapping.loadCampaignMappingOverview(tx, campaignId, noHtml);
+  const overview = (campaignId: string) => mapping.loadCampaignMappingOverview(tx, campaignId);
 
   // =======================================================================
   section('auto map preview');
   // =======================================================================
   const beforePreview = snapshot(await campaignRows(campaignA));
-  const p1 = await mapping.previewAutoMap(tx, campaignA, noHtml);
-  const p2 = await mapping.previewAutoMap(tx, campaignA, noHtml);
+  const p1 = await mapping.previewAutoMap(tx, campaignA);
+  const p2 = await mapping.previewAutoMap(tx, campaignA);
   t('preview is deterministic (identical plan twice)', snapshot(p1.plan) === snapshot(p2.plan));
   t('preview writes nothing', snapshot(await campaignRows(campaignA)) === beforePreview);
   t('context holds the 30 campaign days and no legacy row', p1.context.days.length === 30);
@@ -202,26 +203,26 @@ async function suite(): Promise<void> {
   t('client output preset gives the 9:16 target', p1.context.target.aspectLabel === '9:16');
   t('all 30 days get a new mapping', p1.plan.counts.new === 30 && p1.plan.counts.unmapped === 0, snapshot(p1.plan.counts));
   const used = new Set(p1.plan.entries.map((entry) => entry.templateId));
-  t('inactive, unapproved, wrong-shape and foreign templates are never chosen', ![tInactive.id, tDraft.id, tSquare.id, tForeign.id].some((id) => used.has(id)));
+  t('inactive, wrong-shape and foreign templates are never chosen', ![tInactive.id, tSquare.id, tForeign.id].some((id) => used.has(id)));
   const typeOf = new Map(p1.context.days.map((d) => [d.dayNumber, d.contentType]));
-  t('the promo-tagged template lands only on promo days', p1.plan.entries.every((entry) => entry.templateId !== tC.id || typeOf.get(entry.dayNumber) === 'promo'));
+  t('a content-type tag no longer restricts a template', p1.plan.entries.some((entry) => entry.templateId === tC.id && typeOf.get(entry.dayNumber) !== 'promo'));
   t('no template on two consecutive days', p1.plan.entries.every((entry, i, all) => i === 0 || entry.templateId !== all[i - 1]!.templateId));
 
   // =======================================================================
   section('apply auto map');
   // =======================================================================
-  await expectDomainError('a stale fingerprint is refused', 'conflict', () => mapping.applyAutoMap(tx, campaignA, { ...noHtml, fingerprint: 'stale' }));
+  await expectDomainError('a stale fingerprint is refused', 'conflict', () => mapping.applyAutoMap(tx, campaignA, { fingerprint: 'stale' }));
   t('…and writes nothing', snapshot(await campaignRows(campaignA)) === beforePreview);
   const mappedAt = new Date('2026-09-15T10:00:00Z');
-  const applied = await mapping.applyAutoMap(tx, campaignA, { ...noHtml, fingerprint: p1.plan.fingerprint, now: mappedAt });
+  const applied = await mapping.applyAutoMap(tx, campaignA, { fingerprint: p1.plan.fingerprint, now: mappedAt });
   t('apply writes 30 days and bumps 30 revisions', applied.daysWritten === 30 && applied.revisionsBumped === 30);
   const afterApply = await campaignRows(campaignA);
   t('suggestions stored exactly as previewed', afterApply.every((row) => row.suggestedTemplateId === p1.plan.entries[row.dayNumber - 1]!.templateId));
   t('AUTO mapping time recorded, no manual selection written', afterApply.every((row) => row.templateSuggestedAt?.getTime() === mappedAt.getTime() && row.posterTemplateId === null && row.templateSelectedAt === null));
   t('revision bumped once (effective template changed)', afterApply.every((row) => row.contentRevision === 2));
-  const again = await mapping.previewAutoMap(tx, campaignA, noHtml);
+  const again = await mapping.previewAutoMap(tx, campaignA);
   t('running Auto Map again with identical inputs changes nothing', again.plan.counts.keep === 30 && again.plan.counts.changes === 0);
-  const noop = await mapping.applyAutoMap(tx, campaignA, { ...noHtml, fingerprint: again.plan.fingerprint });
+  const noop = await mapping.applyAutoMap(tx, campaignA, { fingerprint: again.plan.fingerprint });
   t('…and applying it writes nothing', noop.daysWritten === 0 && snapshot(await campaignRows(campaignA)) === snapshot(afterApply));
 
   // =======================================================================
@@ -231,11 +232,11 @@ async function suite(): Promise<void> {
     const d4 = await day(campaignA, 4);
     const other = d4.suggestedTemplateId === tA.id ? tB.id : tA.id;
     const selectedAt = new Date('2026-09-15T11:00:00Z');
-    const r = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [4], templateId: other }, { ...noHtml, now: selectedAt });
+    const r = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [4], templateId: other }, { now: selectedAt });
     const after = await day(campaignA, 4);
     t('day 4 → manual template', r.changedDays.join() === '4' && after.posterTemplateId === other && after.templateSelectedAt?.getTime() === selectedAt.getTime());
     t('…the AUTO suggestion is kept beneath it, revision +1', after.suggestedTemplateId === d4.suggestedTemplateId && after.contentRevision === d4.contentRevision + 1);
-    const repeat = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [4], templateId: other }, noHtml);
+    const repeat = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [4], templateId: other });
     t('assigning the same template again is a no-op (no duplicate mapping)', repeat.unchanged === 1 && repeat.changedDays.length === 0 && (await day(campaignA, 4)).contentRevision === after.contentRevision);
   }
 
@@ -244,40 +245,37 @@ async function suite(): Promise<void> {
   // =======================================================================
   {
     const before = await campaignRows(campaignA);
-    const bulk = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [2, 5, 8, 11], templateId: tA.id }, noHtml);
+    const bulk = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [2, 5, 8, 11], templateId: tA.id });
     const after = await campaignRows(campaignA);
     t('days 2, 5, 8, 11 → template A', [2, 5, 8, 11].every((n) => after[n - 1]!.posterTemplateId === tA.id) && bulk.changedDays.join() === '2,5,8,11');
     const expectedBumps = [2, 5, 8, 11].filter((n) => before[n - 1]!.suggestedTemplateId !== tA.id).length;
     t('revision moves only where the effective template changed', bulk.revisionsBumped === expectedBumps && [2, 5, 8, 11].every((n) => after[n - 1]!.contentRevision === before[n - 1]!.contentRevision + (before[n - 1]!.suggestedTemplateId !== tA.id ? 1 : 0)));
     t('no other day changed', after.every((row, i) => [2, 5, 8, 11].includes(row.dayNumber) || snapshot(row) === snapshot(before[i])));
 
-    const day22Type = (await mapping.loadMappingContext(tx, campaignA, noHtml)).days[21]!.contentType;
-    const on22 = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [22], templateId: tC.id }, noHtml);
-    t('the promo-tagged template on day 22 warns exactly when day 22 is not promo', (day22Type !== 'promo') === on22.warnings.some((w) => /not tagged/.test(w)), `${day22Type} ${snapshot(on22.warnings)}`);
-    const range = await mapping.assignManualTemplates(tx, campaignA, { kind: 'range', fromDay: 20, toDay: 25, templateId: tB.id }, { ...noHtml, skipManual: true });
+    const on22 = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [22], templateId: tC.id });
+    t('a manual choice gives no content-type warning', on22.warnings.length === 0, snapshot(on22.warnings));
+    const range = await mapping.assignManualTemplates(tx, campaignA, { kind: 'range', fromDay: 20, toDay: 25, templateId: tB.id }, { skipManual: true });
     const rangeRows = await campaignRows(campaignA);
     t('days 20–25 → template B, skipping the manual day 22', [20, 21, 23, 24, 25].every((n) => rangeRows[n - 1]!.posterTemplateId === tB.id) && rangeRows[21]!.posterTemplateId === tC.id && range.skippedManual === 1);
 
-    const pattern = await mapping.assignManualTemplates(tx, campaignA, { kind: 'pattern', fromDay: 26, toDay: 30, templateIds: [tA.id, tB.id] }, noHtml);
+    const pattern = await mapping.assignManualTemplates(tx, campaignA, { kind: 'pattern', fromDay: 26, toDay: 30, templateIds: [tA.id, tB.id] });
     const patternRows = await campaignRows(campaignA);
     t('pattern A, B repeated over days 26–30', [tA.id, tB.id, tA.id, tB.id, tA.id].every((id, i) => patternRows[25 + i]!.posterTemplateId === id) && pattern.changedDays.join() === '26,27,28,29,30');
 
-    const typeOfDay1 = (await mapping.loadMappingContext(tx, campaignA, noHtml)).days[0]!.contentType;
-    const warned = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [1], templateId: tC.id }, noHtml);
-    t('a manual choice of a differently tagged template is allowed and warned', typeOfDay1 === 'promo' ? warned.warnings.length === 0 : warned.warnings.some((w) => /not tagged/.test(w)), snapshot(warned.warnings));
-    const shapeWarn = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [12], templateId: tSquare.id }, noHtml);
-    t('a manual choice of a different shape is allowed and warned', shapeWarn.warnings.some((w) => /draws 1:1 posters, not 9:16/.test(w)), snapshot(shapeWarn.warnings));
+    const warned = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [1], templateId: tC.id });
+    t('a differently tagged template is assigned without a warning', warned.warnings.length === 0, snapshot(warned.warnings));
+    const shapeWarn = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [12], templateId: tSquare.id });
+    t('a manual choice of a different shape is allowed and warned', shapeWarn.warnings.some((w) => /is 1:1, not 9:16/.test(w)), snapshot(shapeWarn.warnings));
     const d12 = await day(campaignA, 12);
-    const cleared = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [12], templateId: null }, noHtml);
+    const cleared = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [12], templateId: null });
     const d12After = await day(campaignA, 12);
     t('clearing a manual template returns the day to its AUTO mapping', cleared.changedDays.join() === '12' && d12After.posterTemplateId === null && d12After.templateSelectedAt === null && d12After.suggestedTemplateId === d12.suggestedTemplateId && d12After.contentRevision === d12.contentRevision + 1);
 
     const snap = snapshot(await campaignRows(campaignA));
-    await expectDomainError('a day listed twice is refused', 'invalid-input', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [3, 3], templateId: tA.id }, noHtml));
-    await expectDomainError('an inactive template is refused', 'template-not-assignable', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'range', fromDay: 1, toDay: 30, templateId: tInactive.id }, noHtml));
-    await expectDomainError('an unapproved template is refused', 'template-not-assignable', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [3], templateId: tDraft.id }, noHtml));
-    await expectDomainError('a template from another vertical is refused', 'template-not-assignable', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'pattern', fromDay: 1, toDay: 4, templateIds: [tA.id, tForeign.id] }, noHtml));
-    await expectDomainError('a day outside the campaign is refused', 'invalid-input', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [31], templateId: tA.id }, noHtml));
+    await expectDomainError('a day listed twice is refused', 'invalid-input', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [3, 3], templateId: tA.id }));
+    await expectDomainError('an inactive template is refused', 'template-not-assignable', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'range', fromDay: 1, toDay: 30, templateId: tInactive.id }));
+    await expectDomainError('a template from another vertical is refused', 'template-not-assignable', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'pattern', fromDay: 1, toDay: 4, templateIds: [tA.id, tForeign.id] }));
+    await expectDomainError('a day outside the campaign is refused', 'invalid-input', () => mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [31], templateId: tA.id }));
     t('refused requests write nothing, not even partially', snapshot(await campaignRows(campaignA)) === snap);
   }
 
@@ -288,9 +286,9 @@ async function suite(): Promise<void> {
     const before = await campaignRows(campaignA);
     const manualBefore = before.filter((row) => row.posterTemplateId).map((row) => [row.dayNumber, row.posterTemplateId, row.templateSelectedAt?.toISOString()]);
     for (const scope of ['fill', 'rebalance'] as const) {
-      const preview = await mapping.previewAutoMap(tx, campaignA, { ...noHtml, scope });
+      const preview = await mapping.previewAutoMap(tx, campaignA, { scope });
       t(`${scope}: manual days are reported MANUAL and never written`, preview.plan.entries.filter((entry) => entry.outcome === 'manual').length === manualBefore.length && preview.plan.entries.every((entry) => entry.outcome !== 'manual' || (!entry.writesSuggestion && !entry.effectiveChanges)));
-      await mapping.applyAutoMap(tx, campaignA, { ...noHtml, scope, fingerprint: preview.plan.fingerprint });
+      await mapping.applyAutoMap(tx, campaignA, { scope, fingerprint: preview.plan.fingerprint });
       const after = await campaignRows(campaignA);
       t(`${scope}: every manual selection survives the apply`, snapshot(after.filter((row) => row.posterTemplateId).map((row) => [row.dayNumber, row.posterTemplateId, row.templateSelectedAt?.toISOString()])) === snapshot(manualBefore));
     }
@@ -312,7 +310,7 @@ async function suite(): Promise<void> {
     t('every affected day: "Template inactive — action required"', flagged.length === usesA.length && flagged.every((row) => row.issue.title === 'Template inactive — action required'));
     t('…and still shows its template (not silently replaced)', usesA.every((row) => view.states.get(row.id)!.templateId === tA.id));
 
-    const preview = await mapping.previewAutoMap(tx, campaignA, noHtml);
+    const preview = await mapping.previewAutoMap(tx, campaignA);
     const manualOnA = preview.plan.entries.filter((entry) => entry.outcome === 'manual' && entry.templateId === tA.id);
     const autoOnA = preview.plan.entries.filter((entry) => entry.currentSource === 'AUTO' && entry.currentTemplateId === tA.id);
     t('Auto Map preview: manual days on it stay, with conflict and a suggested replacement', manualOnA.length > 0 && manualOnA.every((entry) => entry.conflict?.code === 'template-inactive' && entry.replacementTemplateId !== null && entry.replacementTemplateId !== tA.id && !entry.writesSuggestion));
@@ -320,15 +318,15 @@ async function suite(): Promise<void> {
 
     // Race: someone maps one of those auto days by hand before the preview is applied.
     const raced = autoOnA[0]!.dayNumber;
-    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [raced], templateId: tB.id }, noHtml);
-    await expectDomainError('applying a preview after a manual change meanwhile is refused', 'conflict', () => mapping.applyAutoMap(tx, campaignA, { ...noHtml, fingerprint: preview.plan.fingerprint }));
+    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [raced], templateId: tB.id });
+    await expectDomainError('applying a preview after a manual change meanwhile is refused', 'conflict', () => mapping.applyAutoMap(tx, campaignA, { fingerprint: preview.plan.fingerprint }));
     t('…and the manual change is intact', (await day(campaignA, raced)).posterTemplateId === tB.id);
 
     // Replacement workflow: a person replaces the manual days; Auto Map replaces the auto ones.
-    const replacement = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: manualOnA.map((entry) => entry.dayNumber), templateId: manualOnA[0]!.replacementTemplateId! }, noHtml);
+    const replacement = await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: manualOnA.map((entry) => entry.dayNumber), templateId: manualOnA[0]!.replacementTemplateId! });
     t('replacement applied to the manual days chosen', replacement.changedDays.join() === manualOnA.map((entry) => entry.dayNumber).join());
-    const fresh = await mapping.previewAutoMap(tx, campaignA, noHtml);
-    await mapping.applyAutoMap(tx, campaignA, { ...noHtml, fingerprint: fresh.plan.fingerprint });
+    const fresh = await mapping.previewAutoMap(tx, campaignA);
+    await mapping.applyAutoMap(tx, campaignA, { fingerprint: fresh.plan.fingerprint });
     const settled = await overview(campaignA);
     t('after replacement nothing needs attention and nothing uses the inactive template', settled.summary.attention.length === 0 && [...settled.states.values()].every((state) => state.templateId !== tA.id), snapshot(settled.summary.attention));
     t('legacy days pinned to the deactivated template are untouched', snapshot(await legacyRows()) === legacyBefore);
@@ -337,9 +335,9 @@ async function suite(): Promise<void> {
     t('deleting a template still mapped to campaign days is refused', !refused.ok && /campaign day/.test(refused.ok ? '' : refused.error) && (await tx.categoryTemplate.count({ where: { id: tB.id } })) === 1, refused.ok ? '' : refused.error);
 
     await tx.categoryTemplate.update({ where: { id: tC.id }, data: { layoutApprovedAt: null } });
-    const unapproved = await overview(campaignA);
-    const onC = [...unapproved.states.entries()].filter(([, state]) => state.templateId === tC.id);
-    t('withdrawn approval: days on it need action ("not approved")', onC.length > 0 && unapproved.summary.attention.filter((row) => row.issue.code === 'template-unapproved').length === onC.length);
+    const withoutApproval = await overview(campaignA);
+    const onC = [...withoutApproval.states.entries()].filter(([, state]) => state.templateId === tC.id);
+    t('withdrawing a layout approval changes nothing for campaigns', onC.length > 0 && withoutApproval.summary.attention.length === 0, snapshot(withoutApproval.summary.attention));
     await tx.categoryTemplate.update({ where: { id: tC.id }, data: { layoutApprovedAt: new Date(base) } });
     await mapping.setTemplateActive(tx, tA.id, true);
   }
@@ -352,7 +350,7 @@ async function suite(): Promise<void> {
     const version = await addPosterVersion(tx, { calendarDayId: d7.id, source: 'PIPELINE', imageDriveFileId: 'fixture-map-v1', imageMimeType: 'image/png', contentRevision: d7.contentRevision });
     const versionsBefore = snapshot(await tx.posterVersion.findMany({ where: { calendarDay: { campaignId: campaignA } }, orderBy: { id: 'asc' } }));
     const other = (d7.posterTemplateId ?? d7.suggestedTemplateId) === tA.id ? tB.id : tA.id;
-    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [7], templateId: other }, noHtml);
+    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [7], templateId: other });
     const after = await day(campaignA, 7);
     t('mapping change leaves versions and the active pointer as they were', snapshot(await tx.posterVersion.findMany({ where: { calendarDay: { campaignId: campaignA } }, orderBy: { id: 'asc' } })) === versionsBefore && after.activePosterVersionId === version.versionId);
     t('…and marks the poster outdated through the revision', !isVersionCurrent({ contentRevision: d7.contentRevision }, after));
@@ -362,10 +360,10 @@ async function suite(): Promise<void> {
   section('aspect ratio from the client output preset');
   // =======================================================================
   {
-    const preview = await mapping.previewAutoMap(tx, campaignS, noHtml);
+    const preview = await mapping.previewAutoMap(tx, campaignS);
     t('a 1:1 client gets only the square template', preview.context.target.aspectLabel === '1:1' && preview.plan.entries.every((entry) => entry.templateId === tSquare.id));
     t('a lone compatible template repeats and says so', preview.plan.entries.slice(1).every((entry) => entry.repeatsPreviousDay));
-    const result = await mapping.applyAutoMap(tx, campaignS, { ...noHtml, fingerprint: preview.plan.fingerprint });
+    const result = await mapping.applyAutoMap(tx, campaignS, { fingerprint: preview.plan.fingerprint });
     t('…and applying maps all 10 days to it', result.daysWritten === 10);
   }
 
@@ -374,22 +372,22 @@ async function suite(): Promise<void> {
   // =======================================================================
   {
     const view = await overview(campaignE);
-    t('all 5 days unmapped, each needing attention with the reason', view.summary.unmapped === 5 && view.summary.attention.length === 5 && view.summary.attention.every((row) => row.issue.code === 'no-compatible-template' && /both active and approved/.test(row.issue.detail)), snapshot(view.summary.attention[0]));
-    const preview = await mapping.previewAutoMap(tx, campaignE, noHtml);
-    const result = await mapping.applyAutoMap(tx, campaignE, { ...noHtml, fingerprint: preview.plan.fingerprint });
+    t('all 5 days unmapped, each needing attention with the reason', view.summary.unmapped === 5 && view.summary.attention.length === 5 && view.summary.attention.every((row) => row.issue.code === 'no-compatible-template' && /is active/.test(row.issue.detail)), snapshot(view.summary.attention[0]));
+    const preview = await mapping.previewAutoMap(tx, campaignE);
+    const result = await mapping.applyAutoMap(tx, campaignE, { fingerprint: preview.plan.fingerprint });
     t('Auto Map assigns nothing incompatible', preview.plan.counts.unmapped === 5 && result.daysWritten === 0);
     await changeCampaignStatus(tx, campaignE, 'CANCELLED');
-    await expectDomainError('a cancelled campaign refuses manual mapping', 'campaign-closed', () => mapping.assignManualTemplates(tx, campaignE, { kind: 'days', dayNumbers: [1], templateId: null }, noHtml));
-    await expectDomainError('a cancelled campaign refuses Auto Map', 'campaign-closed', () => mapping.applyAutoMap(tx, campaignE, { ...noHtml, fingerprint: preview.plan.fingerprint }));
+    await expectDomainError('a cancelled campaign refuses manual mapping', 'campaign-closed', () => mapping.assignManualTemplates(tx, campaignE, { kind: 'days', dayNumbers: [1], templateId: null }));
+    await expectDomainError('a cancelled campaign refuses Auto Map', 'campaign-closed', () => mapping.applyAutoMap(tx, campaignE, { fingerprint: preview.plan.fingerprint }));
   }
 
   // =======================================================================
   section('MANUAL mode campaign');
   // =======================================================================
   {
-    const preview = await mapping.previewAutoMap(tx, campaignM, noHtml);
+    const preview = await mapping.previewAutoMap(tx, campaignM);
     t('preview says applying switches the campaign to AUTO', preview.plan.switchesMode && preview.plan.counts.new === 6);
-    const result = await mapping.applyAutoMap(tx, campaignM, { ...noHtml, fingerprint: preview.plan.fingerprint });
+    const result = await mapping.applyAutoMap(tx, campaignM, { fingerprint: preview.plan.fingerprint });
     const campaign = await tx.campaign.findUniqueOrThrow({ where: { id: campaignM } });
     t('apply switched the mode and mapped every day', result.switchedToAuto && campaign.templateMappingMode === 'AUTO' && (await overview(campaignM)).summary.auto === 6);
     const rows = await campaignRows(campaignM);
@@ -397,6 +395,19 @@ async function suite(): Promise<void> {
     const afterManual = await campaignRows(campaignM);
     t('switching to MANUAL keeps suggestions but they stop counting (revisions move)', toManual.daysAffected === 6 && afterManual.every((row, i) => row.suggestedTemplateId === rows[i]!.suggestedTemplateId && row.contentRevision === rows[i]!.contentRevision + 1) && (await overview(campaignM)).summary.unmapped === 6);
     t('switching to the same mode is a no-op', (await mapping.changeTemplateMappingMode(tx, campaignM, 'MANUAL')).changed === false);
+  }
+
+  // =======================================================================
+  section('templates need no approval');
+  // =======================================================================
+  {
+    await mapping.setTemplateActive(tx, tDraft.id, true);
+    const assigned = await mapping.assignManualTemplates(tx, campaignM, { kind: 'days', dayNumbers: [1], templateId: tDraft.id });
+    t('an active template with no approved layout can be assigned', assigned.changedDays.join() === '1' && assigned.warnings.length === 0, snapshot(assigned));
+    const view = await overview(campaignM);
+    t('…and its day needs no attention', view.states.get((await day(campaignM, 1)).id)!.issues.length === 0, snapshot(view.summary.attention));
+    const preview = await mapping.previewAutoMap(tx, campaignM);
+    t('Auto Map picks it too', preview.plan.entries.some((entry) => entry.templateId === tDraft.id));
   }
 
   // =======================================================================
@@ -411,14 +422,14 @@ async function suite(): Promise<void> {
     t('assignCampaignTemplatesAction maps a range', assign.ok && assign.data.changedDays.join() === '1,2,3');
     const refusedAction = await asAction(() => campaignActions.assignCampaignTemplatesAction(campaignC, { kind: 'days', dayNumbers: [4], templateId: tInactive.id }));
     t('…and reports a refusal as operator copy', !refusedAction.ok && /inactive/.test(refusedAction.ok ? '' : refusedAction.error));
-    const tags = await asAction(() => campaignActions.setTemplateContentTypesAction(tB.id, ['promo', 'educational']));
-    t('content types saved in strategy order', tags.ok && tags.data.contentTypes.join() === 'educational,promo');
-    const badTag = await asAction(() => campaignActions.setTemplateContentTypesAction(tB.id, ['festival']));
-    t('a content type outside the vertical strategy is refused', !badTag.ok);
-    await tx.categoryTemplate.update({ where: { id: tB.id }, data: { contentTypes: [] } });
+    const saved = await asAction(() => campaignActions.setTemplatePromptAction(tB.id, '  Keep the curved footer.  '));
+    t('setTemplatePromptAction saves a trimmed prompt', saved.ok && saved.data.prompt === 'Keep the curved footer.' && (await tx.categoryTemplate.findUniqueOrThrow({ where: { id: tB.id } })).prompt === 'Keep the curved footer.');
+    const tooLong = await asAction(() => campaignActions.setTemplatePromptAction(tB.id, 'x'.repeat(1_001)));
+    t('a template prompt over 1000 characters is refused and nothing changes', !tooLong.ok && (await tx.categoryTemplate.findUniqueOrThrow({ where: { id: tB.id } })).prompt === 'Keep the curved footer.');
+    const cleared = await asAction(() => campaignActions.setTemplatePromptAction(tB.id, '   '));
+    t('a blank template prompt clears it', cleared.ok && cleared.data.prompt === null && (await tx.categoryTemplate.findUniqueOrThrow({ where: { id: tB.id } })).prompt === null);
     const deactivate = await asAction(() => campaignActions.setTemplateActiveAction(tSquare.id, false));
     t('setTemplateActiveAction reports affected open-campaign days', deactivate.ok && deactivate.data.campaignDaysAffected >= 10);
-    t('defaultHtmlAspectFor finds no authored template for a fixture label', (await mapping.defaultHtmlAspectFor('check:map A')) === null);
     const selected = await day(campaignC, 10);
     await selectDayTemplate(tx, selected.id, tA.id);
     t('Phase 1 selectDayTemplate now records when the selection was made', (await day(campaignC, 10)).templateSelectedAt !== null);

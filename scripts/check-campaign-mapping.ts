@@ -8,7 +8,6 @@
  */
 import {
   aspectFit,
-  contentFit,
   dayMappingState,
   describeAspect,
   diagnoseUnmapped,
@@ -39,7 +38,6 @@ const target = (overrides: Partial<MappingTarget> = {}): MappingTarget => ({
   mode: 'AUTO',
   aspect: PORTRAIT,
   aspectLabel: '9:16',
-  contentTypeLabels: { educational: 'Educational', promo: 'Promotional', 'myth-vs-fact': 'Myth vs fact' },
   ...overrides,
 });
 const tpl = (id: string, overrides: Partial<MappingTemplate> = {}): MappingTemplate => ({
@@ -47,9 +45,7 @@ const tpl = (id: string, overrides: Partial<MappingTemplate> = {}): MappingTempl
   label: id.toUpperCase(),
   categoryId: V,
   isActive: true,
-  approved: true,
   aspect: PORTRAIT,
-  contentTypes: [],
   ...overrides,
 });
 const days = (count: number, typeFor: (n: number) => string | null = () => 'educational', overrides: Record<number, Partial<MappingDay>> = {}): MappingDay[] =>
@@ -72,14 +68,11 @@ section('compatibility rules');
 t('same shape within 2% matches (1080×1918 vs 9:16)', aspectFit(1080 / 1918, PORTRAIT) === 'match');
 t('square template does not fit a 9:16 campaign', aspectFit(1, PORTRAIT) === 'mismatch');
 t('an unmeasured template fits (it renders at the preset)', aspectFit(0, PORTRAIT) === 'unmeasured');
-t('untagged template suits any content type', contentFit([], 'educational') === 'generic');
-t('tagged template suits its own type', contentFit(['educational'], 'educational') === 'specific');
-t('tagged template does not suit another type', contentFit(['promo'], 'educational') === 'mismatch');
 t('inactive template is blocked', templateBlocker(tpl('a', { isActive: false }), target()) === 'inactive');
-t('unapproved template is blocked', templateBlocker(tpl('a', { approved: false }), target()) === 'unapproved');
+t('an active template needs no approval', templateBlocker(tpl('a'), target()) === null);
 t('a template from another vertical is blocked first', templateBlocker(tpl('a', { categoryId: 'other', isActive: false }), target()) === 'wrong-vertical');
 t('describeAspect names common shapes', describeAspect(PORTRAIT) === '9:16' && describeAspect(1) === '1:1' && describeAspect(0.8) === '4:5' && describeAspect(0) === 'unmeasured');
-t('isAutoCompatible needs every rule', isAutoCompatible(tpl('a'), days(1)[0]!, target()) && !isAutoCompatible(tpl('a', { aspect: 1 }), days(1)[0]!, target()));
+t('isAutoCompatible needs every rule', isAutoCompatible(tpl('a'), target()) && !isAutoCompatible(tpl('a', { aspect: 1 }), target()) && !isAutoCompatible(tpl('a', { isActive: false }), target()));
 
 // ===========================================================================
 section('deterministic auto map');
@@ -104,24 +97,13 @@ section('deterministic auto map');
 }
 
 // ===========================================================================
-section('content type compatibility');
+section('content type does not restrict templates');
 // ===========================================================================
 {
-  const templates = [tpl('generic'), tpl('edu', { contentTypes: ['educational'] }), tpl('promo', { contentTypes: ['promo'] })];
-  const input = days(6, (n) => (n % 3 === 0 ? 'promo' : 'educational'));
+  const templates = [tpl('t1'), tpl('t2')];
+  const input = days(4, (n) => (n % 2 === 0 ? 'promo' : 'educational'));
   const plan = planAutoMap({ days: input, templates, target: target() });
-  const byDay = new Map(plan.entries.map((entry) => [entry.dayNumber, entry.templateId]));
-  t('a promo day gets the promo-tagged template', byDay.get(3) === 'promo' && byDay.get(6) === 'promo');
-  t('the promo template never lands on an educational day', plan.entries.every((entry) => entry.templateId !== 'promo' || input[entry.dayNumber - 1]!.contentType === 'promo'));
-  t('educational days prefer the educational-tagged template, avoiding repeats with the generic one', byDay.get(1) === 'edu' && byDay.get(2) === 'generic' && byDay.get(4) === 'edu', JSON.stringify([...byDay]));
-
-  const futureVertical = target({ categoryId: V, contentTypeLabels: { 'neighbourhood-guide': 'Neighbourhood guide', 'open-house': 'Open house' } });
-  const realEstate = planAutoMap({
-    days: days(2, (n) => (n === 1 ? 'neighbourhood-guide' : 'open-house')),
-    templates: [tpl('guide', { contentTypes: ['neighbourhood-guide'] }), tpl('open', { contentTypes: ['open-house'] })],
-    target: futureVertical,
-  });
-  t('works for any vertical\'s own content-type keys', pick(realEstate).join() === 'guide,open');
+  t('every template is used for every content type', pick(plan).join() === 't1,t2,t1,t2', pick(plan).join());
 }
 
 // ===========================================================================
@@ -133,23 +115,21 @@ section('aspect ratio compatibility');
   t('a 1:1 template is never auto-assigned to a 9:16 campaign', plan.entries.every((entry) => entry.templateId !== 'square'));
   t('a measured match ranks before an unmeasured template', pick(plan)[0] === 'portrait' && pick(plan)[1] === 'unmeasured');
   const onlySquare = planAutoMap({ days: days(2), templates: [tpl('square', { aspect: 1 })], target: target() });
-  t('no compatible shape → unmapped with a useful reason', onlySquare.counts.unmapped === 2 && /draws 9:16 posters \(available: 1:1\)/.test(onlySquare.entries[0]!.unmappedReason?.detail ?? ''), onlySquare.entries[0]!.unmappedReason?.detail);
+  t('no compatible shape → unmapped with a useful reason', onlySquare.counts.unmapped === 2 && /No active template is 9:16 \(available: 1:1\)/.test(onlySquare.entries[0]!.unmappedReason?.detail ?? ''), onlySquare.entries[0]!.unmappedReason?.detail);
 }
 
 // ===========================================================================
-section('inactive and unapproved templates are excluded');
+section('inactive templates are excluded');
 // ===========================================================================
 {
-  const plan = planAutoMap({ days: days(6), templates: [tpl('off', { isActive: false }), tpl('draft', { approved: false }), tpl('ok')], target: target() });
-  t('only the active, approved template is used', plan.entries.every((entry) => entry.templateId === 'ok'));
+  const plan = planAutoMap({ days: days(6), templates: [tpl('off', { isActive: false }), tpl('ok')], target: target() });
+  t('only the active template is used', plan.entries.every((entry) => entry.templateId === 'ok'));
   t('a lone compatible template repeats and says so (not unmapped)', plan.counts.unmapped === 0 && plan.entries.slice(1).every((entry) => entry.repeatsPreviousDay) && !plan.entries[0]!.repeatsPreviousDay);
-  const none = planAutoMap({ days: days(2), templates: [tpl('off', { isActive: false }), tpl('draft', { approved: false })], target: target() });
-  t('none active and approved → unmapped, reason names it', none.counts.unmapped === 2 && /both active and approved/.test(none.entries[0]!.unmappedReason?.detail ?? ''));
+  const none = planAutoMap({ days: days(2), templates: [tpl('off', { isActive: false })], target: target() });
+  t('none active → unmapped, reason names it', none.counts.unmapped === 2 && /is active/.test(none.entries[0]!.unmappedReason?.detail ?? ''), none.entries[0]!.unmappedReason?.detail);
   const empty = planAutoMap({ days: days(1), templates: [], target: target() });
   t('a vertical with no templates → unmapped, reason names it', empty.counts.unmapped === 1 && /no templates yet/.test(empty.entries[0]!.unmappedReason?.detail ?? ''));
-  const wrongType = diagnoseUnmapped(days(1, () => 'myth-vs-fact')[0]!, [tpl('edu', { contentTypes: ['educational'] })], target());
-  t('no template for the content type → reason names the type', /suits Myth vs fact/.test(wrongType?.detail ?? ''), wrongType?.detail);
-  t('diagnoseUnmapped is null when a template fits', diagnoseUnmapped(days(1)[0]!, [tpl('ok')], target()) === null);
+  t('diagnoseUnmapped is null when a template fits', diagnoseUnmapped([tpl('ok')], target()) === null);
 }
 
 // ===========================================================================
@@ -205,8 +185,6 @@ section('template deactivation');
   const noAlternative = planAutoMap({ days: days(1, () => 'educational', { 1: { suggestedTemplateId: 't1' } }), templates: [tpl('t1', { isActive: false })], target: target() });
   t('an AUTO day with no replacement becomes unmapped rather than keeping an inactive template', noAlternative.entries[0]!.outcome === 'unmapped' && noAlternative.entries[0]!.suggestedTemplateId === null && noAlternative.entries[0]!.conflict?.code === 'template-inactive');
 
-  const unapproved = dayMappingState(days(1, () => 'educational', { 1: { posterTemplateId: 'd' } })[0]!, new Map([['d', tpl('d', { approved: false })]]), target());
-  t('an unapproved assigned template needs action too', unapproved.issues[0]?.code === 'template-unapproved' && needsAction(unapproved));
   const shaped = dayMappingState(days(1, () => 'educational', { 1: { posterTemplateId: 's' } })[0]!, new Map([['s', tpl('s', { aspect: 1 })]]), target());
   t('a manual different-shape choice is a warning, not an action', shaped.issues[0]?.code === 'aspect-mismatch' && !needsAction(shaped));
 }
@@ -249,12 +227,12 @@ section('manual and bulk assignment expansion');
 section('summary');
 // ===========================================================================
 {
-  const templates = [tpl('t1', { isActive: false }), tpl('t2'), tpl('sq', { aspect: 1, contentTypes: ['promo'] })];
+  const templates = [tpl('t1', { isActive: false }), tpl('t2'), tpl('sq', { aspect: 1 })];
   const byId = new Map(templates.map((x) => [x.id, x]));
   const input = days(5, (n) => (n === 5 ? 'myth-vs-fact' : 'educational'), { 1: { posterTemplateId: 't1' }, 2: { posterTemplateId: 't2', suggestedTemplateId: 'sq' }, 3: { suggestedTemplateId: 't2' } });
   const rows = input.map((day) => {
     const state = dayMappingState(day, byId, target());
-    return { dayNumber: day.dayNumber, state, unmappedReason: state.templateId ? null : diagnoseUnmapped(day, templates, target()) };
+    return { dayNumber: day.dayNumber, state, unmappedReason: state.templateId ? null : diagnoseUnmapped(templates, target()) };
   });
   const summary = summarizeMapping(rows);
   t('counts mapped, auto, manual, unmapped, overridden', summary.mapped === 3 && summary.manual === 2 && summary.auto === 1 && summary.unmapped === 2 && summary.overridden === 1, JSON.stringify(summary));

@@ -2,6 +2,7 @@ import { generateStructured } from '@/lib/ai/openai';
 import { optionalEnv } from '@/lib/env';
 import { measuredAspect } from '@/lib/poster/canvas';
 import {
+  clampHeadlineEmphasis,
   normalizeLayoutSpec,
   posterLayoutSpecSchema,
   validateLayoutSpec,
@@ -441,7 +442,9 @@ export async function extractLayoutSpec(input: {
       ? (generated as Record<string, unknown>)
       : {};
 
-  const parsed = posterLayoutSpecSchema.safeParse(rest);
+  // The one bound the JSON Schema above leaves open is applied here rather than
+  // refused by the parse — see `clampHeadlineEmphasis`.
+  const parsed = posterLayoutSpecSchema.safeParse(clampHeadlineEmphasis(rest));
   if (!parsed.success) {
     // Structured Outputs make this close to impossible — it would mean the
     // hand-written JSON Schema above and the Zod schema have drifted apart.

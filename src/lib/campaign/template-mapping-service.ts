@@ -1,11 +1,10 @@
 import type { CampaignStatus, Prisma, PrismaClient, TemplateMappingMode } from '@prisma/client';
 
-import { pillarKeys, planContentTypes, resolveContentStrategy } from '@/lib/campaign/content-strategy';
+import { planContentTypes, resolveContentStrategy } from '@/lib/campaign/content-strategy';
 import { campaignAllowsChanges, effectiveTemplateId } from '@/lib/campaign/model';
 import { CampaignDomainError, type CampaignDb } from '@/lib/campaign/service';
 import {
   aspectFit,
-  contentFit,
   describeAspect,
   describeDays,
   diagnoseUnmapped,
@@ -26,9 +25,7 @@ import {
 } from '@/lib/campaign/template-mapping';
 import { optionalEnv } from '@/lib/env';
 import { resolveImageSizePreset } from '@/lib/image-sizes';
-import { findHtmlTemplateFor } from '@/lib/poster/html/template';
-import { parseLayoutSpec } from '@/lib/types/layout-spec';
-import { parsePlateSpec } from '@/lib/types/plate-spec';
+import { MAX_TEMPLATE_PROMPT_LENGTH } from '@/lib/template-limits';
 
 /**
  * Campaign template mapping — database operations of Phase 3.
@@ -66,34 +63,13 @@ function chunks<T>(items: readonly T[], size: number): T[][] {
 // Template shape
 // ---------------------------------------------------------------------------
 
-/**
- * The aspect of an authored HTML template drawing this label, or null.
- *
- * The pipeline prefers such a template over the plate and the grid, so its
- * manifest is the shape the poster is really drawn at. A read failure is not
- * a mapping failure: the template then falls back to its stored shapes.
- */
-export async function defaultHtmlAspectFor(label: string): Promise<number | null> {
-  try {
-    return (await findHtmlTemplateFor(label))?.manifest.aspect ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export type HtmlAspectLookup = (label: string) => Promise<number | null>;
-
 interface TemplateRow {
   id: string;
   label: string;
   categoryId: string;
   isActive: boolean;
-  contentTypes: string[];
-  layoutApprovedAt: Date | null;
-  layoutSpec: Prisma.JsonValue;
-  plateDriveFileId: string | null;
-  plateApprovedAt: Date | null;
-  plateSpec: Prisma.JsonValue;
+  width: number | null;
+  height: number | null;
   createdAt: Date;
 }
 
@@ -102,48 +78,25 @@ const templateSelect = {
   label: true,
   categoryId: true,
   isActive: true,
-  contentTypes: true,
-  layoutApprovedAt: true,
-  layoutSpec: true,
-  plateDriveFileId: true,
-  plateApprovedAt: true,
-  plateSpec: true,
+  width: true,
+  height: true,
   createdAt: true,
 } satisfies Prisma.CategoryTemplateSelect;
 
 /**
- * The shape a template's poster is drawn at, in the pipeline's own order:
- * authored HTML manifest, then an approved readable plate, then the layout
- * spec. 0 when none is measured — the poster then takes the client's preset.
+ * A template as the mapper sees it. Its shape is the template image's own,
+ * measured at upload — the image is what the poster is generated from — and 0
+ * when the upload could not be measured.
  */
-export function resolveTemplateAspect(row: TemplateRow, htmlAspect: number | null): number {
-  if (htmlAspect && htmlAspect > 0) return htmlAspect;
-  if (row.plateDriveFileId && row.plateApprovedAt) {
-    const plate = parsePlateSpec(row.plateSpec);
-    if (plate && plate.aspect > 0) return plate.aspect;
-  }
-  return parseLayoutSpec(row.layoutSpec)?.aspect ?? 0;
-}
-
-async function toMappingTemplates(rows: readonly TemplateRow[], htmlAspectFor: HtmlAspectLookup) {
-  return Promise.all(
-    rows.map(async (row) => {
-      const aspect = resolveTemplateAspect(row, await htmlAspectFor(row.label));
-      const template: MappingTemplate & { createdAt: Date; layoutApproved: boolean } = {
-        id: row.id,
-        label: row.label,
-        categoryId: row.categoryId,
-        isActive: row.isActive,
-        // What `resolveDayLayout` accepts for a pinned template.
-        approved: row.layoutApprovedAt !== null && parseLayoutSpec(row.layoutSpec) !== null,
-        layoutApproved: row.layoutApprovedAt !== null,
-        aspect,
-        contentTypes: row.contentTypes,
-        createdAt: row.createdAt,
-      };
-      return template;
-    }),
-  );
+function toMappingTemplates(rows: readonly TemplateRow[]): Array<MappingTemplate & { createdAt: Date }> {
+  return rows.map((row) => ({
+    id: row.id,
+    label: row.label,
+    categoryId: row.categoryId,
+    isActive: row.isActive,
+    aspect: row.width && row.height && row.width > 0 && row.height > 0 ? row.width / row.height : 0,
+    createdAt: row.createdAt,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -170,19 +123,11 @@ export interface MappingContext {
   };
   target: MappingTarget;
   /** The vertical's templates in upload order, then any foreign template a day references. */
-  templates: Array<MappingTemplate & { createdAt: Date; layoutApproved: boolean }>;
+  templates: Array<MappingTemplate & { createdAt: Date }>;
   days: MappingDayRow[];
 }
 
-export interface LoadOptions {
-  htmlAspectFor?: HtmlAspectLookup;
-}
-
-export async function loadMappingContext(
-  db: CampaignDb,
-  campaignId: string,
-  options: LoadOptions = {},
-): Promise<MappingContext> {
+export async function loadMappingContext(db: CampaignDb, campaignId: string): Promise<MappingContext> {
   const campaign = await db.campaign.findUnique({
     where: { id: campaignId },
     select: {
@@ -248,9 +193,8 @@ export async function loadMappingContext(
       mode: campaign.templateMappingMode,
       aspect: presetAspect,
       aspectLabel: describeAspect(presetAspect),
-      contentTypeLabels: Object.fromEntries(strategy.pillars.map((pillar) => [pillar.key, pillar.label])),
     },
-    templates: await toMappingTemplates([...verticalRows, ...foreignRows], options.htmlAspectFor ?? defaultHtmlAspectFor),
+    templates: toMappingTemplates([...verticalRows, ...foreignRows]),
     days: campaign.days.map((day) => {
       const plannedType = planned[day.dayNumber - 1] ?? null;
       return {
@@ -273,12 +217,8 @@ export interface CampaignMappingOverview {
 }
 
 /** The campaign's mapping as it stands: every day's state, the attention list and counts. */
-export async function loadCampaignMappingOverview(
-  db: CampaignDb,
-  campaignId: string,
-  options: LoadOptions = {},
-): Promise<CampaignMappingOverview> {
-  const context = await loadMappingContext(db, campaignId, options);
+export async function loadCampaignMappingOverview(db: CampaignDb, campaignId: string): Promise<CampaignMappingOverview> {
+  const context = await loadMappingContext(db, campaignId);
   const byId = new Map(context.templates.map((template) => [template.id, template]));
   const states = new Map<string, DayMappingState>();
   const unmappedReasons = new Map<string, MappingIssue>();
@@ -287,7 +227,7 @@ export async function loadCampaignMappingOverview(
   const rows = context.days.map((day) => {
     const state = dayMappingState(day, byId, context.target);
     states.set(day.id, state);
-    const reason = state.templateId ? null : diagnoseUnmapped(day, context.templates, context.target);
+    const reason = state.templateId ? null : diagnoseUnmapped(context.templates, context.target);
     if (reason) unmappedReasons.set(day.id, reason);
     if (state.templateId) {
       const counts = usage.get(state.templateId) ?? { auto: 0, manual: 0 };
@@ -314,9 +254,9 @@ function assertOpen(context: MappingContext): void {
 export async function previewAutoMap(
   db: CampaignDb,
   campaignId: string,
-  options: LoadOptions & { scope?: AutoMapScope } = {},
+  options: { scope?: AutoMapScope } = {},
 ): Promise<{ context: MappingContext; plan: AutoMapPlan }> {
-  const context = await loadMappingContext(db, campaignId, options);
+  const context = await loadMappingContext(db, campaignId);
   return {
     context,
     plan: planAutoMap({ days: context.days, templates: context.templates, target: context.target, scope: options.scope }),
@@ -344,12 +284,12 @@ export interface ApplyAutoMapResult {
 export async function applyAutoMap(
   db: CampaignDb,
   campaignId: string,
-  input: LoadOptions & { scope?: AutoMapScope; fingerprint: string; now?: Date },
+  input: { scope?: AutoMapScope; fingerprint: string; now?: Date },
 ): Promise<ApplyAutoMapResult> {
   const now = input.now ?? new Date();
 
   return withTransaction(db, async (tx) => {
-    const context = await loadMappingContext(tx, campaignId, input);
+    const context = await loadMappingContext(tx, campaignId);
     assertOpen(context);
     const plan = planAutoMap({ days: context.days, templates: context.templates, target: context.target, scope: input.scope });
     if (plan.fingerprint !== input.fingerprint) {
@@ -410,7 +350,7 @@ export interface ManualMappingResult {
   /** Days left alone because they already had a manual template (`skipManual`). */
   skippedManual: number;
   revisionsBumped: number;
-  /** Deliberate but notable choices: a different shape or content type. */
+  /** Deliberate but notable choices: a template of a different shape. */
   warnings: string[];
 }
 
@@ -420,19 +360,19 @@ export interface ManualMappingResult {
  * the days named; `skipManual` leaves days that already have one alone.
  *
  * Refused as a whole, before any write, when a template is from another
- * vertical, inactive or unapproved. A different shape or content type is
- * allowed and reported as a warning: a person choosing it is a decision.
+ * vertical or inactive. A different shape is allowed and reported as a warning:
+ * a person choosing it is a decision.
  */
 export async function assignManualTemplates(
   db: CampaignDb,
   campaignId: string,
   assignment: ManualAssignment,
-  options: LoadOptions & { skipManual?: boolean; now?: Date } = {},
+  options: { skipManual?: boolean; now?: Date } = {},
 ): Promise<ManualMappingResult> {
   const now = options.now ?? new Date();
 
   return withTransaction(db, async (tx) => {
-    const context = await loadMappingContext(tx, campaignId, options);
+    const context = await loadMappingContext(tx, campaignId);
     assertOpen(context);
 
     const expanded = expandManualAssignment(assignment, context.campaign.durationDays);
@@ -444,7 +384,7 @@ export async function assignManualTemplates(
     if (missing.length > 0) {
       const found = await tx.categoryTemplate.findMany({ where: { id: { in: missing } }, select: templateSelect });
       if (found.length !== missing.length) throw new CampaignDomainError('not-found', 'Template does not exist.');
-      for (const template of await toMappingTemplates(found, options.htmlAspectFor ?? defaultHtmlAspectFor)) {
+      for (const template of toMappingTemplates(found)) {
         templatesById.set(template.id, template);
       }
     }
@@ -456,9 +396,7 @@ export async function assignManualTemplates(
           'template-not-assignable',
           blocker === 'wrong-vertical'
             ? `“${template.label}” belongs to a different vertical from the campaign's.`
-            : blocker === 'inactive'
-              ? `“${template.label}” is inactive.`
-              : `“${template.label}” has no approved layout.`,
+            : `“${template.label}” is inactive.`,
         );
       }
     }
@@ -495,11 +433,7 @@ export async function assignManualTemplates(
       if (item.templateId) {
         const template = templatesById.get(item.templateId)!;
         if (aspectFit(template.aspect, context.target.aspect) === 'mismatch') {
-          const note = `“${template.label}” draws ${describeAspect(template.aspect)} posters, not ${context.target.aspectLabel}`;
-          warnings.set(note, [...(warnings.get(note) ?? []), day.dayNumber]);
-        }
-        if (day.contentType && contentFit(template.contentTypes, day.contentType) === 'mismatch') {
-          const note = `“${template.label}” is not tagged for ${context.target.contentTypeLabels?.[day.contentType] ?? day.contentType}`;
+          const note = `“${template.label}” is ${describeAspect(template.aspect)}, not ${context.target.aspectLabel}`;
           warnings.set(note, [...(warnings.get(note) ?? []), day.dayNumber]);
         }
       }
@@ -615,26 +549,23 @@ export async function setTemplateActive(
 }
 
 /**
- * Tags a template with the content types it suits — pillar keys of its
- * vertical's strategy, stored in strategy order. An empty list means "any".
+ * Saves the admin's prompt for a template, used by every campaign poster
+ * generated from it from now on. Blank clears it. Posters already generated keep
+ * the prompt they were made with — it is recorded in their `sentPrompt`.
  */
-export async function setTemplateContentTypes(
+export async function setTemplatePrompt(
   db: CampaignDb,
   templateId: string,
-  contentTypes: readonly string[],
-): Promise<{ contentTypes: string[] }> {
-  const template = await db.categoryTemplate.findUnique({
-    where: { id: templateId },
-    select: { category: { select: { contentStrategy: true } } },
-  });
-  if (!template) throw new CampaignDomainError('not-found', 'Template does not exist.');
-
-  const keys = pillarKeys(resolveContentStrategy(template.category.contentStrategy).strategy);
-  const unknown = contentTypes.filter((key) => !keys.includes(key));
-  if (unknown.length > 0) {
-    throw new CampaignDomainError('invalid-input', `"${unknown[0]}" is not a content type of this vertical's strategy.`);
+  prompt: string,
+): Promise<{ prompt: string | null }> {
+  const cleaned = prompt.trim() || null;
+  if (cleaned && cleaned.length > MAX_TEMPLATE_PROMPT_LENGTH) {
+    throw new CampaignDomainError(
+      'invalid-input',
+      `A template prompt can be at most ${MAX_TEMPLATE_PROMPT_LENGTH} characters.`,
+    );
   }
-  const ordered = keys.filter((key) => contentTypes.includes(key));
-  await db.categoryTemplate.update({ where: { id: templateId }, data: { contentTypes: ordered } });
-  return { contentTypes: ordered };
+  const updated = await db.categoryTemplate.updateMany({ where: { id: templateId }, data: { prompt: cleaned } });
+  if (updated.count === 0) throw new CampaignDomainError('not-found', 'Template does not exist.');
+  return { prompt: cleaned };
 }

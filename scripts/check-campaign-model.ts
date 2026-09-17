@@ -25,7 +25,6 @@ import {
   shouldAutoActivate,
   templateAspectRatio,
   templateAssignmentProblem,
-  templateSuitsContentType,
   touchesPosterInputs,
   type CampaignDayContent,
 } from '@/lib/campaign/model';
@@ -121,8 +120,6 @@ t('MANUAL: selection is used', effectiveTemplateId('MANUAL', { posterTemplateId:
 t('template from another vertical is refused', templateAssignmentProblem({ categoryId: 'x', isActive: true }, { categoryId: 'y' }) === 'wrong-vertical');
 t('inactive template is refused', templateAssignmentProblem({ categoryId: 'x', isActive: false }, { categoryId: 'x' }) === 'inactive');
 t('active same-vertical template is fine', templateAssignmentProblem({ categoryId: 'x', isActive: true }, { categoryId: 'x' }) === null);
-t('empty contentTypes suits anything', templateSuitsContentType({ contentTypes: [] }, 'festival'));
-t('tagged template suits only its types', templateSuitsContentType({ contentTypes: ['festival'] }, 'festival') && !templateSuitsContentType({ contentTypes: ['festival'] }, 'educational'));
 t('aspect ratio 1080×1920 → 9:16', templateAspectRatio(1080, 1920) === '9:16', String(templateAspectRatio(1080, 1920)));
 t('aspect ratio 1080×1350 → 4:5', templateAspectRatio(1080, 1350) === '4:5');
 t('unmeasured template has no aspect', templateAspectRatio(null, 1920) === null);

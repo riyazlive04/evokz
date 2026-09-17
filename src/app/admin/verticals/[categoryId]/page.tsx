@@ -18,10 +18,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { prisma } from '@/lib/prisma';
-import { parseLayoutSpec } from '@/lib/types/layout-spec';
-import { assessAutoApproval } from '@/lib/poster/layout-risk';
-import { parseLayoutDraft } from '@/lib/types/layout-spec';
-import { parsePlateDraft } from '@/lib/types/plate-spec';
 
 /**
  * Reference-template library for one vertical.
@@ -40,8 +36,8 @@ const UUID_PATTERN =
  * Templates listed at once.
  *
  * The cap is a hundred per vertical, and every card carries a Drive-hosted image
- * and its own layout picker — a hundred of those is a great deal of DOM for a
- * surface an operator works through a screenful at a time.
+ * and its own prompt box — a hundred of those is a great deal of DOM for a
+ * surface an admin works through a screenful at a time.
  */
 const TEMPLATES_PER_PAGE = 24;
 
@@ -66,9 +62,6 @@ export default async function VerticalDetailPage({
     select: {
       id: true,
       name: true,
-      // Shown on the panel so an operator can see what a new upload will be
-      // given, without having to upload one to find out.
-      defaultLayoutSpec: true,
       contentStrategy: true,
       _count: { select: { clients: true, templates: true } },
       templates: {
@@ -78,20 +71,10 @@ export default async function VerticalDetailPage({
         select: {
           id: true,
           label: true,
-          gDriveFileId: true,
-          gDriveViewUrl: true,
           width: true,
           height: true,
-          layoutSpec: true,
-          layoutReading: true,
-          layoutApprovedAt: true,
-      layoutAuthoredAt: true,
-          plateSpec: true,
-          plateDriveFileId: true,
-          plateApprovedAt: true,
-          paletteSource: true,
+          prompt: true,
           isActive: true,
-          contentTypes: true,
         },
       },
     },
@@ -137,53 +120,8 @@ export default async function VerticalDetailPage({
     viewUrl: `/api/templates/${template.id}/thumbnail?full=1`,
     width: template.width,
     height: template.height,
-    // `parseLayoutDraft`, not `parseLayoutSpec`. The strict parse answers "may
-    // this draw a poster?" and returns null for anything it refuses, which would
-    // show an operator "no layout read from this template yet" for a draft that
-    // was read fine and is one edit away from correct — hiding both the mistake
-    // and the fix. The console needs the geometry *and* the reasons.
-    ...(() => {
-      const draft = parseLayoutDraft(template.layoutSpec);
-      return {
-        // Serialised here rather than in the client component: the column is
-        // free-form Json and the editor needs the exact text it will post back.
-        layoutSpec: draft.spec ? JSON.stringify(draft.spec, null, 2) : null,
-        layoutProblems: draft.problems.map(
-          (problem) => `${problem.path} ${problem.message}`,
-        ),
-        /*
-         * Recomputed on every read rather than stored beside the spec.
-         *
-         * There is no column for it and there should not be: the assessment is a
-         * pure function of the spec and the reading, both already here, and a
-         * stored copy would go stale the moment the rules change — reporting
-         * "safe" for a template the current build would decline. Cheap enough to
-         * run for a page of twenty-four.
-         */
-        layoutRisks: draft.spec
-          ? assessAutoApproval(draft.spec, template.layoutReading).map((risk) => risk.message)
-          : [],
-      };
-    })(),
-    layoutReading: template.layoutReading,
-    layoutApproved: template.layoutApprovedAt !== null,
-    layoutAuthored: template.layoutAuthoredAt !== null,
-    // The plate, read as a draft for the same reason the layout is: a region map
-    // one edit from correct is far more useful shown with its faults than hidden.
-    ...(() => {
-      const draft = parsePlateDraft(template.plateSpec);
-      return {
-        hasPlate: template.plateDriveFileId !== null,
-        plateRegions: draft.spec?.photos.length ?? 0,
-        plateTextRegions: draft.spec?.text.length ?? 0,
-        plateSpec: draft.spec ? JSON.stringify(draft.spec, null, 2) : null,
-        plateProblems: draft.problems.map((problem) => `${problem.path} ${problem.message}`),
-        plateApproved: template.plateApprovedAt !== null,
-        usesTemplatePalette: template.paletteSource === 'template',
-      };
-    })(),
+    prompt: template.prompt,
     isActive: template.isActive,
-    contentTypes: template.contentTypes,
     campaignDays: campaignDaysFor(template.id),
   }));
 
@@ -192,27 +130,6 @@ export default async function VerticalDetailPage({
   // A page past the end — a hand-edited URL, or a template deleted from the last
   // page — would otherwise render an empty grid with no way back.
   if (page > pageCount) notFound();
-
-  // Counted in the database, not over `templates` — that array is now one page,
-  // and a per-page figure would report "3 of 24 mapped" on a library of ninety.
-  const [approvedLayouts, rereadableCount] = await Promise.all([
-    prisma.categoryTemplate.count({
-      where: { categoryId: category.id, layoutApprovedAt: { not: null } },
-    }),
-    /*
-     * How many templates a bulk re-read would actually touch.
-     *
-     * Counted so the panel can say so *before* the click. `extractVerticalLayouts`
-     * skips every authored layout outright — deliberately, since nobody pressing a
-     * bulk button is asking to discard fourteen hand-written specs — and a vertical
-     * whose templates were all applied from a fixture is now the normal state. That
-     * left the button offering "Re-read all 14?" and then reporting "0 layout(s)
-     * re-read", which reads as a broken button rather than a refused one.
-     */
-    prisma.categoryTemplate.count({
-      where: { categoryId: category.id, layoutAuthoredAt: null },
-    }),
-  ]);
 
   return (
     <>
@@ -233,11 +150,7 @@ export default async function VerticalDetailPage({
         icon={Layers}
         eyebrow="Configuration"
         title={category.name}
-        description={
-          approvedLayouts > 0
-            ? `Reference posters for this vertical. ${approvedLayouts} of ${totalTemplates} have an approved layout, and every poster this vertical's clients receive is drawn from one of them — either the template a calendar sheet named for that day, or a deterministic rotation across all ${approvedLayouts} when the sheet named none.`
-            : "No template in this vertical has an approved layout, so none of its clients can generate a poster at all — every render will fail until at least one is approved. On each card: Read layout, See this template rendered, then Approve layout."
-        }
+        description="Reference posters for this vertical. Every active template can be used for campaign posters: the AI takes the template as its visual reference, together with the day's content and the template prompt on its card."
       />
 
       <Card>
@@ -273,8 +186,8 @@ export default async function VerticalDetailPage({
             Reference templates
           </CardTitle>
           <CardDescription className="text-[11px]">
-            Competitor or house posters that show how {category.name} creatives should
-            look. Uploads land in this vertical&apos;s own Drive folder.
+            Posters that show how {category.name} creatives should look. Uploads land in
+            this vertical&apos;s own Drive folder.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -283,12 +196,6 @@ export default async function VerticalDetailPage({
             categoryName={category.name}
             templates={templates}
             totalCount={totalTemplates}
-            standardLayoutName={parseLayoutSpec(category.defaultLayoutSpec)?.name ?? null}
-            rereadableCount={rereadableCount}
-            pillars={resolveContentStrategy(category.contentStrategy).strategy.pillars.map((pillar) => ({
-              key: pillar.key,
-              label: pillar.label,
-            }))}
           />
 
           {pageCount > 1 && (

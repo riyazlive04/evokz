@@ -5,7 +5,7 @@ import { effectiveTemplateId } from '@/lib/campaign/model';
 /**
  * Campaign template mapping — the pure rules of Phase 3.
  *
- * Decides which approved template each campaign day uses. No database, no
+ * Decides which template each campaign day uses. No database, no
  * network, no poster: `template-mapping-service.ts` loads rows into these shapes
  * and writes the results back, and `npm run check:campaign-mapping` pins every
  * rule here without a database.
@@ -30,20 +30,10 @@ export interface MappingTemplate {
   categoryId: string;
   isActive: boolean;
   /**
-   * The layout is approved and readable by this build — exactly what
-   * `resolveDayLayout` accepts for a pinned template. A template that fails
-   * this cannot draw a poster, so it is never assigned.
-   */
-  approved: boolean;
-  /**
-   * Width ÷ height of the poster this template draws, resolved the way the
-   * pipeline resolves its canvas (authored HTML manifest, then approved plate,
-   * then layout spec). 0 means unmeasured: the poster takes the client's output
-   * preset shape, so it fits any campaign.
+   * Width ÷ height of the template image, measured at upload. 0 means
+   * unmeasured: it fits any campaign, ranked after a measured match.
    */
   aspect: number;
-  /** Content-type keys this template suits; empty means any. */
-  contentTypes: readonly string[];
 }
 
 /** One campaign day as the mapper sees it. */
@@ -68,8 +58,6 @@ export interface MappingTarget {
   aspect: number;
   /** "9:16" — for messages. */
   aspectLabel: string;
-  /** Pillar labels by key, for messages. Missing keys print as the key. */
-  contentTypeLabels?: Readonly<Record<string, string>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,31 +75,23 @@ export function aspectFit(templateAspect: number, targetAspect: number): AspectF
   return Math.abs(templateAspect / targetAspect - 1) <= ASPECT_TOLERANCE ? 'match' : 'mismatch';
 }
 
-export type ContentFit = 'specific' | 'generic' | 'mismatch';
+export type TemplateBlocker = 'wrong-vertical' | 'inactive';
 
-/** A template tagged for the day's type is `specific`; an untagged one suits anything. */
-export function contentFit(contentTypes: readonly string[], contentType: string | null): ContentFit {
-  if (contentTypes.length === 0 || contentType === null) return 'generic';
-  return contentTypes.includes(contentType) ? 'specific' : 'mismatch';
-}
-
-export type TemplateBlocker = 'wrong-vertical' | 'inactive' | 'unapproved';
-
-/** Why a template may not be assigned to any day of this campaign, or null. */
+/**
+ * Why a template may not be assigned to any day of this campaign, or null.
+ *
+ * There is no approval: an uploaded template is usable, and being active is the
+ * only switch an admin has.
+ */
 export function templateBlocker(template: MappingTemplate, target: Pick<MappingTarget, 'categoryId'>): TemplateBlocker | null {
   if (template.categoryId !== target.categoryId) return 'wrong-vertical';
   if (!template.isActive) return 'inactive';
-  if (!template.approved) return 'unapproved';
   return null;
 }
 
-/** Whether Auto Map may put this template on this day. */
-export function isAutoCompatible(template: MappingTemplate, day: MappingDay, target: MappingTarget): boolean {
-  return (
-    templateBlocker(template, target) === null &&
-    aspectFit(template.aspect, target.aspect) !== 'mismatch' &&
-    contentFit(template.contentTypes, day.contentType) !== 'mismatch'
-  );
+/** Whether Auto Map may put this template on a day of this campaign. */
+export function isAutoCompatible(template: MappingTemplate, target: MappingTarget): boolean {
+  return templateBlocker(template, target) === null && aspectFit(template.aspect, target.aspect) !== 'mismatch';
 }
 
 const NAMED_ASPECTS: ReadonlyArray<readonly [string, number]> = [
@@ -134,10 +114,6 @@ export function describeAspect(aspect: number): string {
   return named ? named[0] : `${aspect.toFixed(2)}:1`;
 }
 
-function typeLabel(target: MappingTarget, key: string): string {
-  return target.contentTypeLabels?.[key] ?? key;
-}
-
 // ---------------------------------------------------------------------------
 // A day's current mapping
 // ---------------------------------------------------------------------------
@@ -145,10 +121,8 @@ function typeLabel(target: MappingTarget, key: string): string {
 export type MappingIssueCode =
   | 'template-wrong-vertical'
   | 'template-inactive'
-  | 'template-unapproved'
   | 'template-missing'
   | 'aspect-mismatch'
-  | 'content-type-mismatch'
   | 'no-compatible-template';
 
 export interface MappingIssue {
@@ -176,8 +150,8 @@ export interface DayMappingState {
 /**
  * The effective mapping of one day and what is wrong with it.
  *
- * Nothing here changes anything. In particular a deactivated or unapproved
- * template stays assigned and is reported as needing action — replacing it is
+ * Nothing here changes anything. In particular a deactivated template stays
+ * assigned and is reported as needing action — replacing it is
  * always an explicit operator choice or an Auto Map run the operator previewed.
  */
 export function dayMappingState(
@@ -223,32 +197,16 @@ export function dayMappingState(
       title: 'Template inactive — action required',
       detail: `${name} was deactivated. It stays assigned until you choose a replacement.`,
     });
-  } else if (blocker === 'unapproved') {
-    state.issues.push({
-      code: 'template-unapproved',
-      severity: 'action',
-      title: 'Template not approved — action required',
-      detail: `${name} has no approved layout, so no poster can be drawn from it. Approve it or choose a replacement.`,
-    });
   }
 
-  // A person may pin a template that is the wrong shape or type on purpose; the
-  // mapper never does, so on an AUTO mapping the same finding needs action.
-  const severity = source === 'MANUAL' ? 'warning' : 'action';
+  // A person may pin a template that is the wrong shape on purpose; the mapper
+  // never does, so on an AUTO mapping the same finding needs action.
   if (aspectFit(template.aspect, target.aspect) === 'mismatch') {
     state.issues.push({
       code: 'aspect-mismatch',
-      severity,
+      severity: source === 'MANUAL' ? 'warning' : 'action',
       title: source === 'MANUAL' ? 'Different shape' : 'Different shape — action required',
-      detail: `${name} draws ${describeAspect(template.aspect)} posters; this client's output is ${target.aspectLabel}.`,
-    });
-  }
-  if (contentFit(template.contentTypes, day.contentType) === 'mismatch' && day.contentType) {
-    state.issues.push({
-      code: 'content-type-mismatch',
-      severity,
-      title: source === 'MANUAL' ? 'Different content type' : 'Different content type — action required',
-      detail: `${name} is tagged for ${template.contentTypes.map((key) => typeLabel(target, key)).join(', ')}, not ${typeLabel(target, day.contentType)}.`,
+      detail: `${name} is a ${describeAspect(template.aspect)} template; this client's output is ${target.aspectLabel}.`,
     });
   }
   return state;
@@ -262,30 +220,25 @@ export function needsAction(state: DayMappingState): boolean {
 /**
  * Why no template could be automatically mapped to this day, or null when at
  * least one is compatible. The narrowest failing rule is named, so the fix is
- * obvious: approve or activate something, add a template of the right shape,
- * or tag one for the day's content type.
+ * obvious: upload or activate a template, or add one of the right shape.
  */
 export function diagnoseUnmapped(
-  day: MappingDay,
   templates: readonly MappingTemplate[],
   target: MappingTarget,
 ): MappingIssue | null {
   const inVertical = templates.filter((template) => template.categoryId === target.categoryId);
   const usable = inVertical.filter((template) => templateBlocker(template, target) === null);
   const shaped = usable.filter((template) => aspectFit(template.aspect, target.aspect) !== 'mismatch');
-  const fitting = shaped.filter((template) => contentFit(template.contentTypes, day.contentType) !== 'mismatch');
-  if (fitting.length > 0) return null;
+  if (shaped.length > 0) return null;
 
   let detail: string;
   if (inVertical.length === 0) {
     detail = 'This vertical has no templates yet.';
   } else if (usable.length === 0) {
-    detail = `None of the vertical's ${inVertical.length} template(s) is both active and approved.`;
-  } else if (shaped.length === 0) {
-    const shapes = [...new Set(usable.map((template) => describeAspect(template.aspect)))].join(', ');
-    detail = `No active, approved template draws ${target.aspectLabel} posters (available: ${shapes}).`;
+    detail = `None of the vertical's ${inVertical.length} template(s) is active.`;
   } else {
-    detail = `No active, approved ${target.aspectLabel} template suits ${typeLabel(target, day.contentType ?? '')} — tag one for it, or keep one untagged.`;
+    const shapes = [...new Set(usable.map((template) => describeAspect(template.aspect)))].join(', ');
+    detail = `No active template is ${target.aspectLabel} (available: ${shapes}).`;
   }
   return { code: 'no-compatible-template', severity: 'action', title: 'No compatible template', detail };
 }
@@ -355,16 +308,15 @@ export interface AutoMapPlan {
  * was last used, then on template order (`templates` in upload order).
  *
  * For each day that is eligible, in day order, only compatible templates are
- * considered — active, approved, same vertical, a shape that fits, a content
- * type that fits. Those are hard rules. Among them, ranked:
+ * considered — active, same vertical, a shape that fits. Those are hard rules.
+ * Among them, ranked:
  *
  *   1. not the previous day's or the next fixed day's template (a repeat is
  *      unnecessary while any other compatible template exists);
- *   2. tagged for the day's content type before untagged;
- *   3. a measured matching shape before an unmeasured one;
- *   4. fewest days already using it in this campaign;
- *   5. least recently used;
- *   6. upload order.
+ *   2. a measured matching shape before an unmeasured one;
+ *   3. fewest days already using it in this campaign;
+ *   4. least recently used;
+ *   5. upload order.
  *
  * A day with no compatible template is left unmapped with the reason — an
  * incompatible template is never assigned to fill a gap.
@@ -388,7 +340,7 @@ export function planAutoMap(input: {
   const keepsSuggestion = (day: MappingDay): boolean => {
     if (scope === 'rebalance' || !day.suggestedTemplateId) return false;
     const template = byId.get(day.suggestedTemplateId);
-    return template !== undefined && isAutoCompatible(template, day, target);
+    return template !== undefined && isAutoCompatible(template, target);
   };
 
   // Templates whose day is settled before the walk: manual selections and kept suggestions.
@@ -402,14 +354,13 @@ export function planAutoMap(input: {
   for (const templateId of fixed.values()) usage.set(templateId, (usage.get(templateId) ?? 0) + 1);
   const lastUsed = new Map<string, number>();
 
-  const rank = (day: MappingDay, previous: string | null, next: string | null): MappingTemplate[] =>
+  const rank = (previous: string | null, next: string | null): MappingTemplate[] =>
     candidatesPool
-      .filter((template) => isAutoCompatible(template, day, target))
+      .filter((template) => isAutoCompatible(template, target))
       .map((template) => ({
         template,
         key: [
           template.id === previous || template.id === next ? 1 : 0,
-          contentFit(template.contentTypes, day.contentType) === 'specific' ? 0 : 1,
           aspectFit(template.aspect, target.aspect) === 'match' ? 0 : 1,
           usage.get(template.id) ?? 0,
           lastUsed.get(template.id) ?? Number.NEGATIVE_INFINITY,
@@ -452,7 +403,7 @@ export function planAutoMap(input: {
         templateId: day.posterTemplateId,
         suggestedTemplateId: day.suggestedTemplateId,
         conflict,
-        replacementTemplateId: conflict ? (rank(day, adjacentPrevious, nextFixed)[0]?.id ?? null) : null,
+        replacementTemplateId: conflict ? (rank(adjacentPrevious, nextFixed)[0]?.id ?? null) : null,
         writesSuggestion: false,
         effectiveChanges: false,
       });
@@ -462,7 +413,7 @@ export function planAutoMap(input: {
       if (keepsSuggestion(day)) {
         chosen = day.suggestedTemplateId;
       } else {
-        chosen = rank(day, adjacentPrevious, nextFixed)[0]?.id ?? null;
+        chosen = rank(adjacentPrevious, nextFixed)[0]?.id ?? null;
         if (chosen) usage.set(chosen, (usage.get(chosen) ?? 0) + 1);
       }
 
@@ -477,7 +428,7 @@ export function planAutoMap(input: {
         templateId: chosen,
         suggestedTemplateId: chosen,
         conflict,
-        unmappedReason: chosen === null ? diagnoseUnmapped(day, input.templates, target) : null,
+        unmappedReason: chosen === null ? diagnoseUnmapped(input.templates, target) : null,
         repeatsPreviousDay: chosen !== null && chosen === adjacentPrevious && !keepsSuggestion(day),
         writesSuggestion: chosen !== day.suggestedTemplateId,
         effectiveChanges: chosen !== current,

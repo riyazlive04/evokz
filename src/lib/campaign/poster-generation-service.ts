@@ -41,7 +41,6 @@ import type { DayMappingState, MappingIssue } from '@/lib/campaign/template-mapp
 import {
   loadCampaignMappingOverview,
   type CampaignMappingOverview,
-  type LoadOptions,
 } from '@/lib/campaign/template-mapping-service';
 import { MissingEnvError, optionalEnv } from '@/lib/env';
 import { resolveImageSizePreset } from '@/lib/image-sizes';
@@ -201,7 +200,7 @@ export interface PosterOverview {
   summary: PosterWindowSummary;
 }
 
-export interface PosterLoadOptions extends LoadOptions {
+export interface PosterLoadOptions {
   now?: Date;
   timeZone?: string;
 }
@@ -251,7 +250,7 @@ export async function loadPosterOverview(db: CampaignDb, campaignId: string, opt
   });
   if (!campaign) throw new CampaignDomainError('not-found', 'Campaign does not exist.');
 
-  const mapping = await loadCampaignMappingOverview(db, campaignId, options);
+  const mapping = await loadCampaignMappingOverview(db, campaignId);
   const window = generationWindow(now, campaign.generationWindowDays, timeZone);
   const studioAspect = studioAspectFor(mapping.context.target.aspect);
   const brandCanvas = brandCanvasReadiness({
@@ -520,7 +519,7 @@ export async function generateCampaignDayPoster(
 
     const template = await db.categoryTemplate.findUnique({
       where: { id: day.mapping.templateId! },
-      select: { id: true, label: true, gDriveFileId: true, mimeType: true },
+      select: { id: true, label: true, gDriveFileId: true, mimeType: true, prompt: true },
     });
     if (!template) throw new StudioError('validation', 'The mapped template no longer exists. Map another template to this day.');
     let reference: PreparedStudioImage;
@@ -552,6 +551,7 @@ export async function generateCampaignDayPoster(
       textFree: false,
       brand: canvas.brand,
       hasReference: true,
+      templatePrompt: template.prompt,
       identityBandFraction: identityBandFraction(aspectRatio),
     });
 

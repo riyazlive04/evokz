@@ -131,8 +131,7 @@ async function suite(): Promise<void> {
   const TZ = 'Asia/Kolkata';
   const NOW = new Date();
   const today = startOfZonedDay(NOW, TZ);
-  const noHtml = { htmlAspectFor: async () => null };
-  const load = { ...noHtml, timeZone: TZ, now: NOW };
+  const load = { timeZone: TZ, now: NOW };
 
   async function expectDomainError(name: string, code: string, work: () => Promise<unknown>) {
     try {
@@ -279,8 +278,8 @@ async function suite(): Promise<void> {
         },
       });
     }
-    const preview = await mapping.previewAutoMap(tx, campaignId, noHtml);
-    await mapping.applyAutoMap(tx, campaignId, { ...noHtml, fingerprint: preview.plan.fingerprint });
+    const preview = await mapping.previewAutoMap(tx, campaignId);
+    await mapping.applyAutoMap(tx, campaignId, { fingerprint: preview.plan.fingerprint });
     return campaignId;
   }
   const campaignA = await readyCampaign(clientA.id);
@@ -321,7 +320,7 @@ async function suite(): Promise<void> {
     const d6 = await dayRow(campaignA, 6);
     await tx.contentCalendar.update({ where: { id: d6.id }, data: { suggestedTemplateId: null } });
     const d7 = await dayRow(campaignA, 7);
-    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [7], templateId: tB.id }, noHtml);
+    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [7], templateId: tB.id });
     await mapping.setTemplateActive(tx, tB.id, false);
 
     const view = await overview(campaignA);
@@ -356,6 +355,9 @@ async function suite(): Promise<void> {
   // =======================================================================
   const d3 = await dayRow(campaignA, 3);
   {
+    // The admin's prompt on whichever template day 3 is mapped to.
+    const d3Template = (await posters.loadPosterOverview(tx, campaignA, load)).days.find((d) => d.id === d3.id)!.mapping.templateId!;
+    await tx.categoryTemplate.update({ where: { id: d3Template }, data: { prompt: 'Keep the curved blue footer.' } });
     const result = await generate(campaignA, d3.id, 'upcoming');
     t('day 3 generated as v1', result.outcome === 'generated' && result.versionNumber === 1, snapshot(result));
     if (result.outcome !== 'generated') throw new Error('cannot continue without a generated poster');
@@ -363,6 +365,7 @@ async function suite(): Promise<void> {
     t('one image request, 9:16 size, mapped template attached as the reference', renders.length === 1 && call.size === '1152x2048' && call.hasImage);
     t('the prompt carries the day content and the no-invented-branding rule', call.prompt.includes('Headline: "Headline for day 3"') && call.prompt.includes('No invented branding') && call.prompt.includes('Reference image:'));
     const secrets = [d3.id, campaignA, clientA.id, tA.id, tA.gDriveFileId, 'SECRET-CLIENT-FOLDER', '919876500321', 'fixture-folder'];
+    t('the mapped template prompt reaches the model after the reference guidance', call.prompt.indexOf('Keep the curved blue footer.') > call.prompt.indexOf('Reference image:'));
     t('no id, Drive id, folder or WhatsApp number reaches the model', secrets.every((secret) => !call.prompt.includes(secret)), secrets.filter((secret) => call.prompt.includes(secret)).join());
 
     const version = await tx.posterVersion.findUniqueOrThrow({ where: { id: result.versionId } });
@@ -463,7 +466,7 @@ async function suite(): Promise<void> {
     // Created only now, so no earlier Auto Map run spread days onto it.
     const tBroken = await template('Broken file', { gDriveFileId: 'missing-drive-file' });
     const brokenDay = await dayRow(campaignA, 21);
-    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [21], templateId: tBroken.id }, noHtml);
+    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [21], templateId: tBroken.id });
     const rendersBeforeBroken = renders.length;
     const brokenTemplate = await generate(campaignA, brokenDay.id, 'missing', true);
     t('an unreadable template file fails before any spend', brokenTemplate.outcome === 'failed' && brokenTemplate.kind === 'storage' && !brokenTemplate.billed && renders.length === rendersBeforeBroken, brokenTemplate.message);
@@ -516,7 +519,7 @@ async function suite(): Promise<void> {
 
     const d10 = await dayRow(campaignA, 10);
     const other = (d10.posterTemplateId ?? d10.suggestedTemplateId) === tA.id ? tB.id : tA.id;
-    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [10], templateId: other }, noHtml);
+    await mapping.assignManualTemplates(tx, campaignA, { kind: 'days', dayNumbers: [10], templateId: other });
     t('template mapping change → outdated, no provider call', (await overview(campaignA)).days[9]!.state === 'outdated' && renders.length === rendersBefore);
     const regen = await generate(campaignA, d9.id, 'upcoming');
     const d9After = await dayRow(campaignA, 9);

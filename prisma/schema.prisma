@@ -274,6 +274,10 @@ model CategoryTemplate {
   /// content strategy (src/lib/campaign/content-strategy.ts). Empty means "any"
   /// — every existing row. Strings rather than an enum: each vertical owns its keys.
   contentTypes String[] @default([])
+  /// The admin's standing instruction for this template — "keep the curved blue
+  /// footer, doctor on the right, white headline top-left" — added to the image
+  /// prompt every time a campaign poster is generated from it. Null means none.
+  prompt       String?
 
   /// Days pinned to this template: by name in an imported sheet, or as a
   /// campaign day's selected template.

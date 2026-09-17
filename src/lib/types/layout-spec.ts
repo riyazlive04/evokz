@@ -278,6 +278,9 @@ export type LayoutEmphasis = (typeof LAYOUT_EMPHASES)[number];
 
 export const layoutEmphasisSchema = z.enum(LAYOUT_EMPHASES);
 
+/** The most headline lines a template may measure — the copy stage writes 2-4. */
+export const LAYOUT_HEADLINE_LINES_MAX = 4;
+
 // ---------------------------------------------------------------------------
 // Shape
 // ---------------------------------------------------------------------------
@@ -428,7 +431,10 @@ export const posterLayoutSpecSchema = z.object({
    * lines and knows nothing about which template the day landed in. The renderer
    * indexes into it and treats a missing entry as `plain`.
    */
-  headlineEmphasis: z.array(layoutEmphasisSchema).max(4).default([]),
+  headlineEmphasis: z
+    .array(layoutEmphasisSchema)
+    .max(LAYOUT_HEADLINE_LINES_MAX)
+    .default([]),
   /**
    * Whether the template sets its headline in capitals.
    *
@@ -440,6 +446,27 @@ export const posterLayoutSpecSchema = z.object({
 });
 
 export type PosterLayoutSpec = z.infer<typeof posterLayoutSpecSchema>;
+
+/**
+ * Trims a raw extraction's `headlineEmphasis` to what the schema accepts, before
+ * it is parsed.
+ *
+ * The extractor's hand-written JSON Schema puts no length bound on this array, so
+ * a reference whose headline runs to five lines comes back with five entries —
+ * and the parse used to refuse the whole spec for it. The template stored no
+ * layout at all, and a re-read at temperature 0 reproduced the same five entries
+ * every time, so neither re-reading nor re-uploading could recover it.
+ *
+ * The first lines are kept. The template's words are discarded anyway, and the
+ * copy stage writes as many lines as this array is long, so a five-line reference
+ * simply becomes a four-line template. Anything other than an over-long array is
+ * passed through untouched for the schema to judge.
+ */
+export function clampHeadlineEmphasis(raw: Record<string, unknown>): Record<string, unknown> {
+  const emphasis = raw.headlineEmphasis;
+  if (!Array.isArray(emphasis) || emphasis.length <= LAYOUT_HEADLINE_LINES_MAX) return raw;
+  return { ...raw, headlineEmphasis: emphasis.slice(0, LAYOUT_HEADLINE_LINES_MAX) };
+}
 
 // ---------------------------------------------------------------------------
 // Validation

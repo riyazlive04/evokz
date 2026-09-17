@@ -125,8 +125,7 @@ async function suite(): Promise<void> {
   const TZ = 'Asia/Kolkata';
   const NOW = new Date();
   const today = startOfZonedDay(NOW, TZ);
-  const noHtml = { htmlAspectFor: async () => null };
-  const load = { ...noHtml, timeZone: TZ, now: NOW };
+  const load = { timeZone: TZ, now: NOW };
 
   async function expectDomainError(name: string, code: string, work: () => Promise<unknown>) {
     try {
@@ -203,8 +202,8 @@ async function suite(): Promise<void> {
         data: { theme: `Topic ${day.dayNumber}`, contentType: day.dayNumber % 3 === 0 ? 'tips' : 'educational', headline: `Headline ${day.dayNumber}`, supportingText: `Supporting ${day.dayNumber}.`, cta: 'Book a visit', caption: 'Caption', hashtags: '#care', imagePrompt: `Scene ${day.dayNumber}.`, contentStatus: 'READY', contentRevision: { increment: 1 } },
       });
     }
-    const preview = await mapping.previewAutoMap(tx, campaignId, noHtml);
-    await mapping.applyAutoMap(tx, campaignId, { ...noHtml, fingerprint: preview.plan.fingerprint });
+    const preview = await mapping.previewAutoMap(tx, campaignId);
+    await mapping.applyAutoMap(tx, campaignId, { fingerprint: preview.plan.fingerprint });
     await changeCampaignStatus(tx, campaignId, 'ACTIVE');
     return campaignId;
   }
@@ -327,7 +326,7 @@ async function suite(): Promise<void> {
 
     const day6 = await dayRow(6);
     const other = (day6.posterTemplateId ?? day6.suggestedTemplateId) === tA.id ? tB.id : tA.id;
-    await mapping.assignManualTemplates(tx, campaignId, { kind: 'days', dayNumbers: [6], templateId: other }, noHtml);
+    await mapping.assignManualTemplates(tx, campaignId, { kind: 'days', dayNumbers: [6], templateId: other });
     t('a template change makes the poster outdated too', (await dayView(6)).state === 'outdated');
     t('neither was regenerated automatically', (await tx.posterVersion.count({ where: { calendarDayId: day5.id } })) === 1 && (await tx.posterVersion.count({ where: { calendarDayId: day6.id } })) === 1);
   }

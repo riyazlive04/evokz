@@ -25,12 +25,10 @@ export interface MappingTemplateView {
   label: string;
   thumbnailUrl: string;
   isActive: boolean;
-  approved: boolean;
   /** In the campaign's vertical. */
   inVertical: boolean;
   aspectLabel: string;
   aspectFit: 'match' | 'unmeasured' | 'mismatch';
-  contentTypeLabels: string[];
   autoDays: number;
   manualDays: number;
 }
@@ -95,7 +93,7 @@ export function MappingSourceBadge({ source }: { source: 'AUTO' | 'MANUAL' | nul
 }
 
 /**
- * Template mapping for one campaign (Phase 3): which approved template each day
+ * Template mapping for one campaign (Phase 3): which template each day
  * uses. Auto Map is previewed before anything is written; manual mapping is a
  * "match the following" board — days on one side, templates on the other — with
  * drag-and-drop on desktop and select → select → apply everywhere, so touch
@@ -142,7 +140,7 @@ export function CampaignTemplateMapping({
   const [replacements, setReplacements] = React.useState<Record<string, string>>({});
 
   const byId = React.useMemo(() => new Map(templates.map((template) => [template.id, template])), [templates]);
-  const assignable = React.useMemo(() => templates.filter((template) => template.inVertical && template.isActive && template.approved), [templates]);
+  const assignable = React.useMemo(() => templates.filter((template) => template.inVertical && template.isActive), [templates]);
   const attentionDays = days.filter((day) => day.issues.some((issue) => issue.severity === 'action') || day.unmappedReason);
   const ignoredSuggestions = days.filter((day) => day.ignoredSuggestionId).length;
   const labelOf = (id: string | null) => (id ? (byId.get(id)?.label ?? 'Unknown template') : null);
@@ -404,7 +402,7 @@ export function CampaignTemplateMapping({
                         onChange={(event) => setReplacements((current) => ({ ...current, [key]: event.target.value }))}
                         className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-[12px]"
                       >
-                        {assignable.length === 0 && <option value="">No active, approved template</option>}
+                        {assignable.length === 0 && <option value="">No active template</option>}
                         {assignable
                           .filter((template) => template.id !== group.templateId)
                           .map((template) => (
@@ -573,7 +571,7 @@ export function CampaignTemplateMapping({
               </div>
               <ul className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 lg:max-h-[32rem] lg:grid-cols-1 lg:overflow-y-auto lg:pr-1">
                 {templates.filter((template) => template.inVertical).map((template) => {
-                  const usable = template.isActive && template.approved;
+                  const usable = template.isActive;
                   const chosen = patternMode ? pattern.includes(template.id) : selectedTemplate === template.id;
                   return (
                     <li key={template.id}>
@@ -600,11 +598,10 @@ export function CampaignTemplateMapping({
                         <span className="min-w-0 flex-1 space-y-0.5">
                           <span className="block truncate text-[12px] font-medium text-foreground">{template.label}</span>
                           <span className="block truncate text-[10px] text-muted-foreground">
-                            {template.aspectLabel} · {template.contentTypeLabels.length > 0 ? template.contentTypeLabels.join(', ') : 'any content'}
+                            {template.aspectLabel}
                           </span>
                           <span className="flex flex-wrap gap-1">
                             {!template.isActive && <Tag variant="slate" className="px-1.5 text-[9px]">Inactive</Tag>}
-                            {!template.approved && <Tag variant="slate" className="px-1.5 text-[9px]">Not approved</Tag>}
                             {usable && template.aspectFit === 'mismatch' && <Tag variant="amber" className="px-1.5 text-[9px]">Different shape</Tag>}
                             {(template.autoDays > 0 || template.manualDays > 0) && (
                               <span className="text-[10px] text-muted-foreground">{template.autoDays + template.manualDays} day(s)</span>

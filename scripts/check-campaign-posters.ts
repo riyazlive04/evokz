@@ -19,6 +19,7 @@ import {
   summarizePosterWindow,
   type PosterEligibilityInput,
 } from '@/lib/campaign/poster-generation';
+import { buildGeneratePrompt } from '@/lib/ai/studio-prompts';
 import { dayMappingState, type MappingTarget, type MappingTemplate } from '@/lib/campaign/template-mapping';
 import { MAX_STUDIO_PROMPT_LENGTH } from '@/lib/poster-studio/limits';
 import { addZonedDays } from '@/lib/time';
@@ -36,7 +37,7 @@ const WINDOW = generationWindow(NOW, 14, TZ);
 const dayAt = (offset: number) => addZonedDays(WINDOW.start, offset, TZ);
 
 const target: MappingTarget = { categoryId: 'v', mode: 'AUTO', aspect: 9 / 16, aspectLabel: '9:16' };
-const tpl = (overrides: Partial<MappingTemplate> = {}): MappingTemplate => ({ id: 't', label: 'T', categoryId: 'v', isActive: true, approved: true, aspect: 9 / 16, contentTypes: [], ...overrides });
+const tpl = (overrides: Partial<MappingTemplate> = {}): MappingTemplate => ({ id: 't', label: 'T', categoryId: 'v', isActive: true, aspect: 9 / 16, ...overrides });
 const mapped = (template: MappingTemplate | null, source: 'AUTO' | 'MANUAL' = 'AUTO', contentType = 'educational') =>
   dayMappingState(
     { id: 'd', dayNumber: 1, contentType, posterTemplateId: source === 'MANUAL' && template ? template.id : null, suggestedTemplateId: source === 'AUTO' && template ? template.id : null },
@@ -106,7 +107,6 @@ t('content needing review → not ready', reasonOf(base({ contentStatus: 'NEEDS_
   t('no template mapped → needs attention, with the Phase 3 reason', !none.eligible && none.reason === 'no-template' && none.attention && /draws 9:16/.test(none.message));
 }
 t('inactive template → template-inactive (attention)', reasonOf(base({ mapping: mapped(tpl({ isActive: false })) })) === 'template-inactive');
-t('unapproved template → template-unapproved', reasonOf(base({ mapping: mapped(tpl({ approved: false })) })) === 'template-unapproved');
 t('template from another vertical → unavailable', reasonOf(base({ mapping: mapped(tpl({ categoryId: 'other' })) })) === 'template-unavailable');
 t('AUTO mapping of the wrong shape → incompatible', reasonOf(base({ mapping: mapped(tpl({ aspect: 1 })) })) === 'template-incompatible');
 t('MANUAL choice of another shape is a deliberate warning → eligible', reasonOf(base({ mapping: mapped(tpl({ aspect: 1 }), 'MANUAL') })) === 'eligible:generate');
@@ -174,6 +174,20 @@ section('brief');
   t('brief never exceeds the studio prompt limit', long.length <= MAX_STUDIO_PROMPT_LENGTH);
   const empty = buildCampaignPosterBrief({ theme: null, contentTypeLabel: null, headline: null, supportingText: null, cta: null, imagePrompt: '' });
   t('empty content leaves out the wording rule', !empty.includes('Use exactly'));
+}
+
+// ===========================================================================
+section('template prompt');
+// ===========================================================================
+{
+  const common = { brief: 'Brief.', aspectRatio: '9:16' as const, textFree: false, brand: null };
+  const withPrompt = buildGeneratePrompt({ ...common, hasReference: true, templatePrompt: '  Keep the curved blue footer.  ' });
+  t('the template prompt follows the reference guidance', withPrompt.includes('Template instructions from the admin') && withPrompt.indexOf('Keep the curved blue footer.') > withPrompt.indexOf('Reference image:'));
+  t('the template prompt is trimmed', withPrompt.includes('\nKeep the curved blue footer.\n'));
+  t('the no-invented-branding rule still comes after it', withPrompt.indexOf('No invented branding') > withPrompt.indexOf('Keep the curved blue footer.'));
+  const blank = buildGeneratePrompt({ ...common, hasReference: true, templatePrompt: '   ' });
+  t('a blank template prompt adds nothing', !blank.includes('Template instructions') && blank === buildGeneratePrompt({ ...common, hasReference: true }));
+  t('no reference, no template prompt', !buildGeneratePrompt({ ...common, hasReference: false, templatePrompt: 'Keep it' }).includes('Keep it'));
 }
 
 console.log(`\n${bad === 0 ? 'All campaign poster checks passed.' : `${bad} check(s) FAILED.`}`);

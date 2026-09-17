@@ -231,11 +231,9 @@ export default async function CampaignCalendarPage({
     label: template.label,
     thumbnailUrl: `/api/templates/${template.id}/thumbnail?w=160`,
     isActive: template.isActive,
-    approved: template.approved,
     inVertical: template.categoryId === campaign.category.id,
     aspectLabel: describeAspect(template.aspect),
     aspectFit: aspectFit(template.aspect, mapping.context.target.aspect),
-    contentTypeLabels: template.contentTypes.map(pillarLabel),
     autoDays: mapping.usage.get(template.id)?.auto ?? 0,
     manualDays: mapping.usage.get(template.id)?.manual ?? 0,
   }));
@@ -442,9 +440,9 @@ export default async function CampaignCalendarPage({
             Template mapping
           </CardTitle>
           <CardDescription>
-            Which approved template each day&apos;s poster will be drawn from. Auto Map picks active, approved templates
-            that fit the day&apos;s content type and this client&apos;s {mapping.context.target.aspectLabel} output, and
-            never changes a manual choice. Templates, their status and content types are managed on the{' '}
+            Which template each day&apos;s poster is generated from. Auto Map picks active templates that fit this
+            client&apos;s {mapping.context.target.aspectLabel} output, and never changes a manual choice. Templates and
+            their prompts are managed on the{' '}
             <Link href={`/admin/verticals/${campaign.category.id}`} className="underline underline-offset-2">
               {campaign.category.name} vertical
             </Link>

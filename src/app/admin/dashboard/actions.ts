@@ -2056,15 +2056,12 @@ export interface LogoOutcome {
  * layout is read from it — there is nothing behind it since the archetypes were
  * removed.
  *
- * **A clean extraction is approved here, without a human.** See the note on
- * `layoutApprovedAt` below for what that trades away and where it is caught.
+ * **No human approval.** See the note on `layoutApprovedAt` below.
  */
 export async function uploadVerticalTemplate(
   categoryId: string,
   formData: FormData,
-): Promise<
-  ActionResult<{ id: string; label: string; approved: boolean; reasons: string[] }>
-> {
+): Promise<ActionResult<{ id: string; label: string }>> {
   try {
     const id = z.string().uuid().parse(categoryId);
 
@@ -2181,66 +2178,25 @@ export async function uploadVerticalTemplate(
         // inherited one is recognised by `isInheritedLayout`, not by this column.
         layoutAuthoredAt: null,
         /*
-         * Approved on the spot when the extraction came back clean.
+         * Templates need no human approval: an uploaded template is usable.
          *
-         * This used to be unconditionally null, on the argument that approval
-         * means a human saw the layout rendered as a poster. That argument still
-         * holds and the risk it names is real — a vision model's confident
-         * mistakes are indistinguishable from its correct answers on the
-         * database side, and an auto-approved misread reaches a client on every
-         * poster that template ever draws. It is being traded away deliberately:
-         * a vertical is twenty templates and the gate was costing an approval
-         * click per upload with nothing in the loop to catch what the click was
-         * supposed to catch.
-         *
-         * **Only a clean draft.** `problems` non-empty means
-         * `validateLayoutSpec` found a structural fault, and `parseLayoutSpec`
-         * refuses that spec at render time — so approving one would put a
-         * template in the rotation that silently never draws. Those still land
-         * as drafts with their faults listed, which is the state an operator can
-         * act on.
-         *
-         * The review surface has not gone anywhere: `npm run check:fleet` renders
-         * every stored spec to a folder, and it is now the only thing standing
-         * between a misread and a client.
+         * Campaign posters never read this column — they send the template image
+         * itself to the image model. Only the older code-drawn pipeline does, and
+         * for it a layout is approved whenever it can draw at all. A structural
+         * fault (`problems`) is still left unapproved, because `parseLayoutSpec`
+         * refuses that spec at render time and an approved-but-undrawable
+         * template would fail every day it was picked. The extraction's risk
+         * checks no longer hold a template back.
          */
-        layoutApprovedAt: standard
-          ? new Date()
-          : draft!.spec && draft!.problems.length === 0 && draft!.risks.length === 0
-            ? new Date()
-            : null,
+        layoutApprovedAt:
+          standard || (draft!.spec && draft!.problems.length === 0) ? new Date() : null,
       },
       select: { id: true, label: true },
     });
 
     revalidateAdmin();
 
-    /*
-     * The verdict travels back with the row.
-     *
-     * An upload that reads badly is not an error — the file is in Drive, the row
-     * exists, and the action succeeded. But it is also not what the operator
-     * wanted, and before this the only sign of that was a card somewhere down a
-     * grid of twenty-four with an amber line on it. Somebody uploading a batch
-     * would never see it.
-     *
-     * So the reasons come back and the panel puts them in front of the operator
-     * next to a delete button, while they still have the file open in whatever
-     * they exported it from. A bad reference is usually a bad *file* — a
-     * screenshot with browser chrome, a poster saved at 300px, the wrong export
-     * — and the fix is nearly always to delete it and upload a better one.
-     */
-    return success({
-      ...created,
-      // An inherited layout is approved by construction: it is the spec the
-      // vertical already renders, with nothing estimated to be faulty.
-      approved: standard
-        ? true
-        : Boolean(draft!.spec) && draft!.problems.length === 0 && draft!.risks.length === 0,
-      // Problems first: a structural fault is the more concrete complaint, and
-      // an operator reading two lines should read that one first.
-      reasons: standard ? [] : [...draft!.problems, ...draft!.risks],
-    });
+    return success(created);
   } catch (error) {
     return toFailure(error, 'Uploading template');
   }

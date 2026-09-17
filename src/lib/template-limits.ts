@@ -30,3 +30,9 @@ export const MAX_TEMPLATE_BYTES = 6 * 1024 * 1024;
  * wrong place.
  */
 export const TEMPLATE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+/**
+ * Longest template prompt an admin may save. A few sentences of direction, and
+ * well inside the image prompt's own budget once the brief and brand are added.
+ */
+export const MAX_TEMPLATE_PROMPT_LENGTH = 1_000;

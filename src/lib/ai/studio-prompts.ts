@@ -53,6 +53,12 @@ export interface GeneratePromptInput extends CommonInput {
   brand: StudioBrandContext | null;
   /** True when a style reference image is attached to the request. */
   hasReference: boolean;
+  /**
+   * The admin's standing instruction for the attached template
+   * (`CategoryTemplate.prompt`). Only read when `hasReference` is true: it
+   * describes that reference, and means nothing without it.
+   */
+  templatePrompt?: string | null;
 }
 
 export interface EditPromptInput extends CommonInput {
@@ -101,7 +107,11 @@ export function buildGeneratePrompt(input: GeneratePromptInput): string {
     formatSection(input.aspectRatio),
   ];
 
-  if (input.hasReference) sections.push(referenceSection(input.brand !== null));
+  if (input.hasReference) {
+    sections.push(referenceSection(input.brand !== null));
+    const templatePrompt = input.templatePrompt?.trim();
+    if (templatePrompt) sections.push(templatePromptSection(templatePrompt));
+  }
   if (input.brand) sections.push(brandSection(input.brand, 'apply', band !== null));
   if (band !== null) sections.push(identitySection(band));
   sections.push(textSection(input.textFree));
@@ -226,6 +236,21 @@ function referenceSection(hasBrand: boolean): string {
   ]
     .filter((line): line is string => line !== null)
     .join('\n');
+}
+
+/**
+ * The admin's own instruction for this template, placed straight after the
+ * generic reference guidance so it can override it — "keep the curved footer"
+ * is a deliberate request to rebuild part of the layout, which that guidance
+ * otherwise discourages. The identity band and branding rules still follow it
+ * and still apply.
+ */
+function templatePromptSection(templatePrompt: string): string {
+  return [
+    'Template instructions from the admin, for the attached reference:',
+    templatePrompt,
+    'Follow these instructions. Where they conflict with the reference guidance above, these instructions win.',
+  ].join('\n');
 }
 
 /**

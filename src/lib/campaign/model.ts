@@ -220,10 +220,7 @@ export type TemplateAssignmentProblem = 'wrong-vertical' | 'inactive';
 
 /**
  * Why a template may not be newly assigned to a campaign's day, or null.
- *
- * Content-type fit is not a blocker: an operator pinning a festival template on
- * an educational day is a choice, not a data error. Use
- * `templateSuitsContentType` to rank or warn.
+ * Templates need no approval: an uploaded, active template is usable.
  */
 export function templateAssignmentProblem(
   template: { categoryId: string; isActive: boolean },
@@ -232,15 +229,6 @@ export function templateAssignmentProblem(
   if (template.categoryId !== campaign.categoryId) return 'wrong-vertical';
   if (!template.isActive) return 'inactive';
   return null;
-}
-
-/** An empty `contentTypes` list means the template suits any content. */
-export function templateSuitsContentType(
-  template: { contentTypes: readonly string[] },
-  contentType: string | null,
-): boolean {
-  if (template.contentTypes.length === 0 || contentType === null) return true;
-  return template.contentTypes.includes(contentType);
 }
 
 /**
@@ -252,19 +240,6 @@ export function templateAspectRatio(width: number | null, height: number | null)
   const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
   const divisor = gcd(Math.round(width), Math.round(height));
   return `${Math.round(width) / divisor}:${Math.round(height) / divisor}`;
-}
-
-/**
- * Template approval, from the existing review gate the renderer enforces.
- *
- * Only `layoutApprovedAt` counts: `resolveDayLayout` refuses a pinned template
- * without it (`pinned-unapproved`) even when its plate is approved, because a
- * plate composites over an approved grid rather than replacing it. The campaign
- * mapper additionally requires the spec to parse — see
- * `template-mapping-service.ts`.
- */
-export function isTemplateLayoutApproved(template: { layoutApprovedAt: Date | null }): boolean {
-  return template.layoutApprovedAt !== null;
 }
 
 // ---------------------------------------------------------------------------

@@ -59,7 +59,7 @@ import {
   changeTemplateMappingMode,
   previewAutoMap,
   setTemplateActive,
-  setTemplateContentTypes,
+  setTemplatePrompt,
   type ManualMappingResult,
 } from '@/lib/campaign/template-mapping-service';
 import { prisma } from '@/lib/prisma';
@@ -363,16 +363,17 @@ export async function setTemplateActiveAction(
   }
 }
 
-export async function setTemplateContentTypesAction(
+export async function setTemplatePromptAction(
   templateId: string,
-  contentTypes: string[],
-): Promise<ActionResult<{ contentTypes: string[] }>> {
+  prompt: string,
+): Promise<ActionResult<{ prompt: string | null }>> {
   try {
-    const result = await setTemplateContentTypes(prisma, uuid.parse(templateId), z.array(z.string().max(40)).max(20).parse(contentTypes));
+    // Length is enforced by the domain function; this only bounds the payload.
+    const result = await setTemplatePrompt(prisma, uuid.parse(templateId), z.string().max(10_000).parse(prompt));
     revalidateAdmin();
     return { ok: true, data: result };
   } catch (error) {
-    return toFailure(error, 'Saving the template content types');
+    return toFailure(error, 'Saving the template prompt');
   }
 }
 

@@ -131,7 +131,6 @@ export type PosterBlockReason =
   | 'content-needs-review'
   | 'no-template'
   | 'template-inactive'
-  | 'template-unapproved'
   | 'template-unavailable'
   | 'template-incompatible'
   | 'unsupported-aspect'
@@ -141,7 +140,6 @@ export type PosterBlockReason =
 const ATTENTION_REASONS: ReadonlySet<PosterBlockReason> = new Set([
   'no-template',
   'template-inactive',
-  'template-unapproved',
   'template-unavailable',
   'template-incompatible',
   'unsupported-aspect',
@@ -252,11 +250,9 @@ export function evaluatePosterEligibility(input: PosterEligibilityInput): Poster
     const reason: PosterBlockReason =
       issue.code === 'template-inactive'
         ? 'template-inactive'
-        : issue.code === 'template-unapproved'
-          ? 'template-unapproved'
-          : issue.code === 'template-missing' || issue.code === 'template-wrong-vertical'
-            ? 'template-unavailable'
-            : 'template-incompatible';
+        : issue.code === 'template-missing' || issue.code === 'template-wrong-vertical'
+          ? 'template-unavailable'
+          : 'template-incompatible';
     return blocked(reason, `${issue.title}: ${issue.detail}`);
   }
 
