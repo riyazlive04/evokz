@@ -7,7 +7,7 @@ import { AlertTriangle, Lock } from 'lucide-react';
 
 import type { ActionResult } from '@/app/admin/dashboard/actions';
 import {
-  approveCampaignDayPosterAction,
+  approveCampaignDayPosterVersionAction,
   generateCampaignDayPosterAction,
   rejectCampaignDayPosterAction,
 } from '@/app/admin/campaigns/actions';
@@ -33,6 +33,7 @@ import type { PosterRevisionResult } from '@/lib/campaign/clone-fix';
 import {
   applyDraftEdits,
   approvalNotice,
+  approveAction,
   chatAdditionsAtRisk,
   differsFromTemplate,
   draftEdits,
@@ -76,6 +77,14 @@ import { cn } from '@/lib/utils';
  *   right     Poster | Template preview (the template with the edited field's
  *             box highlighted), the text check with Fix text, Reject…, the
  *             poster chat, and the versions strip
+ *
+ * **Going back to an older version.** The versions strip is a choice, not a
+ * gallery. Selecting v1 shows it and points the top bar at it — the button reads
+ * "Approve v1" — and approving it makes v1 the day's active poster as well as
+ * approving it (`approveCampaignDayPosterVersionAction`), so v1 is what the
+ * client receives. The preview returns to the active view afterwards, which is
+ * now v1. The chat, Fix text and the logo controls stay on the active version
+ * throughout, and Reject stays with the day's own poster.
  *
  * **Changing a finished poster.** Two ways, and the editor is careful about
  * which costs money. The chat sends one instruction to the image model — two
@@ -233,7 +242,7 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
   const { run: runLoad } = useAction(loadTemplateEditorScreenAction);
   const { run: runUpdate } = useAction(updateCampaignDayElementsAction);
   const { run: runGenerate } = useAction(generateCampaignDayPosterAction);
-  const { run: runApprove } = useAction(approveCampaignDayPosterAction);
+  const { run: runApprove } = useAction(approveCampaignDayPosterVersionAction);
   const reject = useAction(rejectCampaignDayPosterAction);
   const { run: runRewrite } = useAction(rewriteCampaignDayElementsAction);
   const { run: runChangeTemplate } = useAction(changeCampaignDayTemplateAction);
@@ -423,7 +432,19 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
   const formLocked = screen.campaign.closed || (screen.status.lock !== null && EDIT_LOCKS.has(screen.status.lock));
   const chip = generating ? { label: longRunning?.kind === 'fix' ? 'Fixing text' : longRunning?.kind === 'edit' ? 'Changing' : 'Generating', tone: 'secondary' as const } : editorStatusChip({ status: screen.status.board, posterState: screen.status.posterState });
   const primary = primaryActions({ flags: screen.actions, hasPoster: active !== null, generating, busy: actionBusy });
+  const viewed = viewVersionId ? (screen.versions.find((version) => version.id === viewVersionId) ?? null) : null;
   const viewingOlder = viewVersionId !== null && viewVersionId !== active?.id;
+  // Which version the top bar's Approve acts on: the one on show, so choosing v1
+  // and pressing "Approve v1" makes v1 the day's poster again.
+  const approve = approveAction({
+    active: active ? { id: active.id, versionNumber: active.versionNumber } : null,
+    viewed: viewed ? { id: viewed.id, versionNumber: viewed.versionNumber, approvalStatus: viewed.approvalStatus, current: viewed.current, hasArtwork: viewed.imageUrl !== null } : null,
+    approveActive: primary.approve,
+    campaignStatus: screen.campaign.status,
+    generating,
+    busy: actionBusy,
+    lock: screen.status.lock,
+  });
   const revision = revisionAvailability({
     campaignStatus: screen.campaign.status,
     poster: active ? { current: active.current, hasArtwork: active.imageUrl !== null, textCheck: active.textCheck } : null,
@@ -567,29 +588,42 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
     });
   }
 
+  /**
+   * Approves the version on show. When it is not the day's active one the same
+   * server action makes it active first, so "Approve v1" ends with v1 both
+   * approved and the poster delivery sends; the preview then returns to the
+   * active view, which is now v1.
+   */
   function approvePoster() {
-    if (!active) return;
-    const versionId = active.id;
+    const target = approve.target;
+    if (!target) return;
     const go = async () => {
       if (!(await saveFirst())) return;
       setBusy({ kind: 'approve', startedAt: Date.now() });
-      const result = await runApprove(dayId, versionId);
+      const result = await runApprove(dayId, target.versionId);
       setBusy(null);
+      if (result.ok) setViewVersionId(null);
       await afterWrite({ resetDraft: false });
       if (!result.ok) return setNotice({ tone: 'danger', lines: [result.error] });
-      const told = approvalNotice(day.dayNumber, result.data.booking, screen.campaign.status === 'ACTIVE');
+      const told = approvalNotice(
+        day.dayNumber,
+        result.data.booking,
+        screen.campaign.status === 'ACTIVE',
+        result.data.activated ? { versionNumber: result.data.versionNumber } : null,
+      );
       setNotice({ tone: told.tone, lines: [told.text] });
     };
     if (screen.status.lock === 'closed' && screen.campaign.status === 'ACTIVE') {
       setConfirm({
-        title: `Approve day ${day.dayNumber} now?`,
+        title: target.activates ? `Use v${target.versionNumber} for day ${day.dayNumber} now?` : `Approve day ${day.dayNumber} now?`,
         body: (
           <>
             <p>Today&apos;s delivery time has already passed.</p>
+            {target.activates && <p>v{target.versionNumber} becomes this day&apos;s poster, in place of the one it uses now.</p>}
             <p>Approving books it straight away, so it will be sent to the client&apos;s WhatsApp within a minute.</p>
           </>
         ),
-        confirmLabel: 'Approve and send',
+        confirmLabel: target.activates ? `Approve v${target.versionNumber} and send` : 'Approve and send',
         tone: 'destructive',
         onConfirm: go,
       });
@@ -758,13 +792,17 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
   }
 
   // ---- View ----------------------------------------------------------------------
-  const viewed = viewVersionId ? (screen.versions.find((version) => version.id === viewVersionId) ?? null) : null;
+  // An older version on show is a choice, not a dead end: the note says what
+  // approving it would do, or why it cannot be used. "Back to v3" in the versions
+  // strip is the way back.
   const posterView = viewed
     ? {
         imageUrl: viewed.imageUrl,
         fullImageUrl: viewed.fullImageUrl,
         label: `Day ${day.dayNumber} poster, version ${viewed.versionNumber}`,
-        note: `Viewing v${viewed.versionNumber}${viewed.current ? '' : ' (outdated)'} — read-only. Select the active version to go back.`,
+        note: `Viewing v${viewed.versionNumber}. ${
+          approve.target?.activates ? 'Approve it to make it the poster that is sent.' : (approve.reason ?? 'It is the poster this day already uses.')
+        }`,
       }
     : active
       ? {
@@ -815,7 +853,13 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
           saveError={saveError}
           onRetrySave={() => void save()}
           generate={{ label: primary.generate.label, enabled: primary.generate.enabled, reason: generateReason, onClick: generatePoster }}
-          approve={{ visible: primary.approve || busy?.kind === 'approve', onClick: approvePoster }}
+          approve={{
+            visible: approve.target !== null || busy?.kind === 'approve',
+            // While the approval runs the target is gone (the editor is busy), so the
+            // label holds on to the version on show rather than snapping to the active one.
+            label: approve.target?.label ?? `Approve v${viewed?.versionNumber ?? active?.versionNumber ?? ''}`,
+            onClick: approvePoster,
+          }}
           busyKind={busy?.kind ?? null}
           leavePausedReason={longRunning ? 'Wait until this poster finishes — about 2 minutes.' : null}
           onNavigate={(href) => void navigate(href)}
@@ -958,6 +1002,13 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
           {/* Kept mounted while its own rejection runs, so the form and its error stay put. */}
           {active && viewed === null && (primary.reject || busy?.kind === 'reject') && (
             <RejectPanel versionNumber={active.versionNumber} pending={reject.pending} error={reject.error} onReject={rejectPoster} />
+          )}
+          {/* Sending a poster back is about the one the client would receive, and only the
+              active version is ever sent — so it is not offered for an older one on show. */}
+          {active && viewed !== null && primary.reject && (
+            <p className="text-[11px] text-muted-foreground">
+              Reject&hellip; acts on the day&apos;s own poster (v{active.versionNumber}), so it is not offered while v{viewed.versionNumber} is on show.
+            </p>
           )}
 
           {/* Mounted for any poster, so the box never disappears; only sending is gated, and it says why. */}

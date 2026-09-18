@@ -17,6 +17,10 @@ export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
  * is, its status, whether the form is saved, and the one or two actions that
  * move the poster on — Generate (or Regenerate) and Approve.
  *
+ * Approve names the version it acts on ("Approve v1"), which is whichever one
+ * the versions strip has on show, so the label follows the admin’s choice
+ * rather than the day’s active pointer. The editor decides it (`approveAction`).
+ *
  * Links are real anchors (a middle-click still opens a tab) whose ordinary
  * click goes through `onNavigate`, so the editor can save pending words first.
  * While this tab's long action runs (`leavePausedReason`) an ordinary click does
@@ -40,7 +44,7 @@ export function EditorTopBar({
   saveError: string | null;
   onRetrySave: () => void;
   generate: { label: string; enabled: boolean; reason: string | null; onClick: () => void };
-  approve: { visible: boolean; onClick: () => void };
+  approve: { visible: boolean; label: string; onClick: () => void };
   busyKind: string | null;
   leavePausedReason: string | null;
   onNavigate: (href: string) => void;
@@ -109,7 +113,7 @@ export function EditorTopBar({
           {approve.visible && (
             <Button size="sm" onClick={approve.onClick} disabled={approving} className="flex-1 sm:flex-none">
               {approving ? <Loader2 className="animate-spin" /> : <Check />}
-              Approve v{screen.activeVersion?.versionNumber}
+              {approve.label}
             </Button>
           )}
           <Button

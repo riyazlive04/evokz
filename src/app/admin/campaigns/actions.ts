@@ -11,6 +11,7 @@ import { describeBookingMoment } from '@/lib/campaign/board';
 import { changeCampaignStatusWithBookings } from '@/lib/campaign/board-service';
 import { CampaignDomainError, createCampaign } from '@/lib/campaign/service';
 import {
+  activateCampaignDayPosterVersion,
   approveCampaignDayPoster,
   generateCampaignDayPoster,
   saveStudioPosterToCampaignDay,
@@ -191,6 +192,41 @@ export async function approveCampaignDayPosterAction(dayId: string, versionId: s
     const { booking } = await approveCampaignDayPoster(prisma, uuid.parse(dayId), uuid.parse(versionId));
     revalidateAdmin();
     return { ok: true, data: { booking: booking ? toBookingNotice(booking) : null } };
+  } catch (error) {
+    return toFailure(error, 'Approving the poster');
+  }
+}
+
+/**
+ * Approves the version the admin is **looking at** — the template poster
+ * editor's Approve, which follows the versions strip rather than the day's
+ * active pointer.
+ *
+ * Choosing v1 after three regenerations and pressing "Approve v1" must do both
+ * things at once, or the choice means nothing: v1 is made the day's active
+ * poster (`activateCampaignDayPosterVersion`, a clean no-op when it already is)
+ * and then approved by the unchanged `approveCampaignDayPoster`, whose own
+ * active-version guard stays as the last line of defence.
+ *
+ * The booking reported is the approval's, falling back to the activation's: a
+ * version that was already APPROVED makes the approval a no-op, and the re-pin
+ * the activation did is then the only thing that happened to delivery.
+ *
+ * The board keeps `approveCampaignDayPosterAction`: a card's Approve is about
+ * the day's own poster, and there is no version on show to follow.
+ */
+export async function approveCampaignDayPosterVersionAction(
+  dayId: string,
+  versionId: string,
+): Promise<ActionResult<{ activated: boolean; versionNumber: number; booking: BookingNotice | null }>> {
+  try {
+    const day = uuid.parse(dayId);
+    const version = uuid.parse(versionId);
+    const activation = await activateCampaignDayPosterVersion(prisma, day, version);
+    const { booking } = await approveCampaignDayPoster(prisma, day, version);
+    revalidateAdmin();
+    const outcome = booking ?? activation.booking;
+    return { ok: true, data: { activated: activation.changed, versionNumber: activation.versionNumber, booking: outcome ? toBookingNotice(outcome) : null } };
   } catch (error) {
     return toFailure(error, 'Approving the poster');
   }

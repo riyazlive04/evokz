@@ -15,6 +15,7 @@ import {
   adjacentDays,
   applyDraftEdits,
   approvalNotice,
+  approveAction,
   brandCanvasHref,
   campaignBoardHref,
   chatAdditionsAtRisk,
@@ -233,6 +234,32 @@ section('status chip and actions');
   t('nothing is offered while a poster is being made', !running.generate.enabled && !running.approve && !running.reject);
   t('…or while another action runs', !primaryActions({ flags: { canGenerate: true, canRegenerate: true, canApprove: true, canReject: true }, hasPoster: false, generating: false, busy: true }).generate.enabled);
   t('a flag the server did not give is not offered', !primaryActions({ flags: { ...flags, canGenerate: false }, hasPoster: false, generating: false, busy: false }).generate.enabled);
+
+  // ---- Which version Approve acts on ----
+  const v3 = { id: 'v3', versionNumber: 3 };
+  const v1 = { id: 'v1', versionNumber: 1, approvalStatus: 'PENDING', current: true, hasArtwork: true };
+  const base = { active: v3, viewed: null, approveActive: true, campaignStatus: 'ACTIVE', generating: false, busy: false } as const;
+  const onActive = approveAction(base);
+  t('the active version on show: Approve v3, nothing to activate', onActive.target?.label === 'Approve v3' && onActive.target?.versionId === 'v3' && onActive.target?.activates === false && onActive.reason === null);
+  t('\u2026and it is exactly what the board offered', approveAction({ ...base, approveActive: false }).target === null);
+  const onOlder = approveAction({ ...base, viewed: v1 });
+  t('an older version on show: Approve v1, which also makes it active', onOlder.target?.label === 'Approve v1' && onOlder.target?.versionId === 'v1' && onOlder.target?.activates === true && onOlder.reason === null);
+  t('\u2026even when the day\u2019s own poster could not be approved', approveAction({ ...base, approveActive: false, viewed: v1 }).target?.activates === true);
+  t('\u2026and even when that version is already approved', approveAction({ ...base, viewed: { ...v1, approvalStatus: 'APPROVED' } }).target?.label === 'Approve v1');
+  const refusals = [
+    approveAction({ ...base, viewed: v1, generating: true }).reason,
+    approveAction({ ...base, viewed: v1, busy: true }).reason,
+    approveAction({ ...base, viewed: v1, campaignStatus: 'CANCELLED' }).reason,
+    approveAction({ ...base, viewed: v1, lock: 'sent' }).reason,
+    approveAction({ ...base, viewed: { ...v1, hasArtwork: false } }).reason,
+    approveAction({ ...base, viewed: { ...v1, current: false } }).reason,
+    approveAction({ ...base, viewed: { ...v1, approvalStatus: 'REJECTED' } }).reason,
+  ];
+  t('an older version that cannot be used is refused, each with its own reason', refusals.every((reason) => typeof reason === 'string') && new Set(refusals).size === refusals.length, JSON.stringify(refusals));
+  t('\u2026and none of them offers a target', !approveAction({ ...base, viewed: { ...v1, current: false } }).target && !approveAction({ ...base, viewed: v1, lock: 'past' }).target && !approveAction({ ...base, viewed: v1, generating: true }).target);
+  t('the outdated and sent-back reasons are the service\u2019s own words', refusals[5] === 'This poster is outdated \u2014 regenerate it before using it.' && refusals[6] === 'This poster was sent back \u2014 edit or regenerate it before using it.');
+  t('a due or closed day still lets an older version be chosen', (['due', 'closed', null] as const).every((lock) => approveAction({ ...base, viewed: v1, lock }).target?.activates === true));
+  t('no poster at all offers nothing', approveAction({ ...base, active: null, approveActive: false }).target === null);
 }
 
 // ===========================================================================
@@ -440,6 +467,8 @@ section('navigation, links and words for the admin');
   t('approval: due now warns', approvalNotice(4, { result: 'booked', whenLabel: '09:00 today', immediate: true, refusal: null }, true).tone === 'warning');
   t('approval: not booked says why', approvalNotice(4, { result: 'refused', whenLabel: null, immediate: false, refusal: 'WhatsApp is not configured.' }, true).text === 'Day 4 approved. Not booked: WhatsApp is not configured.');
   t('approval: already approved', approvalNotice(4, null, true).text === 'Day 4 approved.');
+  t('approval: choosing an older version says which one the day now uses', approvalNotice(4, { result: 'repinned', whenLabel: 'Thu 18 Sept 09:03', immediate: false, refusal: null }, true, { versionNumber: 1 }).text === 'Day 4 now uses v1. Booked for Thu 18 Sept 09:03.');
+  t('approval: \u2026and without a booking it still names the version', approvalNotice(4, null, true, { versionNumber: 1 }).text === 'Day 4 now uses v1.');
 
   const labels = new Map([['e4', 'Feature 1'], ['e8', 'Call to action']]);
   const rewritten = rewriteNotice({ rewritten: ['e2', 'e3'], kept: ['e4', 'e8'] }, labels);

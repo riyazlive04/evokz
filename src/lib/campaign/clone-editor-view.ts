@@ -362,6 +362,69 @@ export function primaryActions(input: { flags: EditorActionFlags; hasPoster: boo
   };
 }
 
+export interface ApproveTarget {
+  versionId: string;
+  versionNumber: number;
+  /** "Approve v1" — the button always names the version it acts on. */
+  label: string;
+  /** Not the day's active version: approving it also makes it the poster that is sent. */
+  activates: boolean;
+}
+
+/**
+ * Which version the top bar's Approve acts on, and why an older one on show
+ * cannot be used.
+ *
+ * The versions strip is a choice, not a gallery: with v1 selected the button
+ * reads "Approve v1" and approving it makes v1 the day's poster again
+ * (`activateCampaignDayPosterVersion` then `approveCampaignDayPoster`). With the
+ * active version on show this is exactly `primaryActions(…).approve` — the
+ * board's own rule, unchanged.
+ *
+ * An older version that is already APPROVED is still offered, and still reads
+ * "Approve v1". Hiding it — the treatment an approved *active* poster gets —
+ * would leave the commonest path of all with no way out: approve v1, regenerate
+ * twice, want v1 back. Approving it re-activates it and the approval itself is
+ * the no-op.
+ *
+ * The refusals mirror the service's, so the button never offers what the server
+ * would refuse, and `reason` is what the preview says instead of offering it.
+ */
+export function approveAction(input: {
+  active: { id: string; versionNumber: number } | null;
+  /** The version on show, when an older one is selected in the strip. */
+  viewed: { id: string; versionNumber: number; approvalStatus: string; current: boolean; hasArtwork: boolean } | null;
+  /** `primaryActions(…).approve` — the board's answer for the day's own poster. */
+  approveActive: boolean;
+  campaignStatus: string;
+  generating: boolean;
+  busy: boolean;
+  /** The day's slot lock (the screen's `status.lock`). A sent, sending or past day's poster is final. */
+  lock?: SlotLock | null;
+}): { target: ApproveTarget | null; reason: string | null } {
+  const { active, viewed } = input;
+  if (!viewed || viewed.id === active?.id) {
+    const target = input.approveActive && active ? { versionId: active.id, versionNumber: active.versionNumber, label: `Approve v${active.versionNumber}`, activates: false } : null;
+    return { target, reason: null };
+  }
+  const reason = (): string | null => {
+    if (input.generating) return 'A poster is being made for this day.';
+    if (input.busy) return 'Another change is running.';
+    if (input.campaignStatus === 'COMPLETED' || input.campaignStatus === 'CANCELLED') return `The campaign is ${input.campaignStatus}.`;
+    if (input.lock === 'sent' || input.lock === 'sending' || input.lock === 'past') return `${SLOT_LOCK_LABELS[input.lock]} Its poster can no longer change.`;
+    if (!viewed.hasArtwork) return 'This version has no artwork.';
+    if (!viewed.current) return 'This poster is outdated — regenerate it before using it.';
+    if (viewed.approvalStatus === 'REJECTED') return 'This poster was sent back — edit or regenerate it before using it.';
+    return null;
+  };
+  const refusal = reason();
+  if (refusal) return { target: null, reason: refusal };
+  return {
+    target: { versionId: viewed.id, versionNumber: viewed.versionNumber, label: `Approve v${viewed.versionNumber}`, activates: true },
+    reason: null,
+  };
+}
+
 /** Shortest and longest "Small change" instruction (`clone-fix.ts` enforces them). */
 export const MIN_POSTER_CHANGE_LENGTH = 3;
 export const MAX_POSTER_CHANGE_LENGTH = 500;
@@ -692,13 +755,22 @@ export function elapsedSince(startedAt: string | null, nowMs: number, fallbackMs
 
 export type NoticeTone = 'success' | 'warning' | 'danger';
 
-/** What approving did to the day's delivery — the board's wording, for the same `BookingNotice`. */
+/**
+ * What approving did to the day's delivery — the board's wording, for the same
+ * `BookingNotice`.
+ *
+ * `activated` is set when the admin approved a version that was not the day's
+ * active one: the news is then which version the day uses, not that something
+ * was approved, because an already-approved v1 chosen from the strip changes the
+ * poster without changing any approval.
+ */
 export function approvalNotice(
   dayNumber: number,
   booking: { result: string; whenLabel: string | null; immediate: boolean; refusal: string | null } | null,
   campaignActive: boolean,
+  activated?: { versionNumber: number } | null,
 ): { tone: NoticeTone; text: string } {
-  const approved = `Day ${dayNumber} approved.`;
+  const approved = activated ? `Day ${dayNumber} now uses v${activated.versionNumber}.` : `Day ${dayNumber} approved.`;
   if (!booking) return { tone: 'success', text: approved };
   switch (booking.result) {
     case 'booked':

@@ -7,6 +7,9 @@
  *   - `fixCampaignDayPosterText` / `editCampaignDayPoster`
  *                                      (src/lib/campaign/clone-fix.ts)
  *   - `setCampaignDayLogoPlacement`    (src/lib/campaign/clone-logo.ts)
+ *   - `activateCampaignDayPosterVersion` and the editor's own approve action
+ *                                      (src/lib/campaign/poster-generation-service.ts,
+ *                                       src/app/admin/campaigns/actions.ts)
  *   - their server actions             (src/app/admin/campaigns/clone-actions.ts)
  *
  * No model is called. The image model, Google Drive, the logo download and the
@@ -161,6 +164,7 @@ async function suite(): Promise<void> {
   const logoModule = await import('@/lib/campaign/clone-logo');
   const posters = await import('@/lib/campaign/poster-generation-service');
   const cloneActions = await import('@/app/admin/campaigns/clone-actions');
+  const campaignActions = await import('@/app/admin/campaigns/actions');
   const delivery = await import('@/lib/campaign/delivery-service');
   const { StudioError } = await import('@/lib/poster-studio/errors');
   const { prepareCloneTemplateImage, readStudioImageSize } = await import('@/lib/poster-studio/images');
@@ -798,6 +802,99 @@ async function suite(): Promise<void> {
     const other = b2.posterTemplateId === tA.id ? tB.id : tA.id;
     await change.changeCampaignDayTemplate(tx, b2.id, other, { ...load, expectedRevision: b2.contentRevision, deliveryDeps });
     t('changing the template withdraws the booking of the poster it outdated', (await tx.campaignDelivery.findUnique({ where: { calendarDayId: b2.id } }))?.status === 'CANCELLED');
+  }
+
+  // =======================================================================
+  section('choosing an older version');
+  // =======================================================================
+  {
+    const pickClient = await tx.client.create({
+      data: {
+        companyName: 'Clone Versions Dental',
+        whatsappNumber: '919876500224',
+        cronTime: '23:59',
+        displayPhone: '080 4000 5678',
+        startDate: today,
+        endDate: today,
+        planId: plan.id,
+        categoryId: vertical.id,
+        isDemo: false,
+        isActive: true,
+        imageSizePreset: 'whatsapp-status',
+        brandTagline: 'Smiles made simple',
+        websiteUrl: 'https://clone-edit-fixture.invalid/',
+        gDriveFolderId: 'SECRET-CLONE-EDIT-FOLDER',
+      },
+    });
+    const picked = await createCampaign(tx, { clientId: pickClient.id, name: 'Versions', startDate: today, durationDays: 3, timeZone: TZ });
+    await cloneQueue.cloneTemplatesIntoCampaign(tx, picked.campaignId, load);
+    await changeCampaignStatus(tx, picked.campaignId, 'ACTIVE');
+    const p2 = (await service.findCampaignDay(tx, picked.campaignId, 2))!;
+    const pickDeps = delivery.defaultDeliveryDeps({
+      timeZone: TZ,
+      now: () => NOW,
+      whatsappConfigured: () => true,
+      mediaConfigured: () => true,
+      buildMediaUrl: async (versionId) => `https://console.invalid/api/campaign-media/${versionId}`,
+      sendMedia: async () => {
+        throw new Error('check:campaign-clone-edit-db never sends');
+      },
+    });
+    const addVersion = (n: number) =>
+      addPosterVersion(tx, { calendarDayId: p2.id, source: 'MANUAL_UPLOAD', imageDriveFileId: `fake-pick-v${n}`, imageMimeType: 'image/png', contentRevision: p2.contentRevision });
+    const v1 = await addVersion(1);
+    const v2 = await addVersion(2);
+    const v3 = await addVersion(3);
+    const pickDay = () => tx.contentCalendar.findUniqueOrThrow({ where: { id: p2.id } });
+    const booking = () => tx.campaignDelivery.findUnique({ where: { calendarDayId: p2.id } });
+    const versionRow = (id: string) => tx.posterVersion.findUniqueOrThrow({ where: { id } });
+    // v1 was approved before the admin regenerated twice: the exact history that
+    // sends them back to the strip looking for it.
+    await tx.posterVersion.update({ where: { id: v1.versionId }, data: { approvalStatus: 'APPROVED', reviewedAt: NOW } });
+    const approvedActive = await posters.approveCampaignDayPoster(tx, p2.id, v3.versionId, { deliveryDeps: pickDeps });
+    t('fixture: three versions, v3 active and approved, booked to v3', (await pickDay()).activePosterVersionId === v3.versionId && (await booking())?.posterVersionId === v3.versionId, snapshot(approvedActive.booking));
+
+    const back = await posters.activateCampaignDayPosterVersion(tx, p2.id, v1.versionId, { ...load, deliveryDeps: pickDeps });
+    t('choosing v1 makes it the day’s poster', back.changed && back.versionNumber === 1 && (await pickDay()).activePosterVersionId === v1.versionId, snapshot(back));
+    t('…and the booking re-pins to it', (await booking())?.posterVersionId === v1.versionId && (await booking())?.status === 'SCHEDULED', snapshot(back.booking));
+    t('…without touching any version', (await versionRow(v3.versionId)).approvalStatus === 'APPROVED' && (await tx.posterVersion.count({ where: { calendarDayId: p2.id } })) === 3);
+
+    const revisionBefore = (await pickDay()).contentRevision;
+    const noop = await posters.activateCampaignDayPosterVersion(tx, p2.id, v1.versionId, { ...load, deliveryDeps: pickDeps });
+    t('choosing the version already on the day writes nothing', !noop.changed && noop.versionNumber === 1 && noop.booking === null && (await pickDay()).contentRevision === revisionBefore);
+
+    const chose = await asAction(() => campaignActions.approveCampaignDayPosterVersionAction(p2.id, v2.versionId));
+    t('approving the version on show makes it active and approves it', chose.ok && chose.data.activated && chose.data.versionNumber === 2 && (await pickDay()).activePosterVersionId === v2.versionId && (await versionRow(v2.versionId)).approvalStatus === 'APPROVED', snapshot(chose));
+    const again = await asAction(() => campaignActions.approveCampaignDayPosterVersionAction(p2.id, v2.versionId));
+    t('approving the day’s own poster activates nothing and still approves', again.ok && !again.data.activated && (await pickDay()).activePosterVersionId === v2.versionId && (await versionRow(v2.versionId)).approvalStatus === 'APPROVED');
+    const strange = await asAction(() => campaignActions.approveCampaignDayPosterVersionAction(p2.id, 'b0000000-0000-4000-8000-000000000000'));
+    t('a version that is not this day’s is refused by the action', !strange.ok && /not part of this day/.test(strange.error), snapshot(strange));
+
+    await expectDomainError('…and by the service', 'not-found', async () => posters.activateCampaignDayPosterVersion(tx, p2.id, (await day(10)).activePosterVersionId!, load), /not part of this day/);
+    await tx.posterVersion.update({ where: { id: v3.versionId }, data: { approvalStatus: 'REJECTED', reviewNote: 'Wrong logo' } });
+    await expectDomainError('a version that was sent back cannot be chosen', 'invalid-transition', () => posters.activateCampaignDayPosterVersion(tx, p2.id, v3.versionId, load), /sent back/);
+
+    await tx.contentCalendar.update({ where: { id: p2.id }, data: { generationStatus: 'QUEUED' } });
+    await expectDomainError('a day waiting in the queue is refused', 'conflict', () => posters.activateCampaignDayPosterVersion(tx, p2.id, v1.versionId, load), /being generated/);
+    await tx.contentCalendar.update({ where: { id: p2.id }, data: { generationStatus: 'GENERATING', posterGenerationStartedAt: NOW } });
+    await expectDomainError('…and a day being generated now', 'conflict', () => posters.activateCampaignDayPosterVersion(tx, p2.id, v1.versionId, load), /being generated/);
+    await tx.contentCalendar.update({ where: { id: p2.id }, data: { generationStatus: 'SUCCEEDED', posterGenerationStartedAt: null } });
+
+    const sent = await tx.campaignDelivery.update({ where: { calendarDayId: p2.id }, data: { status: 'SENT', attempts: 1, sentAt: NOW } });
+    await expectDomainError('a sent day’s poster can no longer be swapped', 'invalid-transition', () => posters.activateCampaignDayPosterVersion(tx, p2.id, v1.versionId, load), /Sent/);
+    const stillApproves = await posters.approveCampaignDayPoster(tx, p2.id, v2.versionId, { deliveryDeps: pickDeps });
+    t('approving the day’s own poster on a sent day is still allowed, as before', stillApproves.booking === null && (await versionRow(v2.versionId)).approvalStatus === 'APPROVED');
+    await tx.campaignDelivery.update({ where: { id: sent.id }, data: { status: 'SENDING', sentAt: null, sendingStartedAt: NOW } });
+    await expectDomainError('…nor while it is being sent', 'invalid-transition', () => posters.activateCampaignDayPosterVersion(tx, p2.id, v1.versionId, load), /Being sent/);
+    await tx.campaignDelivery.delete({ where: { id: sent.id } });
+    const later = addZonedDays(today, 30, TZ);
+    await expectDomainError('…nor once the day has passed', 'invalid-transition', () => posters.activateCampaignDayPosterVersion(tx, p2.id, v1.versionId, { now: later, timeZone: TZ }), /passed/);
+
+    // The day's words move on: v1 was made from the old ones, so choosing it would
+    // send a poster that no longer says what the day says.
+    const edited = await editor.updateCampaignDayElements(tx, p2.id, { values: [{ id: 'e4', text: 'A new sub-headline for this day.' }] }, { expectedRevision: (await pickDay()).contentRevision });
+    t('fixture: the edit moved the revision', edited.revisionBumped);
+    await expectDomainError('an outdated version cannot be chosen', 'invalid-transition', () => posters.activateCampaignDayPosterVersion(tx, p2.id, v1.versionId, load), /outdated/);
   }
 
   // =======================================================================

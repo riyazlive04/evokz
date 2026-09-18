@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 
-import { AlertTriangle, CheckCircle2, Loader2, MessageSquare, SpellCheck, Wand2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, MessageSquare, SpellCheck, Undo2, Wand2, X } from 'lucide-react';
 
 import { Chip, type ChipVariant } from '@/components/campaign/board/board-ui';
 import { FIELD_SELECT_CLASS, FIELD_TEXTAREA_CLASS } from '@/components/studio/template-editor/editor-ui';
@@ -93,7 +93,9 @@ const APPROVAL_LABEL: Record<string, string> = { APPROVED: 'Approved', REJECTED:
 
 /**
  * Every version as a thumbnail, oldest to newest. Selecting one shows it in the
- * preview, read-only; the active one is marked and selecting it returns there.
+ * preview and points the top bar's Approve at it, so choosing v1 and approving
+ * it makes v1 the day's poster again; the active one is marked, and "Back to
+ * v3" returns there.
  */
 export function VersionsStrip({
   versions,
@@ -107,9 +109,18 @@ export function VersionsStrip({
 }) {
   if (versions.length === 0) return null;
   const ordered = [...versions].sort((a, b) => a.versionNumber - b.versionNumber);
+  const activeVersion = versions.find((version) => version.active) ?? null;
   return (
     <section aria-label="Versions" className="space-y-1.5">
-      <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Versions ({versions.length})</h3>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Versions ({versions.length})</h3>
+        {selectedId !== null && activeVersion && selectedId !== activeVersion.id && (
+          <Button size="sm" variant="ghost" className="h-6 gap-1.5 px-2 text-[11px] text-muted-foreground [&_svg]:size-3.5" onClick={() => onSelect(null)}>
+            <Undo2 aria-hidden />
+            Back to v{activeVersion.versionNumber}
+          </Button>
+        )}
+      </div>
       <ol className="flex gap-2 overflow-x-auto pb-1">
         {ordered.map((version) => {
           const selected = selectedId === null ? version.active : selectedId === version.id;

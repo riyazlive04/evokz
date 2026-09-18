@@ -12,6 +12,7 @@ import type {
 import { assertStudioImageConfigured, renderStudioImage, type StudioImageRequest, type StudioImageResult } from '@/lib/ai/openai-images';
 import { buildClonePrompt, cloneAccentColors } from '@/lib/ai/studio-prompts';
 import { checkCloneText } from '@/lib/ai/text-check';
+import { SLOT_LOCK_LABELS, slotLockOf } from '@/lib/campaign/board';
 import { resolveContentStrategy } from '@/lib/campaign/content-strategy';
 import { bookCampaignDayQuietly, type DayBookingOutcome, type DeliveryDeps } from '@/lib/campaign/delivery-service';
 import { campaignAllowsChanges, isVersionCurrent } from '@/lib/campaign/model';
@@ -970,6 +971,107 @@ export async function listCampaignDayPosterVersions(db: CampaignDb, dayId: strin
       hasFinal: Boolean(studioGeneration?.finalImageDriveFileId),
       templateLabel: template?.label ?? null,
     })),
+  };
+}
+
+export interface PosterVersionActivation {
+  /** False when it was already the day's active version and nothing was written. */
+  changed: boolean;
+  versionNumber: number;
+  /** What the re-booking did; null for a no-op, or when the booking itself failed. */
+  booking: DayBookingOutcome | null;
+}
+
+/**
+ * Makes one of the day's existing versions its **active** poster — the version
+ * that represents the day, that the board shows and that delivery sends.
+ *
+ * This is how an admin goes back: three regenerations leave v1, v2 and v3, and
+ * choosing v1 here makes v1 the poster again without paying for a fourth image.
+ * Nothing is generated, nothing is billed and no version is changed — only the
+ * day's pointer moves.
+ *
+ * Refused for a version of another day, a version with no artwork, a day whose
+ * poster is final (sent, sending or past), a day with a generation queued or
+ * running, an outdated version (its content no longer matches the day) and a
+ * rejected one — a poster that was sent back must be edited or regenerated
+ * first, and switching to it would leave the day on a poster nobody may approve.
+ *
+ * **The already-active version returns cleanly, before any of those refusals.**
+ * Approving the day's own poster is allowed on a past day and has never asked
+ * about the generation queue, so a no-op that refused would change what Approve
+ * does today.
+ *
+ * The write is guarded on the day's `contentRevision` **and** its current active
+ * pointer, so a generation that landed between the read and the write is a
+ * conflict rather than something this call silently overwrites. Afterwards the
+ * day is re-booked (`bookCampaignDayQuietly`) so delivery re-pins to the version
+ * now on show; a booking problem never undoes the switch.
+ */
+export async function activateCampaignDayPosterVersion(
+  db: CampaignDb,
+  dayId: string,
+  versionId: string,
+  options: { deliveryDeps?: DeliveryDeps; now?: Date; timeZone?: string } = {},
+): Promise<PosterVersionActivation> {
+  const now = options.now ?? new Date();
+  const day = await db.contentCalendar.findUnique({
+    where: { id: dayId },
+    select: {
+      id: true,
+      dayNumber: true,
+      scheduledDate: true,
+      contentRevision: true,
+      activePosterVersionId: true,
+      generationStatus: true,
+      posterGenerationStartedAt: true,
+      campaign: { select: { status: true, deliveryTime: true } },
+      delivery: { select: { status: true, scheduledFor: true } },
+      // The version is read through the day, so "belongs to THIS day" is answered
+      // by the same query rather than by a second read and a comparison.
+      posterVersions: {
+        where: { id: versionId },
+        select: { id: true, versionNumber: true, contentRevision: true, approvalStatus: true, imageDriveFileId: true },
+      },
+    },
+  });
+  if (!day) throw new CampaignDomainError('not-found', 'Campaign day does not exist.');
+  if (!day.campaign) throw new CampaignDomainError('not-a-campaign-day', 'This calendar row is not part of a campaign.');
+  if (!campaignAllowsChanges(day.campaign.status)) throw new CampaignDomainError('campaign-closed', `The campaign is ${day.campaign.status}.`);
+
+  const version = day.posterVersions[0];
+  if (!version) throw new CampaignDomainError('not-found', 'That poster version is not part of this day.');
+  if (!version.imageDriveFileId) throw new CampaignDomainError('invalid-transition', 'That version has no artwork to send.');
+
+  // Nothing to do, and deliberately before the refusals below: see the note above.
+  if (day.activePosterVersionId === version.id) return { changed: false, versionNumber: version.versionNumber, booking: null };
+
+  const lock = slotLockOf(day, now, options.timeZone ?? getAppTimeZone(), day.campaign.deliveryTime);
+  if (lock === 'sent' || lock === 'sending' || lock === 'past') {
+    throw new CampaignDomainError('invalid-transition', `${SLOT_LOCK_LABELS[lock]} Its poster can no longer change.`);
+  }
+  if (day.generationStatus === 'QUEUED' || isGenerationInProgress(day.generationStatus, day.posterGenerationStartedAt, now)) {
+    throw new CampaignDomainError('conflict', 'A poster is being generated for this day. Wait for it to finish, then try again.');
+  }
+  if (!isVersionCurrent(version, day)) {
+    throw new CampaignDomainError('invalid-transition', 'This poster is outdated — regenerate it before using it.');
+  }
+  if (version.approvalStatus === 'REJECTED') {
+    throw new CampaignDomainError('invalid-transition', 'This poster was sent back — edit or regenerate it before using it.');
+  }
+
+  await runInCampaignTransaction(db, async (tx) => {
+    const switched = await tx.contentCalendar.updateMany({
+      where: { id: day.id, contentRevision: day.contentRevision, activePosterVersionId: day.activePosterVersionId },
+      data: { activePosterVersionId: version.id },
+    });
+    if (switched.count === 0) throw new CampaignDomainError('conflict', 'This day was changed by someone else. Reload it and try again.');
+  });
+
+  return {
+    changed: true,
+    versionNumber: version.versionNumber,
+    booking: await bookCampaignDayQuietly(db, day.id, { deps: options.deliveryDeps }),
   };
 }
 
