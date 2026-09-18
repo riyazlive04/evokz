@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 import { loadStudioBrandCanvas } from '@/lib/poster-studio/brand-context';
 import { resolveStudioLogo } from '@/lib/poster-studio/brand-logo';
+import { trimLogoPadding } from '@/lib/poster-studio/compose';
 import { StudioError } from '@/lib/poster-studio/errors';
 import { studioPreview } from '@/lib/poster-studio/images';
 
@@ -23,6 +24,10 @@ import { studioPreview } from '@/lib/poster-studio/images';
  * Query parameters:
  *   background  ORIGINAL (default) | REMOVED
  *   w           preview width, 1–1024 (default 240)
+ *   trim        1 to cut the transparent padding away first, as a clone's
+ *               compositor does — what the template editor's logo-placement
+ *               preview draws, so it shows the mark at the proportions the
+ *               poster will actually use.
  */
 
 export const runtime = 'nodejs';
@@ -41,7 +46,8 @@ export async function GET(request: NextRequest, { params }: { params: { clientId
 
   try {
     const canvas = await loadStudioBrandCanvas(params.clientId);
-    const logo = await resolveStudioLogo(canvas.logo, background);
+    const resolved = await resolveStudioLogo(canvas.logo, background);
+    const logo = search.get('trim') === '1' ? await trimLogoPadding(resolved) : resolved;
     const preview = await studioPreview(logo.bytes, logo.mimeType, width);
 
     return new NextResponse(preview.body as unknown as BodyInit, {

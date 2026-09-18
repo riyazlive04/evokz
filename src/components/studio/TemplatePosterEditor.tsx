@@ -17,6 +17,7 @@ import {
   fixCampaignDayPosterTextAction,
   loadTemplateEditorScreenAction,
   rewriteCampaignDayElementsAction,
+  setCampaignDayLogoPlacementAction,
   updateCampaignDayElementsAction,
 } from '@/app/admin/campaigns/clone-actions';
 import { ConfirmDialog, type ConfirmRequest } from '@/components/campaign/board/board-ui';
@@ -24,7 +25,7 @@ import { BrandDetailsSection, ColoursLine, HiddenDetailsSection, PhotoSection } 
 import { EditorSection, NoticeLine, type EditorNotice } from '@/components/studio/template-editor/editor-ui';
 import { EditorTopBar, type SaveState } from '@/components/studio/template-editor/EditorTopBar';
 import { PosterPreview, type PreviewTab } from '@/components/studio/template-editor/PosterPreview';
-import { RejectPanel, SmallChangePanel, TextCheckPanel, VersionsStrip } from '@/components/studio/template-editor/PosterReview';
+import { PosterChat, RejectPanel, TextCheckPanel, VersionsStrip } from '@/components/studio/template-editor/PosterReview';
 import { TemplatePicker } from '@/components/studio/template-editor/TemplatePicker';
 import { WordsSection, type FieldHandlers } from '@/components/studio/template-editor/WordsSection';
 import { useAction } from '@/hooks/use-action';
@@ -32,6 +33,7 @@ import type { PosterRevisionResult } from '@/lib/campaign/clone-fix';
 import {
   applyDraftEdits,
   approvalNotice,
+  chatAdditionsAtRisk,
   differsFromTemplate,
   draftEdits,
   draftFromElements,
@@ -43,11 +45,13 @@ import {
   hasUnsavedChanges,
   isConflictMessage,
   MAX_POSTER_CHANGE_LENGTH,
+  MIN_POSTER_CHANGE_LENGTH,
   normalizeFieldText,
   normalizeImagePrompt,
   primaryActions,
   revisionAvailability,
   rewriteNotice,
+  sameLogoPlacement,
   templateDefaults,
   textCheckView,
   type EditorDraft,
@@ -55,7 +59,7 @@ import {
 } from '@/lib/campaign/clone-editor-view';
 import type { TemplateEditorScreen } from '@/lib/campaign/clone-editor-screen';
 import type { TemplateChoice } from '@/lib/campaign/clone-template-change';
-import { summarizeTemplateElements } from '@/lib/types/template-elements';
+import { summarizeTemplateElements, type DayLogoPlacement } from '@/lib/types/template-elements';
 import { cn } from '@/lib/utils';
 
 /**
@@ -67,11 +71,18 @@ import { cn } from '@/lib/utils';
  *
  *   top bar   back to the board (on this day's week), previous/next day, the
  *             day and its status, save state, Generate/Regenerate and Approve
- *   left      Template (Change), Words, Brand details, Other details, Photo,
- *             Colours — in the order the admin decides them
+ *   left      Template (Change), Words, Brand details (with logo placement),
+ *             Other details, Photo, Colours — in the order the admin decides them
  *   right     Poster | Template preview (the template with the edited field's
- *             box highlighted), the text check with Fix text, Reject…, Small
- *             change, and the versions strip
+ *             box highlighted), the text check with Fix text, Reject…, the
+ *             poster chat, and the versions strip
+ *
+ * **Changing a finished poster.** Two ways, and the editor is careful about
+ * which costs money. The chat sends one instruction to the image model — two
+ * minutes, billed, a new version — so its price is written under the box and it
+ * sends without a dialog. "Apply logo placement" re-composites the poster's own
+ * artwork with the mark where the admin put it: no model, nothing billed,
+ * seconds, so it is not a long action and the form is never paused for it.
  *
  * **Saving.** Words save themselves: ~800 ms after typing stops, and at once when
  * a field loses focus (`updateCampaignDayElementsAction`, restating the revision
@@ -79,7 +90,9 @@ import { cn } from '@/lib/utils';
  * server stores them. A save refused because the day moved on (another tab, a
  * rewrite, a template change) reloads the day and says so rather than
  * overwriting. Everything that acts on the poster — Generate, Approve, Rewrite,
- * Change template, Fix text, Small change — saves pending words first.
+ * Change template, Fix text, the chat and Apply logo placement — saves pending
+ * words first; the placement in particular, because it writes the same
+ * `posterElements` document the words live in.
  *
  * **Long work.** Generating, fixing and editing take about two minutes on the
  * server and keep going if the page is left. While one runs the preview says so
@@ -97,7 +110,12 @@ import { cn } from '@/lib/utils';
  * refreshes the router once when the editor is left after saving words.
  */
 
-type BusyKind = 'generate' | 'fix' | 'edit' | 'approve' | 'reject' | 'rewrite' | 'template';
+type BusyKind = 'generate' | 'fix' | 'edit' | 'logo' | 'approve' | 'reject' | 'rewrite' | 'template';
+/**
+ * The three that call the image model: about two minutes each, so the form is
+ * paused for them. `logo` is deliberately not one — it composites the artwork
+ * the day already has and takes seconds.
+ */
 type LongKind = 'generate' | 'fix' | 'edit';
 /** What a save came to: sent, refused because the day moved on (reloaded and explained), failed, or nothing to send. */
 type SaveOutcome = 'saved' | 'conflict' | 'error' | 'nothing';
@@ -193,6 +211,25 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
   const [confirm, setConfirm] = React.useState<ConfirmRequest | null>(null);
   const [busy, setBusy] = React.useState<{ kind: BusyKind; startedAt: number } | null>(null);
 
+  // ---- The poster chat ------------------------------------------------------------
+  const chatRef = React.useRef<HTMLTextAreaElement>(null);
+  /** What this tab's running change asked for, and what the last one that failed said. */
+  const [chatSent, setChatSent] = React.useState('');
+  const [chatFailure, setChatFailure] = React.useState<{ message: string; billed: boolean } | null>(null);
+
+  // ---- Logo placement -------------------------------------------------------------
+  const savedLogo = screen.elements.logo ?? null;
+  const [logoDraft, setLogoDraft] = React.useState<DayLogoPlacement | null>(savedLogo);
+  const [logoOpen, setLogoOpen] = React.useState(false);
+  // The controls follow the day: a placement applied here, or saved in another
+  // tab, becomes what they show. Typing is not at stake — there is nothing to lose.
+  const seenLogo = React.useRef(savedLogo);
+  React.useEffect(() => {
+    if (sameLogoPlacement(seenLogo.current, savedLogo)) return;
+    seenLogo.current = savedLogo;
+    setLogoDraft(savedLogo);
+  }, [savedLogo]);
+
   const { run: runLoad } = useAction(loadTemplateEditorScreenAction);
   const { run: runUpdate } = useAction(updateCampaignDayElementsAction);
   const { run: runGenerate } = useAction(generateCampaignDayPosterAction);
@@ -202,6 +239,7 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
   const { run: runChangeTemplate } = useAction(changeCampaignDayTemplateAction);
   const { run: runFix } = useAction(fixCampaignDayPosterTextAction);
   const { run: runEdit } = useAction(editCampaignDayPosterAction);
+  const { run: runPlaceLogo } = useAction(setCampaignDayLogoPlacementAction);
 
   const isUnsaved = React.useCallback(
     () => timerRef.current !== null || flightRef.current !== null || hasUnsavedChanges(fieldsRef.current, savedRef.current, { draft: draftRef.current, prompt: promptRef.current }),
@@ -385,15 +423,19 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
   const formLocked = screen.campaign.closed || (screen.status.lock !== null && EDIT_LOCKS.has(screen.status.lock));
   const chip = generating ? { label: longRunning?.kind === 'fix' ? 'Fixing text' : longRunning?.kind === 'edit' ? 'Changing' : 'Generating', tone: 'secondary' as const } : editorStatusChip({ status: screen.status.board, posterState: screen.status.posterState });
   const primary = primaryActions({ flags: screen.actions, hasPoster: active !== null, generating, busy: actionBusy });
+  const viewingOlder = viewVersionId !== null && viewVersionId !== active?.id;
   const revision = revisionAvailability({
     campaignStatus: screen.campaign.status,
     poster: active ? { current: active.current, hasArtwork: active.imageUrl !== null, textCheck: active.textCheck } : null,
     generating,
     busy: actionBusy,
     lock: screen.status.lock,
+    viewingOlder,
   });
   const checkView = textCheckView(active?.textCheck ?? null);
   const shownWords = fields.some((field) => field.category === 'content' && !draft[field.id]?.removed && normalizeFieldText(draft[field.id]?.text) !== null);
+  /** Instructions the chat put on this poster that a new one would not have — quoted back before Regenerate. */
+  const atRisk = React.useMemo(() => chatAdditionsAtRisk(screen.versions), [screen.versions]);
 
   // Elapsed time of the running attempt: the server's start when it is generating, else this tab's.
   // Starts from the load instant, not the clock, so the server and browser render the same text.
@@ -509,6 +551,13 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
         <>
           <p>One high-quality AI image generation, billed to this client — about two minutes.</p>
           <p>The new version replaces the current poster and needs approval again (unless auto-approve is on). The current one stays in the versions.</p>
+          {/* A chat-added footer exists only in this poster's pixels — nothing on the day records it, so a new poster cannot carry it over. */}
+          {atRisk.length > 0 && (
+            <p>
+              {atRisk.length === 1 ? 'What you asked for in the chat' : `The ${atRisk.length} changes you asked for in the chat`} — {atRisk.map((line) => `“${line}”`).join(', ')} — are not part of
+              the template, so the new poster will not have them.
+            </p>
+          )}
         </>
       ),
       confirmLabel: 'Regenerate',
@@ -649,6 +698,8 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
             everything else. About two minutes.
           </p>
           <p>The result is a new version{screen.campaign.approvalPolicy === 'AUTO_APPROVE' ? '' : ' that needs approval'}; the current one stays in the versions.</p>
+          {/* The check compares the render against the day's Words, so anything the chat typed onto the poster reads as a difference to correct away. */}
+          {atRisk.length > 0 && <p>Anything you added through the chat is not in the Words fields, so fixing the text may remove it.</p>}
         </>
       ),
       confirmLabel: 'Fix text',
@@ -658,22 +709,52 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
     });
   }
 
-  function applySmallChange(instruction: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      setConfirm({
-        title: 'Apply this change to the poster?',
-        body: (
-          <>
-            <p className="break-words">“{instruction.replace(/\s+/g, ' ').trim()}”</p>
-            <p>One high-quality AI image edit, billed to this client — about two minutes. The result is a new version; the current one stays in the versions.</p>
-          </>
-        ),
-        confirmLabel: 'Apply change',
-        onConfirm: () => {
-          void revisePoster('edit', () => runEdit(dayId, instruction)).then(resolve);
-        },
-      });
-    });
+  /**
+   * The chat's own send: no confirm dialog. The price is written permanently
+   * under the box (`POSTER_CHAT_COST`), so a dialog would only be a second place
+   * to read it — and the first Sirah campaign's admin never found the panel that
+   * hid behind one. Every other billed action keeps its confirm, because none of
+   * them states its price where the button is.
+   */
+  async function sendPosterChange(instruction: string): Promise<boolean> {
+    if (!(await beginLongAction('edit'))) return false;
+    setNotice(null);
+    setChatFailure(null);
+    setChatSent(instruction);
+    setPreviewTab('poster');
+    setViewVersionId(null);
+    const result = await runEdit(dayId, instruction);
+    endLongAction();
+    await afterWrite({ resetDraft: false });
+    if (!result.ok) {
+      // A refusal never reached the model, so nothing was billed.
+      setChatFailure({ message: result.error, billed: false });
+      return false;
+    }
+    if (result.data.outcome === 'revised') {
+      setNotice({ tone: result.data.textCheckIssues ? 'warning' : 'success', lines: [result.data.message] });
+      return true;
+    }
+    setChatFailure({ message: result.data.message, billed: result.data.billed });
+    return false;
+  }
+
+  /**
+   * "Apply logo placement": the poster re-composited from its own artwork with
+   * the mark where the admin put it. Words are saved first — the placement lives
+   * on the day's `posterElements`, and this writes that document.
+   */
+  async function applyLogoPlacement() {
+    if (!(await saveFirst())) return;
+    setNotice(null);
+    setBusy({ kind: 'logo', startedAt: Date.now() });
+    const result = await runPlaceLogo(dayId, logoDraft);
+    setBusy(null);
+    // The draft is the admin's, not the server's: it is left exactly as it is.
+    await afterWrite({ resetDraft: false });
+    if (!result.ok) return setNotice({ tone: 'danger', lines: [result.error] });
+    if (result.data.outcome === 'failed') return setNotice({ tone: 'danger', lines: [result.data.message] });
+    setNotice({ tone: 'success', lines: [result.data.message] });
   }
 
   // ---- View ----------------------------------------------------------------------
@@ -708,6 +789,15 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
         : null;
   const rewriteReason = formLocked ? templateReason : generating || actionBusy ? templateReason : !shownWords ? 'There are no shown words to rewrite.' : null;
   const noteVisible = screen.status.note && !generating && !notice;
+
+  // The logo preview takes the poster frame over while the controls are open, and
+  // draws on the artwork BEFORE the logo was composited — the finished poster
+  // already carries one, and a second drawn over it would be a lie in two marks.
+  const logoBoxes = React.useMemo(() => doc.elements.filter((element) => element.kind === 'logo').map((element) => element.box), [doc]);
+  const logoPreview =
+    logoOpen && viewed === null && active?.rawImageUrl && screen.brand.logoTrimmedUrl && logoBoxes.length > 0
+      ? { rawImageUrl: active.rawImageUrl, logoUrl: screen.brand.logoTrimmedUrl, boxes: logoBoxes, placement: logoDraft }
+      : null;
 
   return (
     <div className="space-y-4">
@@ -788,6 +878,20 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
             linkPausedReason={pausedReason}
             handlers={handlers}
             onNavigate={(href) => void navigate(href)}
+            logo={
+              active
+                ? {
+                    saved: savedLogo,
+                    draft: logoDraft,
+                    onDraft: setLogoDraft,
+                    open: logoOpen,
+                    onOpenChange: setLogoOpen,
+                    availability: revision.logo,
+                    pending: busy?.kind === 'logo',
+                    onApply: () => void applyLogoPlacement(),
+                  }
+                : null
+            }
           />
           <HiddenDetailsSection fields={groups.hidden} draft={draft} focusedId={focusedId} disabled={formDisabled} handlers={handlers} />
           <PhotoSection
@@ -801,6 +905,14 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
             }}
             onFocus={() => setFocusedId(groups.photos[0]?.id ?? null)}
             onBlur={() => void save()}
+            onGoToChat={
+              active
+                ? () => {
+                    chatRef.current?.focus();
+                    chatRef.current?.scrollIntoView({ block: 'center' });
+                  }
+                : undefined
+            }
           />
           <ColoursLine colourMode={screen.colourMode} colors={screen.brand.colors} />
         </div>
@@ -825,6 +937,7 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
             draft={draft}
             focusedId={focusedId}
             generating={generating && viewed === null ? { label: generatingStatus, timer: generatingTimer } : null}
+            logoPreview={logoPreview}
           />
           {generating && (
             <p className="text-center text-[11px] text-muted-foreground lg:hidden">
@@ -847,8 +960,19 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
             <RejectPanel versionNumber={active.versionNumber} pending={reject.pending} error={reject.error} onReject={rejectPoster} />
           )}
 
-          {active && viewed === null && !formLocked && (
-            <SmallChangePanel availability={revision.edit} pending={busy?.kind === 'edit'} maxLength={MAX_POSTER_CHANGE_LENGTH} onApply={applySmallChange} />
+          {/* Mounted for any poster, so the box never disappears; only sending is gated, and it says why. */}
+          {active && (
+            <PosterChat
+              inputRef={chatRef}
+              availability={revision.edit}
+              maxLength={MAX_POSTER_CHANGE_LENGTH}
+              minLength={MIN_POSTER_CHANGE_LENGTH}
+              brand={screen.brand}
+              running={longRunning?.kind === 'edit' ? { instruction: chatSent, timer: generatingTimer } : null}
+              failure={chatFailure}
+              onSend={sendPosterChange}
+              onDismissFailure={() => setChatFailure(null)}
+            />
           )}
 
           <VersionsStrip versions={screen.versions} selectedId={viewVersionId} onSelect={setViewVersionId} />

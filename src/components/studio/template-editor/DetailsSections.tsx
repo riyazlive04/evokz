@@ -2,15 +2,31 @@
 
 import * as React from 'react';
 
-import { ChevronRight, ExternalLink, Eye, EyeOff } from 'lucide-react';
+import { AlertTriangle, ChevronRight, ExternalLink, Eye, EyeOff, Loader2, MessageSquare, Move, RotateCcw } from 'lucide-react';
 
 import { EditorSection, FIELD_BUTTON_CLASS, FIELD_TEXTAREA_CLASS } from '@/components/studio/template-editor/editor-ui';
 import type { FieldHandlers } from '@/components/studio/template-editor/WordsSection';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { MAX_EDITOR_IMAGE_PROMPT, normalizeFieldText, type EditorDraft, type EditorField } from '@/lib/campaign/clone-editor-view';
+import {
+  describeLogoPlacement,
+  formatLogoScale,
+  LOGO_ANCHORS,
+  LOGO_SCALE_MAX,
+  LOGO_SCALE_MIN,
+  LOGO_SCALE_STEP,
+  LOGO_VANCHORS,
+  logoPositionLabel,
+  MAX_EDITOR_IMAGE_PROMPT,
+  normalizeFieldText,
+  photoPromptNudge,
+  sameLogoPlacement,
+  type EditorDraft,
+  type EditorField,
+  type RevisionAvailability,
+} from '@/lib/campaign/clone-editor-view';
 import type { TemplateEditorScreen } from '@/lib/campaign/clone-editor-screen';
-import { MAX_ELEMENT_TEXT, type BrandField } from '@/lib/types/template-elements';
+import { MAX_ELEMENT_TEXT, type BrandField, type DayLogoPlacement } from '@/lib/types/template-elements';
 import { cn } from '@/lib/utils';
 
 const BRAND_FIELD_LABELS: Record<BrandField, string> = {
@@ -28,6 +44,9 @@ const BRAND_FIELD_LABELS: Record<BrandField, string> = {
  * none of its own. Read-only here: the value shown is exactly what the poster
  * gets, "Not set in Brand Canvas — hidden" when there is none, and each can be
  * hidden on this poster. One link edits Brand Canvas and comes back.
+ *
+ * When the template has a logo box and the client has a logo, the section also
+ * carries the logo placement controls (`LogoPlacementControls`).
  */
 export function BrandDetailsSection({
   fields,
@@ -38,6 +57,7 @@ export function BrandDetailsSection({
   linkPausedReason = null,
   handlers,
   onNavigate,
+  logo = null,
 }: {
   fields: EditorField[];
   draft: EditorDraft;
@@ -48,8 +68,15 @@ export function BrandDetailsSection({
   linkPausedReason?: string | null;
   handlers: FieldHandlers;
   onNavigate: (href: string) => void;
+  /** Where the client's mark sits in the template's logo box. Omitted when there is nothing to place. */
+  logo?: LogoPlacementControl | null;
 }) {
   if (fields.length === 0) return null;
+  const logoField = fields.find((field) => field.binding === 'logo');
+  // Nothing to place without both halves: a box on the template, and a mark to
+  // put in it. A logo hidden on this poster is not drawn at all, so the controls
+  // go with it.
+  const canPlace = logo !== null && logoField !== undefined && brand.hasLogo && !(draft[logoField.id]?.removed ?? false);
   return (
     <EditorSection
       id="editor-brand"
@@ -122,7 +149,144 @@ export function BrandDetailsSection({
           );
         })}
       </ul>
+      {canPlace && <LogoPlacementControls control={logo!} disabled={disabled} />}
     </EditorSection>
+  );
+}
+
+/** What the editor hands the logo placement controls. */
+export interface LogoPlacementControl {
+  /** What is on the day right now — null means the template's own position. */
+  saved: DayLogoPlacement | null;
+  /** What the controls are showing, saved or not. */
+  draft: DayLogoPlacement | null;
+  onDraft: (next: DayLogoPlacement | null) => void;
+  /** The controls are open, so the preview shows the mark where they would put it. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** `revisionAvailability(...).logo` — the same refusals a change makes, minus the outdated one. */
+  availability: RevisionAvailability;
+  pending: boolean;
+  onApply: () => void;
+}
+
+/** The placement a control starts from when nothing is stored: fitted, centred both ways. */
+const DEFAULT_PLACEMENT: Required<DayLogoPlacement> = { scale: 1, anchor: 'center', vAnchor: 'middle' };
+
+/**
+ * Size and position for the client's mark inside the template's own logo box,
+ * applied by code: no model call, no billing, seconds rather than two minutes.
+ *
+ * The preview beside it draws exactly what will be composited (`placeLogoInBox`
+ * on both sides), so an admin can try five positions and pay for none of them —
+ * only Apply makes a version. "Reset to template position" removes the stored
+ * placement altogether, which is not the same as centring it: with none stored,
+ * the compositor goes back to measuring the box and correcting it itself.
+ */
+function LogoPlacementControls({ control, disabled }: { control: LogoPlacementControl; disabled: boolean }) {
+  const { draft, saved, availability, pending } = control;
+  const current = draft ?? DEFAULT_PLACEMENT;
+  const anchor = current.anchor ?? 'center';
+  const vAnchor = current.vAnchor ?? 'middle';
+  const scale = current.scale ?? 1;
+  const unchanged = sameLogoPlacement(draft, saved);
+  const locked = disabled || pending || !availability.enabled;
+
+  return (
+    <details
+      className="group rounded-md border border-border"
+      open={control.open}
+      onToggle={(event) => control.onOpenChange(event.currentTarget.open)}
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2.5 py-2 text-[12px] font-medium text-foreground [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden />
+        <Move className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+        Logo placement
+        <span className="truncate font-normal text-muted-foreground">— {saved ? describeLogoPlacement(saved) : 'the template’s own position'}</span>
+      </summary>
+
+      <div className="space-y-3 px-2.5 pb-2.5">
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="editor-logo-scale" className="text-[11px] text-muted-foreground">
+              Size
+            </label>
+            <span className="font-mono text-[11px] tabular-nums text-foreground">{formatLogoScale(scale)}</span>
+          </div>
+          <input
+            id="editor-logo-scale"
+            type="range"
+            min={LOGO_SCALE_MIN}
+            max={LOGO_SCALE_MAX}
+            step={LOGO_SCALE_STEP}
+            value={scale}
+            disabled={disabled || pending}
+            onChange={(event) => control.onDraft({ ...current, scale: Number(event.target.value) })}
+            className="h-4 w-full cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+          />
+        </div>
+
+        <div className="space-y-1">
+          <p className="text-[11px] text-muted-foreground" id="editor-logo-position-label">
+            Position in the template’s logo box
+          </p>
+          <div role="group" aria-labelledby="editor-logo-position-label" className="grid w-[6.75rem] grid-cols-3 gap-1">
+            {LOGO_VANCHORS.map((row) =>
+              LOGO_ANCHORS.map((column) => {
+                const selected = anchor === column && vAnchor === row;
+                return (
+                  <button
+                    key={`${row}-${column}`}
+                    type="button"
+                    aria-pressed={selected}
+                    aria-label={`Place the logo at the ${logoPositionLabel(column, row)} of its box`}
+                    disabled={disabled || pending}
+                    onClick={() => control.onDraft({ ...current, anchor: column, vAnchor: row })}
+                    className={cn(
+                      'h-8 rounded-sm border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
+                      selected ? 'border-primary bg-primary/20' : 'border-border hover:bg-accent/60',
+                    )}
+                  >
+                    <span aria-hidden className={cn('mx-auto block h-2 w-2 rounded-[1px]', selected ? 'bg-primary' : 'bg-muted-foreground/40')} />
+                  </button>
+                );
+              }),
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 text-[12px]"
+            disabled={locked || unchanged}
+            title={availability.reason ?? (unchanged ? 'This is already the placement on the poster.' : undefined)}
+            onClick={control.onApply}
+          >
+            {pending ? <Loader2 className="animate-spin" aria-hidden /> : <Move aria-hidden />}
+            Apply logo placement — free, no AI
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className={FIELD_BUTTON_CLASS}
+            disabled={disabled || pending || (draft === null && saved === null)}
+            onClick={() => control.onDraft(null)}
+          >
+            <RotateCcw aria-hidden />
+            Reset to template position
+          </Button>
+        </div>
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          {availability.reason ??
+            (draft === null
+              ? 'The mark goes back where the template’s own measurements put it. Apply to re-make the poster without AI.'
+              : 'The preview shows exactly where the mark will land. Applying re-makes the poster from its own artwork — seconds, and nothing is billed.')}
+        </p>
+      </div>
+    </details>
   );
 }
 
@@ -201,6 +365,12 @@ export function HiddenDetailsSection({
  * The photo: one description, empty by default — the image model then picks a
  * new photograph suited to the headline. The template photo's own description is
  * shown as a hint.
+ *
+ * What is typed here only ever reaches one sentence — *replace this photograph
+ * with a new one of …* — so a request to add a footer, a phone number or a
+ * website typed in this box cannot work, and is contradicted by the rule that
+ * adds no new text. Day 1 of the first Sirah campaign was lost to exactly that,
+ * which is what `photoPromptNudge` and the button to the chat are for.
  */
 export function PhotoSection({
   photos,
@@ -209,6 +379,7 @@ export function PhotoSection({
   onChange,
   onBlur,
   onFocus,
+  onGoToChat,
 }: {
   photos: EditorField[];
   prompt: string;
@@ -216,9 +387,12 @@ export function PhotoSection({
   onChange: (value: string) => void;
   onBlur: () => void;
   onFocus: () => void;
+  /** Puts the caret in the poster chat. Omitted when there is no chat to go to (no poster yet). */
+  onGoToChat?: () => void;
 }) {
   if (photos.length === 0) return null;
   const main = photos.reduce((largest, photo) => (photo.box.w * photo.box.h > largest.box.w * largest.box.h ? photo : largest), photos[0]!);
+  const nudge = photoPromptNudge(prompt);
   return (
     <EditorSection id="editor-photo" title="Photo">
       <label htmlFor="editor-image-prompt" className="sr-only">
@@ -237,6 +411,20 @@ export function PhotoSection({
         aria-describedby="editor-image-prompt-hint"
         className={FIELD_TEXTAREA_CLASS}
       />
+      {nudge && (
+        <p className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 px-2.5 py-1.5 text-[11px] leading-snug text-warning-ink">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1">
+            {nudge}
+            {onGoToChat && (
+              <Button size="sm" variant="ghost" className={cn(FIELD_BUTTON_CLASS, 'ml-1 align-baseline text-warning-ink hover:text-warning-ink')} onClick={onGoToChat}>
+                <MessageSquare aria-hidden />
+                Go to the poster chat
+              </Button>
+            )}
+          </span>
+        </p>
+      )}
       <p id="editor-image-prompt-hint" className="text-[10px] leading-snug text-muted-foreground/80">
         {main.description ? `Template photo: ${main.description}.` : 'The template’s photo is always replaced with a new one.'}
         {photos.length > 1 ? ` The template has ${photos.length} photos; this describes the largest, and the others get suitable new photos.` : ''}

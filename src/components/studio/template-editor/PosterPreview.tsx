@@ -5,12 +5,30 @@ import * as React from 'react';
 import { ImageOff, Loader2 } from 'lucide-react';
 
 import type { EditorDraft, EditorField } from '@/lib/campaign/clone-editor-view';
+import { placeLogoInBox, toPixelBox } from '@/lib/poster-studio/logo-placement';
+import type { DayLogoPlacement, ElementBox } from '@/lib/types/template-elements';
 import { cn } from '@/lib/utils';
 
 export type PreviewTab = 'poster' | 'template';
 
 function percent(fraction: number): string {
   return `${(fraction * 100).toFixed(3)}%`;
+}
+
+/** What the logo-placement preview needs to draw the mark where it will land. */
+export interface LogoPreview {
+  /**
+   * The active version's artwork **before** any logo was composited on it. Never
+   * the finished poster: that already has a mark burned in, and drawing over it
+   * would show two.
+   */
+  rawImageUrl: string;
+  /** The client's mark with its padding trimmed off — the bytes the compositor fits. */
+  logoUrl: string;
+  /** Every logo box of the template, normalised. */
+  boxes: ElementBox[];
+  /** The placement being tried, or null for the template's own position (which code decides). */
+  placement: DayLogoPlacement | null;
 }
 
 /**
@@ -35,6 +53,7 @@ export function PosterPreview({
   draft,
   focusedId,
   generating,
+  logoPreview = null,
 }: {
   tab: PreviewTab;
   onTabChange: (tab: PreviewTab) => void;
@@ -48,6 +67,8 @@ export function PosterPreview({
   focusedId: string | null;
   /** A poster is being made: the frame says so over whatever it shows. `label` is announced once; `timer` ticks outside the live region. */
   generating: { label: string; timer: string | null } | null;
+  /** The logo placement controls are open: the poster frame shows where the mark would land instead of the finished poster. */
+  logoPreview?: LogoPreview | null;
 }) {
   return (
     <div className="space-y-2">
@@ -78,7 +99,9 @@ export function PosterPreview({
 
       <div className="grid gap-3 2xl:grid-cols-2">
         <Frame aspect={aspect} className={cn(tab !== 'poster' && 'hidden 2xl:block')} caption="Poster">
-          {poster?.imageUrl ? (
+          {logoPreview ? (
+            <LogoPlacementPreview preview={logoPreview} />
+          ) : poster?.imageUrl ? (
             // eslint-disable-next-line @next/next/no-img-element -- the session-gated studio image route serves a sized image; next/image cannot
             <img key={poster.imageUrl} src={poster.imageUrl} alt={poster.label} decoding="async" className="absolute inset-0 h-full w-full object-contain" />
           ) : (
@@ -92,8 +115,9 @@ export function PosterPreview({
               </div>
             </>
           )}
+          {/* Still shown over the logo preview: while a poster is being made there is nothing to place yet. */}
           {generating && <GeneratingVeil label={generating.label} timer={generating.timer} />}
-          {poster?.note && (
+          {poster?.note && !logoPreview && (
             <p className="absolute inset-x-0 bottom-0 bg-background/85 px-2 py-1 text-center text-[11px] text-foreground backdrop-blur-sm">{poster.note}</p>
           )}
         </Frame>
@@ -127,6 +151,78 @@ export function PosterPreview({
         </Frame>
       </div>
     </div>
+  );
+}
+
+/**
+ * Where the client's mark will land, drawn over the poster's **raw** artwork.
+ *
+ * The geometry is not estimated: `toPixelBox` and `placeLogoInBox` are the same
+ * two functions the compositor runs, given the same two inputs — the raw image's
+ * own pixel frame, and the mark's trimmed proportions, both read from the images
+ * as they load. Percentages of the frame then scale that answer to whatever size
+ * the preview is drawn at, so it cannot drift from the render.
+ *
+ * With no placement (the template's own position) nothing is drawn over the
+ * artwork: the compositor measures the box and corrects it itself, and a
+ * pretended answer here would be a lie about where the mark goes.
+ */
+function LogoPlacementPreview({ preview }: { preview: LogoPreview }) {
+  const [frame, setFrame] = React.useState<{ width: number; height: number } | null>(null);
+  const [mark, setMark] = React.useState<{ width: number; height: number } | null>(null);
+  const ready = frame !== null && mark !== null && preview.placement !== null;
+
+  return (
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element -- the session-gated studio image route serves a sized image; next/image cannot */}
+      <img
+        key={preview.rawImageUrl}
+        src={preview.rawImageUrl}
+        alt="This poster’s artwork without the logo"
+        decoding="async"
+        onLoad={(event) => setFrame({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+        className="absolute inset-0 h-full w-full object-contain"
+      />
+      {/* Loaded whatever happens: its natural size is the mark's trimmed shape, which the placement needs. */}
+      {/* eslint-disable-next-line @next/next/no-img-element -- the session-gated logo route; next/image cannot fetch it */}
+      <img
+        key={preview.logoUrl}
+        src={preview.logoUrl}
+        alt=""
+        aria-hidden
+        decoding="async"
+        onLoad={(event) => setMark({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+        style={ready ? undefined : { visibility: 'hidden' }}
+        className="absolute left-0 top-0 h-px w-px"
+      />
+      {ready &&
+        preview.boxes.map((box, index) => {
+          const placed = placeLogoInBox(toPixelBox(box, frame!.width, frame!.height), mark!, preview.placement);
+          if (placed.width < 1 || placed.height < 1) return null;
+          return (
+            // eslint-disable-next-line @next/next/no-img-element -- the session-gated logo route; next/image cannot fetch it
+            <img
+              key={`${index}-${preview.logoUrl}`}
+              src={preview.logoUrl}
+              alt=""
+              aria-hidden
+              decoding="async"
+              className="absolute object-contain"
+              style={{
+                left: percent(placed.left / frame!.width),
+                top: percent(placed.top / frame!.height),
+                width: percent(placed.width / frame!.width),
+                height: percent(placed.height / frame!.height),
+              }}
+            />
+          );
+        })}
+      <p className="absolute inset-x-0 bottom-0 bg-background/85 px-2 py-1 text-center text-[11px] text-foreground backdrop-blur-sm">
+        {preview.placement === null
+          ? 'Preview — the template’s own position, measured by code when the poster is made'
+          : 'Preview — the logo is placed by code, no AI'}
+      </p>
+    </>
   );
 }
 

@@ -235,11 +235,40 @@ export const posterElementValueSchema = z.object({
 
 export type PosterElementValue = z.infer<typeof posterElementValueSchema>;
 
+/**
+ * Where the client's logo sits inside the template's own logo box, once an admin
+ * has placed it by hand.
+ *
+ * Every field is optional and an absent one keeps the compositor's own answer —
+ * the mark fitted to the box and centred — so a day stored before this existed
+ * reads exactly as it always did. Deliberately not `.strict()`: a later build may
+ * record more here, and an older one must not throw a day's whole document away
+ * over a field it does not know.
+ *
+ * **A stored placement is the admin's word on the matter**, so the compositor
+ * stops second-guessing the box: no clean-part deflation, no lockup square. That
+ * is also what lets the editor preview the exact result.
+ */
+export const dayLogoPlacementSchema = z.object({
+  /** Multiple of the size the mark is fitted to its box at. 1 is that fitted size. */
+  scale: z.number().min(0.5).max(3).optional(),
+  anchor: z.enum(['left', 'center', 'right']).optional(),
+  vAnchor: z.enum(['top', 'middle', 'bottom']).optional(),
+});
+
+export type DayLogoPlacement = z.infer<typeof dayLogoPlacementSchema>;
+
 export const dayPosterElementsDocSchema = z.object({
   version: z.literal(1),
   /** The template these values were cloned from. A remapped day is re-cloned. */
   templateId: z.string().uuid(),
   values: z.array(posterElementValueSchema).max(MAX_TEMPLATE_ELEMENTS),
+  /**
+   * The admin's logo placement. Absent — and never written by a clone or a seed —
+   * until the admin moves the mark themselves. Declared last so a reconciled
+   * document serialises in the same order as the stored one it carries it from.
+   */
+  logo: dayLogoPlacementSchema.optional(),
 });
 
 export type DayPosterElementsDoc = z.infer<typeof dayPosterElementsDocSchema>;
@@ -254,6 +283,12 @@ export function parseDayPosterElements(value: unknown): DayPosterElementsDoc | n
  * Whether two day documents say the same thing: template, and every value's
  * words, visibility and source. `kind` is bookkeeping and is ignored, so a day
  * stored before values carried it is not mistaken for a changed one.
+ *
+ * **The logo placement is ignored too**, and must stay so. It changes no word and
+ * no visibility, only where code puts the mark; counting it would bump the day's
+ * `contentRevision`, which marks every existing poster outdated — and an outdated
+ * poster refuses "Fix text" and the poster chat. Moving a logo would then quietly
+ * disable the box the admin talks to the poster in.
  */
 export function sameDayElements(a: DayPosterElementsDoc | null, b: DayPosterElementsDoc | null): boolean {
   const key = (doc: DayPosterElementsDoc | null) =>
@@ -438,6 +473,12 @@ export function cloneTemplateElements(
  *   its words from the fresh clone — a re-read that fixed a misread word, or a
  *   new business name, reaches every day that never changed those words — and
  *   keeps only whether the day hides it. Words an admin or the AI wrote stay.
+ * - **The admin's logo placement is carried.** This rebuilds the document from a
+ *   fresh clone, and a clone has no placement, so it has to be put back by hand:
+ *   otherwise every save would silently return the mark to where the code would
+ *   have put it, and the admin would blame the slider. The early return above
+ *   drops it on purpose — a day remapped to another template is a different
+ *   poster with a different logo box.
  */
 export function reconcileDayElements(
   template: TemplateElementsDoc,
@@ -457,6 +498,7 @@ export function reconcileDayElements(
       if (kept.source === 'template') return { ...value, removed: kept.removed };
       return { id: value.id, text: kept.text, removed: kept.removed, source: kept.source, kind: value.kind };
     }),
+    ...(day.logo ? { logo: day.logo } : {}),
   };
 }
 

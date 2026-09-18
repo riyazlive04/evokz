@@ -4,11 +4,11 @@ import sharp, { type OutputInfo, type OverlayOptions } from 'sharp';
 
 import { isCodeDrawnIdentity } from '@/lib/ai/studio-prompts';
 import type { ResolvedStudioLogo } from '@/lib/poster-studio/brand-logo';
-import { rasterizeLogo } from '@/lib/poster-studio/compose';
+import { rasterizeLogo, trimLogoPadding } from '@/lib/poster-studio/compose';
+import { LOGO_INSET, placeLogoInBox, toPixelBox, type PixelBox } from '@/lib/poster-studio/logo-placement';
 import { contrastRatio, relativeLuminance, rgbToHex, type Rgb } from '@/lib/poster/color';
 import { loadFonts, type LoadedFont } from '@/lib/poster/fonts';
-import { containFit } from '@/lib/poster/image-info';
-import type { ElementBox, ResolvedElement } from '@/lib/types/template-elements';
+import type { DayLogoPlacement, ElementBox, ResolvedElement } from '@/lib/types/template-elements';
 import type { PosterFontChoice } from '@/lib/types/poster';
 
 /**
@@ -41,6 +41,13 @@ export interface CloneIdentityInput {
   drawIdentityText: boolean;
   /** Forces the ink of drawn text; measured per box when omitted. */
   textColorHint?: 'dark' | 'light';
+  /**
+   * The admin's logo placement, from the day's document. Null or absent leaves
+   * the mark where code puts it. A placement given here also turns off both of
+   * the compositor's own corrections — the clean-part deflation and the lockup
+   * square — so what the admin chose is exactly what is drawn.
+   */
+  placement?: DayLogoPlacement | null;
 }
 
 /** Face identity text is drawn in: a neutral geometric sans that sits well in most templates. */
@@ -49,8 +56,11 @@ const IDENTITY_FONT: PosterFontChoice = { family: 'Poppins', weights: [600] };
 const DARK_INK = '#0B0B0D';
 const LIGHT_INK = '#FFFFFF';
 
-/** Share of a logo box left clear on each side, so the mark does not touch its surroundings. */
-const LOGO_INSET = 0.06;
+/**
+ * The logo geometry, re-exported from the browser-importable module that owns
+ * it: every caller still reads it here, beside the compositor that uses it.
+ */
+export { LOGO_INSET, placeLogoInBox, toPixelBox, type PixelBox };
 
 /**
  * Share of a text box's height the drawn ink may fill. Template text boxes are
@@ -71,11 +81,18 @@ export async function composeCloneIdentity(raw: Buffer, input: CloneIdentityInpu
   const layers: OverlayOptions[] = [];
 
   if (input.logo) {
+    // The transparent margin many logo files carry is padding, not design: left
+    // on, it shrinks the mark inside every box it is fitted to.
+    const logo = await trimLogoPadding(input.logo);
+    const placement = input.placement ?? null;
     for (const item of input.resolved) {
       if (item.action.type !== 'logo') continue;
       const box = toPixelBox(item.element.box, width, height);
-      const target = item.action.name ? lockupMarkBox(box) : box;
-      const layer = await logoLayer(input.logo, await clearPartOfBox(raw, target));
+      // Once the admin has placed the mark, code stops correcting the box: the
+      // whole element box is theirs to position in, and the browser preview —
+      // which knows only that box — shows exactly this.
+      const target = placement ? box : await clearPartOfBox(raw, item.action.name ? lockupMarkBox(box, logo) : box, width, height);
+      const layer = await logoLayer(logo, target, placement);
       if (layer) layers.push(layer);
     }
   }
@@ -106,22 +123,6 @@ export async function composeCloneIdentity(raw: Buffer, input: CloneIdentityInpu
 // Geometry and colour — pure
 // ---------------------------------------------------------------------------
 
-export interface PixelBox {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-/** A normalised box in whole pixels of an image, kept inside it. */
-export function toPixelBox(box: ElementBox, width: number, height: number): PixelBox {
-  const left = Math.min(Math.max(Math.round(box.x * width), 0), Math.max(width - 1, 0));
-  const top = Math.min(Math.max(Math.round(box.y * height), 0), Math.max(height - 1, 0));
-  const right = Math.min(Math.max(Math.round((box.x + box.w) * width), left + 1), width);
-  const bottom = Math.min(Math.max(Math.round((box.y + box.h) * height), top + 1), height);
-  return { left, top, width: right - left, height: bottom - top };
-}
-
 /**
  * The longest run of `true` in a list, as [start, end) — the first on a tie —
  * or null when there is none.
@@ -144,6 +145,24 @@ export function longestRun(flags: readonly boolean[]): [number, number] | null {
 export const MIN_CLEAR_SHARE = 0.5;
 
 /**
+ * Share of a logo box's **area** a clean part must keep as well.
+ *
+ * Half the width and half the height each pass `MIN_CLEAR_SHARE` while leaving a
+ * quarter of the box — a mark deflated twice over, which is how day 1 of the
+ * Sirah campaign ended up with a logo jammed into the corner. The two floors
+ * together let one direction give way, but not both at once.
+ */
+export const MIN_CLEAR_AREA_SHARE = 0.45;
+
+/**
+ * Smallest a composited mark may be, as a share of the poster's shorter side. A
+ * measured box, a clean part and a lockup square each make the mark smaller; on a
+ * 1280×1600 poster this keeps it at 70px or more, which is where a logo stops
+ * reading as one.
+ */
+export const MIN_LOGO_SHARE = 0.055;
+
+/**
  * The part of a logo box the image model actually left empty.
  *
  * The prompt asks for the logo's area to stay clean, but a model rewrapping
@@ -152,16 +171,18 @@ export const MIN_CLEAR_SHARE = 0.5;
  * mark. So the box is measured: a column (then, within the clean columns, a row)
  * is inked when more than `inkShare` (10%) of its pixels differ clearly from the box's
  * median colour, and the logo goes into the longest clean run — provided it
- * keeps at least half the box in that direction. A box over a photograph or a
- * pattern has no such run and is used whole, as before.
+ * keeps at least half the box in that direction, and `minAreaShare` of its area
+ * in both together. A box over a photograph or a pattern has no such run and is
+ * used whole, as before.
  */
 export function clearPartFromPixels(
   pixels: { data: Uint8Array | Buffer; width: number; height: number; channels: number },
-  options: { threshold?: number; inkShare?: number } = {},
+  options: { threshold?: number; inkShare?: number; minAreaShare?: number } = {},
 ): { left: number; top: number; width: number; height: number } {
   const { data, width, height, channels } = pixels;
   const threshold = options.threshold ?? 48;
   const inkShare = options.inkShare ?? 0.1;
+  const minAreaShare = options.minAreaShare ?? MIN_CLEAR_AREA_SHARE;
   const whole = { left: 0, top: 0, width, height };
   if (width < 4 || height < 4) return whole;
 
@@ -193,25 +214,41 @@ export function clearPartFromPixels(
   });
   const rows = longestRun(cleanRows);
   const [top, bottom] = rows && rows[1] - rows[0] >= MIN_CLEAR_SHARE * height ? rows : [0, height];
-  return { left: columns[0], top, width: columns[1] - columns[0], height: bottom - top };
+  const part = { left: columns[0], top, width: columns[1] - columns[0], height: bottom - top };
+  return part.width * part.height >= minAreaShare * width * height ? part : whole;
 }
 
-/** `clearPartFromPixels` for a box of a rendered poster, in the poster's pixels. */
-async function clearPartOfBox(raw: Buffer, box: PixelBox): Promise<PixelBox> {
+/**
+ * `clearPartFromPixels` for a box of a rendered poster, in the poster's pixels —
+ * and never below `MIN_LOGO_SHARE` of the poster's shorter side. A clean part too
+ * small to hold a legible mark is no use: the whole box, with a word run into a
+ * corner of it, still reads better than a mark nobody can make out.
+ */
+async function clearPartOfBox(raw: Buffer, box: PixelBox, posterWidth: number, posterHeight: number): Promise<PixelBox> {
   if (box.width < 4 || box.height < 4) return box;
   const { data, info } = await sharp(raw).extract(box).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const part = clearPartFromPixels({ data, width: info.width, height: info.height, channels: info.channels });
+  const floor = MIN_LOGO_SHARE * Math.min(posterWidth, posterHeight);
+  if (Math.max(part.width, part.height) < floor && Math.max(box.width, box.height) >= floor) return box;
   return { left: box.left + part.left, top: box.top + part.top, width: part.width, height: part.height };
 }
 
 /**
  * Where the client's mark goes in a wide logo badge whose lettering the image
- * model rewrites (a `logo` action with a `name`): the square at the badge's left
- * end, as tall as the badge — the area `buildClonePrompt` asks the model to leave
- * empty. Never wider than the badge.
+ * model rewrites (a `logo` action with a `name`): the left end of the badge, as
+ * tall as it, as wide as the mark's own shape needs — the area `buildClonePrompt`
+ * asks the model to leave empty, which is why `maxShare` and that prompt's "the
+ * left third of the badge" must change together.
+ *
+ * Never narrower than a square, so a tall mark keeps the room it had; never wider
+ * than `maxShare` of the badge, so the written name keeps the rest; never wider
+ * than the badge itself.
  */
-export function lockupMarkBox(box: PixelBox): PixelBox {
-  return { left: box.left, top: box.top, width: Math.min(box.height, box.width), height: box.height };
+export function lockupMarkBox(box: PixelBox, logo?: { width: number; height: number } | null, maxShare = 1 / 3): PixelBox {
+  const aspect = logo && logo.height > 0 && logo.width > 0 ? logo.width / logo.height : 1;
+  const share = Math.max(box.height, Math.round(box.width * maxShare));
+  const width = Math.min(box.width, Math.max(box.height, Math.min(Math.round(box.height * aspect), share)));
+  return { left: box.left, top: box.top, width, height: box.height };
 }
 
 /**
@@ -239,21 +276,20 @@ export function inkFor(background: Rgb, hint?: 'dark' | 'light'): string {
 // Pixels
 // ---------------------------------------------------------------------------
 
-async function logoLayer(logo: ResolvedStudioLogo, box: PixelBox): Promise<OverlayOptions | null> {
-  const inset = Math.round(Math.min(box.width, box.height) * LOGO_INSET);
-  const bounds = { width: box.width - inset * 2, height: box.height - inset * 2 };
-  if (bounds.width < 2 || bounds.height < 2) return null;
+async function logoLayer(logo: ResolvedStudioLogo, box: PixelBox, placement: DayLogoPlacement | null): Promise<OverlayOptions | null> {
+  const placed = placeLogoInBox(box, logo, placement);
+  if (placed.width < 2 || placed.height < 2) return null;
 
-  const fitted = containFit({ width: logo.width, height: logo.height }, bounds);
-  const png = await rasterizeLogo(logo, Math.max(1, fitted.width), Math.max(1, fitted.height));
-  // `fit: inside` can land a pixel short of the requested size; centre what came back.
+  const png = await rasterizeLogo(logo, placed.width, placed.height);
+  // `fit: inside` can land a pixel short of the requested size; keep what came
+  // back where `placeLogoInBox` put it, taking up the shortfall at the far edge.
   const actual = await sharp(png).metadata();
-  const logoWidth = actual.width ?? fitted.width;
-  const logoHeight = actual.height ?? fitted.height;
+  const logoWidth = actual.width ?? placed.width;
+  const logoHeight = actual.height ?? placed.height;
   return {
     input: png,
-    left: box.left + Math.round((box.width - logoWidth) / 2),
-    top: box.top + Math.round((box.height - logoHeight) / 2),
+    left: placed.left + Math.round((placed.width - logoWidth) / 2),
+    top: placed.top + Math.round((placed.height - logoHeight) / 2),
   };
 }
 

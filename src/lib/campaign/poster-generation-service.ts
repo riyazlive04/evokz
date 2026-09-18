@@ -671,7 +671,8 @@ export async function generateCampaignDayPoster(
 
     let finalBytes: Buffer;
     try {
-      finalBytes = await deps.composeIdentity(rendered.bytes, { resolved, logo, drawIdentityText: false });
+      // The day's own logo placement, so a regeneration keeps where the admin put the mark.
+      finalBytes = await deps.composeIdentity(rendered.bytes, { resolved, logo, drawIdentityText: false, placement: elements.logo ?? null });
     } catch (error) {
       // A campaign poster without the client's exact logo is not a poster the
       // client can receive, so it is not kept as one.

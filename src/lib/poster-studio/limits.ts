@@ -137,13 +137,22 @@ export function identityBandFraction(aspectRatio: StudioAspectRatio): number {
   }
 }
 
-/** Browser-facing preview of a client's Brand Canvas logo, resolved server-side. */
+/**
+ * Browser-facing preview of a client's Brand Canvas logo, resolved server-side.
+ *
+ * `trim` serves the mark with its transparent padding cut away
+ * (`trimLogoPadding`) — the exact bytes a clone composites. A logo-placement
+ * preview must use it: fed the uploaded file's own proportions, the preview
+ * would place a box whose aspect is the padding's, and the mark would land
+ * somewhere else on the real poster.
+ */
 export function studioClientLogoUrl(
   clientId: string,
   background: StudioLogoBackground,
   width = 240,
+  options: { trim?: boolean } = {},
 ): string {
-  return `/api/poster-studio/clients/${encodeURIComponent(clientId)}/logo?background=${background}&w=${width}`;
+  return `/api/poster-studio/clients/${encodeURIComponent(clientId)}/logo?background=${background}&w=${width}${options.trim ? '&trim=1' : ''}`;
 }
 
 /**

@@ -110,6 +110,12 @@ export interface CloneBrand {
   colors: Array<{ hex: string; role: string }>;
   /** The Brand Canvas logo through the protected route, or null when there is none. */
   logoUrl: string | null;
+  /**
+   * The same logo with its transparent padding cut away — the mark exactly as a
+   * clone composites it. What a logo-placement preview must draw: the uploaded
+   * file's own proportions are the padding's, not the mark's.
+   */
+  logoTrimmedUrl: string | null;
 }
 
 /**
@@ -151,6 +157,7 @@ export async function loadCloneBrand(db: CampaignDb, clientId: string): Promise<
     },
     colors: cloneAccentColors(colors),
     logoUrl: hasLogo ? studioClientLogoUrl(client.id, client.logoBackgroundRemoved ? 'REMOVED' : 'ORIGINAL') : null,
+    logoTrimmedUrl: hasLogo ? studioClientLogoUrl(client.id, client.logoBackgroundRemoved ? 'REMOVED' : 'ORIGINAL', 480, { trim: true }) : null,
   };
 }
 

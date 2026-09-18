@@ -10,10 +10,12 @@ import type {
 import { BOARD_STATUS_LABELS, SLOT_LOCK_LABELS, weekOf, type BoardDayActions, type BoardStatus, type SlotLock } from '@/lib/campaign/board';
 import { loadBoardDayDetails, loadCampaignBoard } from '@/lib/campaign/board-service';
 import { loadCampaignDayCloneEditor, type CampaignDayCloneEditor } from '@/lib/campaign/clone-editor';
-import { adjacentDays, brandCanvasHref, campaignBoardHref, templateEditorHref } from '@/lib/campaign/clone-editor-view';
+import { adjacentDays, brandCanvasHref, campaignBoardHref, templateEditorHref, type PosterChangeSummary } from '@/lib/campaign/clone-editor-view';
+import { posterRevisionSummary } from '@/lib/campaign/clone-fix';
 import { DELIVERY_STATUS_LABELS } from '@/lib/campaign/delivery';
 import { effectiveTemplateId } from '@/lib/campaign/model';
 import { isGenerationInProgress, templateOutputSize, type PosterState } from '@/lib/campaign/poster-generation';
+import { studioImageUrl } from '@/lib/poster-studio/limits';
 import { CampaignDomainError, type CampaignDb } from '@/lib/campaign/service';
 import { formatDisplayDateTime, getAppTimeZone } from '@/lib/time';
 import type { DayPosterElementsDoc, TemplateElementsDoc, TextCheckResult } from '@/lib/types/template-elements';
@@ -71,6 +73,13 @@ export interface TemplateEditorScreen {
     /** Null for an uploaded poster (no studio artwork). */
     imageUrl: string | null;
     fullImageUrl: string | null;
+    /**
+     * The artwork before the client's logo was composited onto it — what the
+     * logo-placement preview draws under its own mark. Never the finished image:
+     * that one already has a logo burned into it, and overlaying a second one is
+     * the mistake this field exists to prevent.
+     */
+    rawImageUrl: string | null;
     textCheck: TextCheckResult | null;
   } | null;
   generation: {
@@ -106,6 +115,18 @@ export interface TemplateEditorScreen {
     templateLabel: string | null;
     /** "17 Sept, 09:04" */
     createdLabel: string;
+    /**
+     * What made this version (`posterRevisionSummary`) — the clone itself, an
+     * admin's instruction, a text fix, a logo move, or an upload. Null only for a
+     * version whose studio row has gone.
+     */
+    change?: PosterChangeSummary | null;
+    /**
+     * The version's artwork before the client's logo was composited onto it — what
+     * a logo-placement preview overlays. Never the finished image, which already
+     * has the mark burned in.
+     */
+    rawImageUrl?: string | null;
   }>;
 }
 
@@ -155,6 +176,16 @@ export async function loadTemplateEditorScreen(
     select: { id: true, dayNumber: true, scheduledDate: true },
   });
   const details = await loadBoardDayDetails(db, day.campaignId, day.id);
+  // What made each version, and its raw artwork. The board's details carry
+  // neither: the drawer shows a poster, while the editor has to say "this one
+  // added a footer you asked for" and to draw a logo preview over the artwork
+  // before any mark was on it. One small read rather than widening the board's
+  // own view with two fields only this screen uses.
+  const studioRows = await db.posterVersion.findMany({
+    where: { calendarDayId: day.id },
+    select: { id: true, studioGenerationId: true, studioGeneration: { select: { mode: true, prompt: true } } },
+  });
+  const studio = new Map(studioRows.map((row) => [row.id, row]));
   const card = board.days.find((candidate) => candidate.id === day.id);
   if (!card) throw new CampaignDomainError('not-found', 'That day is not part of its campaign any more. Reload the campaign.');
 
@@ -212,6 +243,7 @@ export async function loadTemplateEditorScreen(
           current: active.current,
           imageUrl: active.imageUrl,
           fullImageUrl: activeDetails?.fullImageUrl ?? null,
+          rawImageUrl: rawImageUrlOf(active.id),
           textCheck: active.textCheck,
         }
       : null,
@@ -250,8 +282,23 @@ export async function loadTemplateEditorScreen(
       rejection: version.rejection,
       templateLabel: version.templateLabel,
       createdLabel: formatDisplayDateTime(version.createdAt, timeZone),
+      change: changeOf(version.id),
+      rawImageUrl: rawImageUrlOf(version.id),
     })),
   };
   return { kind: 'editor', screen };
+
+  /** What one version did to the poster, read from its studio row by the one reader that owns it. */
+  function changeOf(versionId: string): PosterChangeSummary | null {
+    const row = studio.get(versionId);
+    if (!row) return null;
+    return posterRevisionSummary(row.studioGeneration?.mode ?? null, row.studioGeneration?.prompt ?? null);
+  }
+
+  /** One version's artwork before its logo was composited on, or null for an upload. */
+  function rawImageUrlOf(versionId: string): string | null {
+    const id = studio.get(versionId)?.studioGenerationId;
+    return id ? studioImageUrl(id, { variant: 'raw', width: 1024 }) : null;
+  }
 }
 

@@ -83,7 +83,7 @@ export interface CampaignDayCloneEditor {
   /** The day's values for the template's elements, reconciled (not yet saved when the day has none). */
   elements: DayPosterElementsDoc | null;
   resolved: ResolvedElement[];
-  brand: CloneBrandValues & { colors: Array<{ hex: string; role: string }>; logoUrl: string | null };
+  brand: CloneBrandValues & { colors: Array<{ hex: string; role: string }>; logoUrl: string | null; logoTrimmedUrl: string | null };
   /** `brand` when the clone recolours to brand accent colours; `template` keeps the template's own. */
   colourMode: 'brand' | 'template';
   activeVersion: {
@@ -191,7 +191,7 @@ export async function loadCampaignDayCloneEditor(db: CampaignDb, dayId: string):
         : null,
     elements,
     resolved: doc && elements ? resolveDayElements(doc, elements, brand.values, row.imagePrompt) : [],
-    brand: { ...brand.values, colors: brand.colors, logoUrl: brand.logoUrl },
+    brand: { ...brand.values, colors: brand.colors, logoUrl: brand.logoUrl, logoTrimmedUrl: brand.logoTrimmedUrl },
     colourMode: brand.colors.length > 0 ? 'brand' : 'template',
     activeVersion: active
       ? {

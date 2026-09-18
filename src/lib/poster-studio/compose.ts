@@ -737,3 +737,40 @@ export async function rasterizeLogo(logo: ResolvedStudioLogo, width: number, hei
   }
   return sharp(logo.bytes).resize({ width, height, fit: 'inside' }).png().toBuffer();
 }
+
+/**
+ * The same logo with its transparent margin cut away, as a **new** object — the
+ * caller's logo is left exactly as it was, so the studio's footer band, whose
+ * layout is measured against the uploaded file, is untouched.
+ *
+ * Most uploaded marks carry a wide transparent border. Fitted into a template's
+ * own logo box that border is drawn as empty space, and the mark itself ends up a
+ * fraction of the room the design left for it.
+ *
+ * Two guards, both learned the hard way:
+ *
+ *   - **Raster only.** A vector logo is rasterised at the size it is drawn at, so
+ *     its margin costs nothing, and trimming would change its intrinsic box.
+ *   - **A corner must be transparent.** `trim` works from the top-left pixel's
+ *     colour, so a logo whose white box *is* the design would have that box cut
+ *     off. No transparent corner, no trim.
+ *
+ * Anything unreadable, or a trim that leaves nothing, returns the logo unchanged:
+ * this is a tidy-up, never a reason for a poster to fail.
+ */
+export async function trimLogoPadding(logo: ResolvedStudioLogo): Promise<ResolvedStudioLogo> {
+  if (logo.isSvg) return logo;
+  try {
+    const { data, info } = await sharp(logo.bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    if (info.width < 2 || info.height < 2) return logo;
+    const alphaAt = (x: number, y: number) => data[(y * info.width + x) * info.channels + 3] ?? 255;
+    const corners = [alphaAt(0, 0), alphaAt(info.width - 1, 0), alphaAt(0, info.height - 1), alphaAt(info.width - 1, info.height - 1)];
+    if (corners.every((alpha) => alpha >= 250)) return logo;
+
+    const trimmed = await sharp(logo.bytes).trim({ threshold: 1 }).png().toBuffer({ resolveWithObject: true });
+    if (trimmed.info.width < 1 || trimmed.info.height < 1) return logo;
+    return { ...logo, bytes: trimmed.data, mimeType: 'image/png', width: trimmed.info.width, height: trimmed.info.height };
+  } catch {
+    return logo;
+  }
+}

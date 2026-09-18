@@ -30,7 +30,7 @@ import { buildClonePrompt, cloneAccentColors, describeBoxPosition, isCodeDrawnId
 import { checkCloneText, expectedTexts, judgeCloneText, normalizeCheckText, TEXT_CHECK_TIMEOUT_MS } from '@/lib/ai/text-check';
 import { STALE_GENERATION_MS } from '@/lib/campaign/poster-generation';
 import type { ResolvedStudioLogo } from '@/lib/poster-studio/brand-logo';
-import { clearPartFromPixels, composeCloneIdentity, identityTextAlign, inkFor, lockupMarkBox, longestRun, toPixelBox } from '@/lib/poster-studio/clone-identity';
+import { clearPartFromPixels, composeCloneIdentity, identityTextAlign, inkFor, lockupMarkBox, longestRun, placeLogoInBox, toPixelBox } from '@/lib/poster-studio/clone-identity';
 import { cloneSizeFor } from '@/lib/poster-studio/clone-size';
 import {
   carriesTemplateContactDetail,
@@ -216,6 +216,22 @@ async function main() {
   const namedTemplate: TemplateElementsDoc = { ...DOC, elements: [...DOC.elements, el('e18', 'text', 'Choose Urocare Clinic.', [0.05, 0.6, 0.2, 0.03])] };
   const filledBeforeRename = cloneTemplateElements(namedTemplate, TEMPLATE_ID, { businessName: 'Old Name Dental' });
   t('a template-sourced value follows a new business name', value(reconcileDayElements(namedTemplate, filledBeforeRename, TEMPLATE_ID, { businessName: 'Sirah Dental' }), 'e18')?.text === 'Choose Sirah Dental.');
+
+  // ===========================================================================
+  section('contract: the admin’s logo placement on the day');
+  // ===========================================================================
+  const placed: DayPosterElementsDoc = { ...day, logo: { scale: 1.6, anchor: 'left', vAnchor: 'top' } };
+  t('a day parses with a placement, and one without still parses', same(parseDayPosterElements(placed)?.logo, { scale: 1.6, anchor: 'left', vAnchor: 'top' }) && parseDayPosterElements(day)?.logo === undefined);
+  t('a placement is all optional, and out-of-range scale is refused', parseDayPosterElements({ ...day, logo: {} })?.logo !== undefined && parseDayPosterElements({ ...day, logo: { scale: 4 } }) === null);
+  t('an unknown field in the placement does not throw the day away', parseDayPosterElements({ ...day, logo: { scale: 1.2, rotation: 90 } })?.logo?.scale === 1.2);
+  t('a clone and a seeded day never set one', day.logo === undefined && seedDayElementsFromLegacy(DOC, TEMPLATE_ID, { headline: 'Hi', supportingText: null, cta: null }).logo === undefined);
+  // Risk #3: reconcile rebuilds the document from a fresh clone, which has none.
+  t('reconcile carries the placement on the same template', same(reconcileDayElements(DOC, placed, TEMPLATE_ID).logo, placed.logo));
+  t('…and drops it for a day remapped to another template', reconcileDayElements(DOC, { ...placed, templateId: OTHER_TEMPLATE_ID }, TEMPLATE_ID).logo === undefined);
+  t('…and adds none to a day that had none', reconcileDayElements(DOC, day, TEMPLATE_ID).logo === undefined);
+  t('a reconciled day serialises exactly as the stored one it carried it from', JSON.stringify(reconcileDayElements(DOC, placed, TEMPLATE_ID)) === JSON.stringify(parseDayPosterElements(placed)));
+  // Risk #2: counting it would bump contentRevision, mark the poster outdated and disable the chat.
+  t('sameDayElements ignores the placement', sameDayElements(placed, day) && sameDayElements(placed, { ...day, logo: { scale: 3 } }));
 
   // ===========================================================================
   section('contract: seeding a day’s existing content');
@@ -1025,8 +1041,18 @@ async function main() {
   t('a template printing its own brand name beside the badge gets none', same(actionOf(resolveDayElements(wideWithName, cloneTemplateElements(wideWithName, TEMPLATE_ID), BRAND, null), 'e1'), { type: 'logo' }));
   t('a square logo gets none', same(actionOf(doctorResolved, 'e1'), { type: 'logo' }));
   const widePrompt = buildClonePrompt({ resolved: resolveDayElements(WIDE, wideDay, BRAND, null), brandColors: null, identity: 'ai', orientation: 'vertical 4:5' });
-  t('the prompt keeps the badge, leaves a square for the mark and writes the name', widePrompt.includes('keeping the badge or pill shape behind it') && widePrompt.includes('leave a square as tall as the badge as clean, empty background') && widePrompt.includes('Write "Sirah healthcare agents" in the rest of the badge'));
+  t('the prompt keeps the badge, leaves its left third for the mark and writes the name', widePrompt.includes('keeping the badge or pill shape behind it') && widePrompt.includes('leave the left third of it as clean, empty background') && widePrompt.includes('Write "Sirah healthcare agents" in the rest of the badge'));
+  t('…and no longer asks for a square, which the mark box no longer measures', !widePrompt.includes('a square as tall as the badge'));
   t('lockup mark box: the left square, never wider than the badge', same(lockupMarkBox({ left: 240, top: 10, width: 152, height: 40 }), { left: 240, top: 10, width: 40, height: 40 }) && same(lockupMarkBox({ left: 0, top: 0, width: 20, height: 40 }), { left: 0, top: 0, width: 20, height: 40 }));
+  // A 3.68:1 mark — the aspect that made day 1's logo 70px wide — takes the
+  // badge's left third instead of a square, which is what the prompt now leaves.
+  t(
+    'lockup mark box: a wide mark takes the left third of the badge',
+    same(lockupMarkBox({ left: 240, top: 10, width: 152, height: 40 }, { width: 294, height: 80 }), { left: 240, top: 10, width: 51, height: 40 }),
+    JSON.stringify(lockupMarkBox({ left: 240, top: 10, width: 152, height: 40 }, { width: 294, height: 80 })),
+  );
+  t('…never narrower than a square, and never wider than the badge', same(lockupMarkBox({ left: 0, top: 0, width: 60, height: 40 }, { width: 294, height: 80 }), { left: 0, top: 0, width: 40, height: 40 }) && lockupMarkBox({ left: 0, top: 0, width: 20, height: 40 }, { width: 294, height: 80 }).width === 20);
+  t('…and a tall mark keeps the square it had', same(lockupMarkBox({ left: 240, top: 10, width: 152, height: 40 }, { width: 40, height: 80 }), { left: 240, top: 10, width: 40, height: 40 }));
 
   // ===========================================================================
   section('phase 0 fix: colours, people, photos, corrections');
@@ -1197,6 +1223,15 @@ async function main() {
   t('the logo lands in the centre of its box', same(await pixel(276, 32), [255, 0, 0]), JSON.stringify(await pixel(276, 32)));
   t('the logo keeps its aspect ratio (no red above it)', same(await pixel(276, 18), [255, 255, 255]));
   t('nothing is drawn outside logo boxes without identity text', same(await pixel(40, 460), [255, 255, 255]));
+
+  // The day's stored placement reaches the pixels: the same mark, pushed to the
+  // top-left of the same box (260,15 32x35 → inset 2, so 262,17).
+  const movedLogo = await composeCloneIdentity(raw, { resolved: logoOnly, logo, drawIdentityText: false, placement: { anchor: 'left', vAnchor: 'top' } });
+  const placedPixel = async (x: number, y: number) => {
+    const { data } = await sharp(movedLogo).extract({ left: x, top: y, width: 1, height: 1 }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    return [data[0], data[1], data[2]];
+  };
+  t('a stored placement moves the mark to the corner it names', same(await placedPixel(263, 18), [255, 0, 0]) && same(await pixel(263, 18), [255, 255, 255]), JSON.stringify([await placedPixel(263, 18), await pixel(263, 18)]));
   const meta = await sharp(composed).metadata();
   t('the composite is a PNG of the raw size', meta.format === 'png' && meta.width === 400 && meta.height === 500);
 
@@ -1229,6 +1264,31 @@ async function main() {
   const patterned = boxPixels(() => ((noise = (noise * 48271) % 2147483647) % 2 === 0 ? 30 : 230));
   t('a box over a photograph or pattern is used whole', same(clearPartFromPixels(patterned), { left: 0, top: 0, width: 100, height: 50 }));
   t('a clean part under half the box is not used', same(clearPartFromPixels(boxPixels((x) => (x >= 40 && x < 60 ? 20 : 255))), { left: 0, top: 0, width: 100, height: 50 }));
+  // Half the width and half the height each pass on their own while leaving a
+  // quarter of the box — the double deflation that shrank day 1's mark.
+  const bothWays = boxPixels((x, y) => (x >= 60 ? 20 : y >= 28 && (x + y) % 5 === 0 ? 20 : 255));
+  t('a clean part that gives way in both directions at once is not used', same(clearPartFromPixels(bothWays), { left: 0, top: 0, width: 100, height: 50 }), JSON.stringify(clearPartFromPixels(bothWays)));
+  t('…and a lower area floor lets the same part through', same(clearPartFromPixels(bothWays, { minAreaShare: 0.2 }), { left: 0, top: 0, width: 60, height: 28 }), JSON.stringify(clearPartFromPixels(bothWays, { minAreaShare: 0.2 })));
+
+  // ===========================================================================
+  section('logo placement: one geometry for the render and the preview');
+  // ===========================================================================
+  // A 200x100 mark in a 400x200 box: inset 12, bounds 376x176, fitted 352x176.
+  const placeBox = { left: 100, top: 50, width: 400, height: 200 };
+  const mark = { width: 200, height: 100 };
+  t('no placement fits the box less its inset, centred both ways — what code has always done', same(placeLogoInBox(placeBox, mark), { left: 124, top: 62, width: 352, height: 176 }), JSON.stringify(placeLogoInBox(placeBox, mark)));
+  const anchors = ['left', 'center', 'right'] as const;
+  const vAnchors = ['top', 'middle', 'bottom'] as const;
+  const corners = anchors.flatMap((anchor) => vAnchors.map((vAnchor) => ({ anchor, vAnchor, box: placeLogoInBox(placeBox, mark, { scale: 0.5, anchor, vAnchor }) })));
+  t('all nine anchors keep the mark inside its box', corners.every((entry) => entry.box.left >= placeBox.left && entry.box.top >= placeBox.top && entry.box.left + entry.box.width <= placeBox.left + placeBox.width && entry.box.top + entry.box.height <= placeBox.top + placeBox.height));
+  t('…and all nine are a different place', new Set(corners.map((entry) => `${entry.box.left},${entry.box.top}`)).size === 9, JSON.stringify(corners.map((entry) => [entry.box.left, entry.box.top])));
+  const topLeft = placeLogoInBox(placeBox, mark, { scale: 0.5, anchor: 'left', vAnchor: 'top' });
+  const bottomRight = placeLogoInBox(placeBox, mark, { scale: 0.5, anchor: 'right', vAnchor: 'bottom' });
+  t('left and top sit at the inset; right and bottom at the far inset', topLeft.left === 112 && topLeft.top === 62 && bottomRight.left + bottomRight.width === 488 && bottomRight.top + bottomRight.height === 238, JSON.stringify([topLeft, bottomRight]));
+  t('scale grows the mark', placeLogoInBox(placeBox, mark, { scale: 1.1 }).width === 387);
+  t('…but never past the box, whatever is asked for', placeLogoInBox(placeBox, mark, { scale: 3, anchor: 'left', vAnchor: 'top' }).width === 400 && placeLogoInBox(placeBox, mark, { scale: 3 }).height === 200);
+  t('…and a mark bigger than its box is still kept inside it', (() => { const big = placeLogoInBox(placeBox, mark, { scale: 3, anchor: 'right', vAnchor: 'bottom' }); return big.left >= placeBox.left && big.left + big.width <= placeBox.left + placeBox.width; })());
+  t('a box with no room inside its inset places nothing the compositor will draw', placeLogoInBox({ left: 0, top: 0, width: 1, height: 1 }, mark).height < 2 && placeLogoInBox({ left: 0, top: 0, width: 0, height: 0 }, mark).width === 0);
   // Composite: 400x500 white raw with a dark word at the right of logo box e1 (260..292 x 15..50).
   const intruded = await sharp(raw).composite([{ input: await sharp({ create: { width: 8, height: 20, channels: 3, background: '#101010' } }).png().toBuffer(), left: 286, top: 22 }]).png().toBuffer();
   const moved = await composeCloneIdentity(intruded, { resolved: logoOnly, logo, drawIdentityText: false });

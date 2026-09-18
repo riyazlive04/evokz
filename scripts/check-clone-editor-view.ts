@@ -17,30 +17,48 @@ import {
   approvalNotice,
   brandCanvasHref,
   campaignBoardHref,
+  chatAdditionsAtRisk,
+  describeLogoPlacement,
   differsFromTemplate,
   draftEdits,
   draftFromElements,
   editorFields,
   editorStatusChip,
   elapsedSince,
+  foldPosterChange,
   formatElapsed,
+  formatLogoScale,
   groupEditorFields,
   groupTitle,
   hasUnsavedChanges,
   isConflictMessage,
   isFieldDirty,
   lengthGuide,
+  LOGO_ANCHORS,
+  LOGO_SCALE_MAX,
+  LOGO_SCALE_MIN,
+  LOGO_VANCHORS,
+  logoPositionLabel,
+  MIN_POSTER_CHANGE_LENGTH,
+  missingBrandFactsForInstruction,
   normalizeFieldText,
   normalizeImagePrompt,
+  PHOTO_NUDGE_MAX_LENGTH,
+  PHOTO_NUDGE_TEXT,
+  photoPromptNudge,
   primaryActions,
   revisionAvailability,
   rewriteNotice,
+  sameLogoPlacement,
   templateDefaults,
   templateEditorHref,
   textCheckView,
   type EditorDraft,
+  type PosterChangeKind,
 } from '@/lib/campaign/clone-editor-view';
 import {
+  BRAND_FACT_KEYWORDS,
+  brandFactsForInstruction,
   buildCloneEditPrompt,
   buildCloneTextFixPrompt,
   normalizePosterChangeInstruction,
@@ -50,6 +68,7 @@ import { CampaignDomainError } from '@/lib/campaign/service';
 import {
   cloneTemplateElements,
   MAX_ELEMENT_TEXT,
+  type CloneBrandValues,
   type TemplateElement,
   type TemplateElementsDoc,
   type TextCheckResult,
@@ -103,6 +122,15 @@ const doc: TemplateElementsDoc = {
     element('e14', 'photo', null, [0.8, 0.78, 0.2, 0.22], { description: 'doctor portrait' }),
     element('e15', 'badge', 'NEW', [0.9, 0.5, 0.06, 0.04]),
   ],
+};
+
+/** The client's Brand Canvas, as `cloneBrandValues` hands it to the prompt builders. */
+const BRAND: CloneBrandValues = {
+  companyName: 'Sirah healthcare agents',
+  tagline: 'Automate your healthcare business',
+  phone: '6381780846',
+  website: 'sirahdigital.in',
+  hasLogo: true,
 };
 
 // ===========================================================================
@@ -233,6 +261,17 @@ const check = (items: TextCheckResult['items'], leftovers: string[] = []): TextC
   const locked = (['sent', 'sending', 'past'] as const).map((lock) => revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, lock }));
   t('a sent, sending or past day offers neither Fix text nor Small change, and says why', locked.every((entry) => !entry.fix.enabled && !entry.edit.enabled && /can no longer change/.test(entry.edit.reason ?? '')), JSON.stringify(locked.map((entry) => entry.edit.reason)));
   t('a due or closed day, or no lock, still offers them', (['due', 'closed', null] as const).every((lock) => revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, lock }).edit.enabled));
+
+  // Moving the mark redraws no words and asks no model, so an outdated poster can
+  // still have its logo put right — everything else refuses for the same reasons.
+  t('logo placement ignores the outdated check the other two make', ready.logo.enabled && revisionAvailability({ campaignStatus: 'ACTIVE', poster: { ...poster, current: false }, generating: false, busy: false }).logo.enabled);
+  const outdated = revisionAvailability({ campaignStatus: 'ACTIVE', poster: { ...poster, current: false }, generating: false, busy: false });
+  t('…while fix and the chat say the poster is outdated', !outdated.fix.enabled && !outdated.edit.enabled && /outdated/.test(outdated.edit.reason ?? ''));
+  t('…and every other refusal refuses it too', (['PAUSED'] as const).every((status) => !revisionAvailability({ campaignStatus: status, poster, generating: false, busy: false }).logo.enabled) && !revisionAvailability({ campaignStatus: 'ACTIVE', poster: { ...poster, hasArtwork: false }, generating: false, busy: false }).logo.enabled && !revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: true, busy: false }).logo.enabled && !revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, lock: 'sent' }).logo.enabled);
+
+  const older = revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, viewingOlder: true });
+  t('viewing an older version refuses all three, and says which one to select', !older.fix.enabled && !older.edit.enabled && !older.logo.enabled && older.edit.reason === 'You are viewing an older version. Select the active one to change it.');
+  t('…and a running change is still named first', revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: true, viewingOlder: true }).edit.reason === 'Another change is running.');
 }
 
 // ===========================================================================
@@ -264,7 +303,24 @@ section('fix and small-change prompts');
 
   const edit = buildCloneEditPrompt({ instruction: '  make the   background lighter ', orientation: 'vertical 4:5', hasLogoBox: true });
   t('the edit prompt carries the instruction, collapsed', edit.includes('Make this change:\n\nmake the background lighter\n\n'));
-  t('…changes nothing else, keeps the words exactly, adds no branding', /change nothing else/.test(edit) && /every text \(the same words, spelling/.test(edit) && /Do not add any logos/.test(edit) && /logo stays clean and empty/.test(edit));
+  t('…changes nothing else and keeps the words exactly', /change nothing else/.test(edit) && /every text \(the same words, spelling/.test(edit) && /logo stays clean and empty/.test(edit) && /Output frame: vertical 4:5/.test(edit));
+  // The one ambiguous closing line said "no new text unless the change asks for
+  // it" beside "do not add any logos", and the model read it as "add nothing":
+  // the footer asked for in the chat never appeared. Two sentences now, one for
+  // each half.
+  t('…permits exactly what the change asks for', /If the change asks for something the poster does not have yet — a line of text, a bar, a strip, a contact detail — draw it, in the poster’s own typefaces and colours, placed where it covers no face, no logo and no existing text\./.test(edit));
+  t('…and forbids everything it did not ask for', /Add nothing the change did not ask for: no new logo, badge, QR code, watermark, icon, stock graphic or extra wording, and spell every text the change asks for exactly as written\./.test(edit));
+  t('…with the old ambiguous line gone', !/no new text unless the change asks for it/.test(edit) && !/^Do not add any logos, badges, QR codes or watermarks, and no new text/m.test(edit));
+
+  const footerAsked = 'add a footer strip across the bottom with my phone number and website';
+  const withFacts = buildCloneEditPrompt({
+    instruction: footerAsked,
+    orientation: 'vertical 4:5',
+    hasLogoBox: true,
+    facts: brandFactsForInstruction(footerAsked, BRAND),
+  });
+  t('a facts block lists the exact Brand Canvas details, after the instruction', /Make this change:\n\nadd a footer[^\n]*\n\nUse these exact details, copied character for character — do not invent, reformat, abbreviate or re-space them:\n- Phone: 6381780846\n- Website: sirahdigital\.in\n\nApply the change fully/.test(withFacts), withFacts);
+  t('…and nothing is listed when the change mentions none', !/Use these exact details/.test(edit));
 
   t('an instruction is collapsed', normalizePosterChangeInstruction('  make it   warmer ') === 'make it warmer');
   const refused = (value: string) => {
@@ -276,6 +332,89 @@ section('fix and small-change prompts');
     }
   };
   t('too short or too long is refused', refused(' a ') && refused('x'.repeat(501)) && !refused('x'.repeat(500)));
+}
+
+// ===========================================================================
+section('brand facts an instruction asks for');
+// ===========================================================================
+{
+  const labels = (instruction: string, values: CloneBrandValues = BRAND) => brandFactsForInstruction(instruction, values).map((fact) => fact.label);
+
+  t('no keyword, no facts', same(labels('make the background lighter'), []));
+  t('a footer means the phone and the website', same(labels('add a footer also with the details'), ['Phone', 'Website']));
+  t('…in Brand Canvas reading order, whatever order they were asked in', same(labels('add the website and the phone'), ['Phone', 'Website']));
+  t('the value is the exact one Brand Canvas holds', brandFactsForInstruction('put my phone on it', BRAND)[0]?.value === '6381780846');
+  // Nothing to copy character for character, so nothing is claimed: the editor
+  // warns the admin that Brand Canvas has no such detail instead.
+  t('an empty Brand Canvas field is never listed', same(labels('add a footer', { ...BRAND, phone: '' }), ['Website']) && same(labels('add a footer', { ...BRAND, phone: null, website: '   ' }), []));
+
+  const expected: Record<string, string> = { companyName: 'Business name', tagline: 'Tagline', phone: 'Phone', website: 'Website' };
+  const wrong = BRAND_FACT_KEYWORDS.filter((row) => !same(labels(`please add the ${row.word} here`), row.fields.map((field) => expected[field]!)));
+  t('every keyword of the shared table maps to the field it promises', wrong.length === 0, JSON.stringify(wrong.map((row) => [row.word, labels(`please add the ${row.word} here`)])));
+  t('whole words only: a keyword inside a longer word is not a match', same(labels('several numbers on a chart'), []) && same(labels('a sitemap of the clinic'), []) && same(labels('show the website'), ['Website']));
+
+  // The composer warns from the same table the prompt is built with: a field the
+  // instruction names and Brand Canvas has not got is one the model would invent.
+  t('a named field Brand Canvas has not got is warned about', same(missingBrandFactsForInstruction('add a footer', { ...BRAND, phone: null }), ['Phone']));
+  t('…both of them when both are empty', same(missingBrandFactsForInstruction('add the contact details', { ...BRAND, phone: '  ', website: null }), ['Phone', 'Website']));
+  t('…and nothing when the canvas has every detail asked for, or none was', same(missingBrandFactsForInstruction('add a footer', BRAND), []) && same(missingBrandFactsForInstruction('make the background lighter', { ...BRAND, phone: null }), []));
+}
+
+// ===========================================================================
+section('the poster chat’s own folding');
+// ===========================================================================
+{
+  // The composer counts what the service counts, so "ready" and "refused" cannot disagree.
+  t('the composer folds an instruction exactly as the server stores it', foldPosterChange('  add a   footer\n strip ') === 'add a footer strip' && foldPosterChange('') === '' && foldPosterChange(null) === '');
+  t('…and agrees with the service on what is too short', foldPosterChange(' a ').length < MIN_POSTER_CHANGE_LENGTH && foldPosterChange('  ok ').length < MIN_POSTER_CHANGE_LENGTH && foldPosterChange(' dim it ').length >= MIN_POSTER_CHANGE_LENGTH);
+}
+
+// ===========================================================================
+section('logo placement, in words');
+// ===========================================================================
+{
+  t('a scale reads with one decimal, always', formatLogoScale(1) === '1.0×' && formatLogoScale(1.4) === '1.4×' && formatLogoScale(2.5) === '2.5×');
+  t('…clamped to the slider’s own window', formatLogoScale(9) === `${LOGO_SCALE_MAX.toFixed(1)}×` && formatLogoScale(0.1) === `${LOGO_SCALE_MIN.toFixed(1)}×`);
+  t('every cell of the 3×3 grid has a name', same(LOGO_VANCHORS.flatMap((row) => LOGO_ANCHORS.map((column) => logoPositionLabel(column, row))), ['top left', 'top centre', 'top right', 'middle left', 'middle centre', 'middle right', 'bottom left', 'bottom centre', 'bottom right']));
+
+  t('a placement reads back as the history row shows it', describeLogoPlacement({ scale: 1.4, anchor: 'left', vAnchor: 'top' }) === '1.4× at top left');
+  t('…an absent field falls back to what code would do', describeLogoPlacement({}) === '1.0× at middle centre');
+  t('…and no placement is the template’s own position', describeLogoPlacement(null) === 'back to the template’s own position');
+
+  // "Centred, as asked" and "wherever code decides" are different posters: any
+  // stored placement turns off the clean-part deflation and the lockup square.
+  t('none is not the same as a centred one', !sameLogoPlacement(null, { scale: 1, anchor: 'center', vAnchor: 'middle' }) && sameLogoPlacement(null, null) && sameLogoPlacement(null, undefined));
+  t('absent fields compare as the defaults they stand for', sameLogoPlacement({}, { scale: 1, anchor: 'center', vAnchor: 'middle' }) && sameLogoPlacement({ scale: 1.4 }, { scale: 1.4, anchor: 'center', vAnchor: 'middle' }));
+  t('any difference is a difference', !sameLogoPlacement({ scale: 1.4 }, { scale: 1.5 }) && !sameLogoPlacement({ anchor: 'left' }, { anchor: 'right' }) && !sameLogoPlacement({ vAnchor: 'top' }, {}));
+}
+
+// ===========================================================================
+section('the Photo box is for the photograph');
+// ===========================================================================
+{
+  t('the box that lost day 1: a footer asked of the Photo box is caught', photoPromptNudge('add footer also with phone number and website given in the brand canvas') === PHOTO_NUDGE_TEXT);
+  t('every high-signal word is caught', ['add a footer', 'our phone', 'the website', 'put the logo here', 'a QR code', 'contact details', 'add text at the bottom', 'write our name'].every((prompt) => photoPromptNudge(prompt) === PHOTO_NUDGE_TEXT));
+  t('a photograph described as a photograph is left alone', photoPromptNudge('a smiling nurse greeting an elderly patient in a bright clinic') === null && photoPromptNudge('') === null && photoPromptNudge(null) === null);
+  t('a keyword inside a longer word is not a match', photoPromptNudge('a footerless layout') === null && photoPromptNudge('a telephoned message') === null);
+  // Past the cap the words are a photograph being described at length, and a
+  // "phone" in them is something a person in the picture is holding.
+  t('a long description is not nudged', photoPromptNudge(`a doctor holding a phone ${'x'.repeat(PHOTO_NUDGE_MAX_LENGTH)}`) === null);
+}
+
+// ===========================================================================
+section('changes a regeneration would throw away');
+// ===========================================================================
+{
+  const version = (versionNumber: number, kind: PosterChangeKind | null, text = `change ${versionNumber}`) => ({
+    versionNumber,
+    change: kind ? { kind, text } : null,
+  });
+  const thread = [version(4, 'fix', 'Feature 1: change …'), version(2, 'edit', 'add a footer with my phone'), version(1, 'clone'), version(3, 'logo', 'larger, top left'), version(5, 'edit', 'dim the background')];
+  t('the admin’s own instructions since the last generation, oldest first', same(chatAdditionsAtRisk(thread), ['add a footer with my phone', 'dim the background']), JSON.stringify(chatAdditionsAtRisk(thread)));
+  t('a fix and a logo move are not at risk — the day itself records their words and their placement', !chatAdditionsAtRisk(thread).some((line) => /Feature 1|larger/.test(line)));
+  t('a later generation clears what came before it', same(chatAdditionsAtRisk([...thread, version(6, 'clone')]), []) && same(chatAdditionsAtRisk([...thread, version(6, 'clone'), version(7, 'edit', 'add a badge')]), ['add a badge']));
+  t('an upload clears them too, and an unmapped version counts as a fresh start', same(chatAdditionsAtRisk([...thread, version(6, 'upload')]), []) && same(chatAdditionsAtRisk([...thread, version(6, null)]), []));
+  t('a poster nobody has changed has nothing at risk', same(chatAdditionsAtRisk([version(1, 'clone')]), []) && same(chatAdditionsAtRisk([]), []));
 }
 
 // ===========================================================================

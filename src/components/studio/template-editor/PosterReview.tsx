@@ -2,20 +2,21 @@
 
 import * as React from 'react';
 
-import { AlertTriangle, CheckCircle2, ChevronRight, Loader2, SpellCheck, Wand2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, MessageSquare, SpellCheck, Wand2, X } from 'lucide-react';
 
 import { Chip, type ChipVariant } from '@/components/campaign/board/board-ui';
-import { FIELD_SELECT_CLASS } from '@/components/studio/template-editor/editor-ui';
+import { FIELD_SELECT_CLASS, FIELD_TEXTAREA_CLASS } from '@/components/studio/template-editor/editor-ui';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import type { RevisionAvailability, TextCheckView } from '@/lib/campaign/clone-editor-view';
+import { foldPosterChange, missingBrandFactsForInstruction, type RevisionAvailability, type TextCheckView } from '@/lib/campaign/clone-editor-view';
 import type { TemplateEditorScreen } from '@/lib/campaign/clone-editor-screen';
 import { MAX_REJECTION_DETAIL, REJECTION_REASONS } from '@/lib/campaign/review';
+import type { CloneBrandValues } from '@/lib/types/template-elements';
 import { cn } from '@/lib/utils';
 
 /**
- * What sits under the preview: the text check with "Fix text", the versions
- * strip, "Reject…" and "Small change". Each is compact and only as loud as its
+ * What sits under the preview: the text check with "Fix text", "Reject…", the
+ * poster chat and the versions strip. Each is compact and only as loud as its
  * state — an all-correct text check is one green line.
  */
 
@@ -226,61 +227,174 @@ export function RejectPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Small change
+// The poster chat
 // ---------------------------------------------------------------------------
 
-/** "Small change": one instruction applied to the poster as it is, collapsed until wanted. */
-export function SmallChangePanel({
+/** Longest the composer grows to before it scrolls. */
+const MAX_CHAT_ROWS = 6;
+
+/** Said once, permanently, under the box — never a dialog. The admin sees the price before they type, not after. */
+export const POSTER_CHAT_COST = '1 image edit, about 2 minutes, billed to this client. Saved as a new version.';
+
+/**
+ * The box the admin talks to the poster in: one instruction, sent straight
+ * away.
+ *
+ * It replaces "Small change", which was a `<details>` collapsed by default with
+ * a confirm dialog behind it. Nobody found it — the first Sirah campaign's admin
+ * typed "add footer also with phone number and website" into the **Photo** box
+ * instead, where it could never work. So the composer is always visible, under
+ * the poster it changes, and the cost it used to confirm is simply written under
+ * it (`aria-describedby`, so it is read with the box rather than after it).
+ *
+ * The history stays where it was: the versions strip below. This is a composer,
+ * not a transcript.
+ *
+ * Enter sends and Shift+Enter makes a new line — guarded on `isComposing`, or an
+ * IME's own Enter would send half a word to the image model. While this tab's
+ * change runs the box is `readOnly` rather than `disabled`: disabling it throws
+ * the caret to `<body>`, and the admin loses their place in a two-minute wait.
+ */
+export function PosterChat({
+  inputRef,
   availability,
-  pending,
   maxLength,
-  onApply,
+  minLength,
+  running,
+  failure,
+  brand,
+  onSend,
+  onDismissFailure,
 }: {
+  /** Held by the editor, so the Photo box's nudge can put the caret here. */
+  inputRef: React.RefObject<HTMLTextAreaElement>;
   availability: RevisionAvailability;
-  pending: boolean;
   maxLength: number;
-  onApply: (instruction: string) => Promise<boolean>;
+  minLength: number;
+  /** This tab's change, running now: what was asked, and the elapsed ticker. */
+  running: { instruction: string; timer: string | null } | null;
+  /** The last change that did not happen, and whether the image was paid for anyway. */
+  failure: { message: string; billed: boolean } | null;
+  /** The client's Brand Canvas values, to warn when the instruction names one it has not got. */
+  brand: CloneBrandValues;
+  /** Resolves true when the poster changed; the box is cleared then, and kept otherwise. */
+  onSend: (instruction: string) => Promise<boolean>;
+  onDismissFailure: () => void;
 }) {
   const [instruction, setInstruction] = React.useState('');
-  const [open, setOpen] = React.useState(false);
-  const ready = availability.enabled && !pending && instruction.replace(/\s+/g, ' ').trim().length >= 3;
+  const pending = running !== null;
+  const folded = foldPosterChange(instruction);
+  const ready = availability.enabled && !pending && folded.length >= minLength;
+  const missingBrandFacts = React.useMemo(() => missingBrandFactsForInstruction(folded, brand), [folded, brand]);
+
+  const grow = React.useCallback(() => {
+    const element = inputRef.current;
+    if (!element) return;
+    const styles = window.getComputedStyle(element);
+    const line = Number.parseFloat(styles.lineHeight) || 20;
+    const chrome =
+      (Number.parseFloat(styles.paddingTop) || 0) +
+      (Number.parseFloat(styles.paddingBottom) || 0) +
+      (Number.parseFloat(styles.borderTopWidth) || 0) +
+      (Number.parseFloat(styles.borderBottomWidth) || 0);
+    element.style.height = 'auto';
+    element.style.height = `${Math.min(element.scrollHeight, Math.round(line * MAX_CHAT_ROWS + chrome))}px`;
+  }, [inputRef]);
+  React.useEffect(grow, [grow, instruction]);
+
+  const send = async () => {
+    if (!ready) return;
+    // The caret stays where it was for the whole run: the box is only read-only.
+    if (await onSend(folded)) setInstruction('');
+    inputRef.current?.focus();
+  };
 
   return (
-    <details className="group rounded-md border border-border" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-2.5 py-2 text-[12px] font-medium text-foreground [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden />
-        Small change
-        <span className="font-normal text-muted-foreground">— edit this poster without regenerating it</span>
-      </summary>
+    <section aria-label="Poster chat" className="space-y-2 rounded-md border border-border p-2.5">
       <form
-        className="space-y-2 px-2.5 pb-2.5"
-        onSubmit={async (event) => {
+        className="space-y-1.5"
+        onSubmit={(event) => {
           event.preventDefault();
-          if (!ready) return;
-          if (await onApply(instruction)) setInstruction('');
+          void send();
         }}
       >
-        <label htmlFor="editor-small-change" className="sr-only">
-          Describe one change to this poster
+        <label htmlFor="editor-poster-chat" className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
+          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+          Ask for a change
         </label>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            id="editor-small-change"
-            value={instruction}
-            maxLength={maxLength}
-            disabled={pending}
-            onChange={(event) => setInstruction(event.target.value)}
-            placeholder="Describe one change to this poster…"
-          />
-          <Button type="submit" size="sm" className="h-9 shrink-0" disabled={!ready} title={availability.reason ?? undefined}>
-            {pending ? <Loader2 className="animate-spin" /> : <Wand2 />}
-            Apply
+        <textarea
+          id="editor-poster-chat"
+          ref={inputRef}
+          rows={2}
+          value={instruction}
+          maxLength={maxLength}
+          readOnly={pending}
+          aria-disabled={pending || !availability.enabled}
+          aria-describedby="editor-poster-chat-cost"
+          onChange={(event) => setInstruction(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' || event.shiftKey) return;
+            // An IME composing a word ends it with Enter; sending there would cut
+            // the word in half and bill an edit for it.
+            if (event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            void send();
+          }}
+          placeholder="Ask for one change — e.g. add a footer strip with my phone and website"
+          className={cn(FIELD_TEXTAREA_CLASS, 'min-h-0 resize-none', pending && 'cursor-default opacity-70')}
+        />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p id="editor-poster-chat-cost" className="text-[10px] leading-snug text-muted-foreground">
+            {POSTER_CHAT_COST}
+          </p>
+          <Button type="submit" size="sm" className="h-8 shrink-0 text-[12px]" disabled={!ready} title={availability.reason ?? undefined}>
+            {pending ? <Loader2 className="animate-spin" aria-hidden /> : <Wand2 aria-hidden />}
+            Send
           </Button>
         </div>
-        <p className="text-[10px] text-muted-foreground">
-          {availability.reason ?? 'e.g. “make the background lighter”. Words, layout and photo stay as they are unless you ask. One AI image edit, about two minutes; saved as a new version.'}
-        </p>
       </form>
-    </details>
+
+      {!availability.enabled && availability.reason && <p className="text-[11px] text-muted-foreground">{availability.reason}</p>}
+
+      {missingBrandFacts.length > 0 && !pending && (
+        <p className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/5 px-2.5 py-1.5 text-[11px] leading-snug text-warning-ink">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+          Brand Canvas has no {listOf(missingBrandFacts)} for this client, so the AI would invent one — add it in Brand Canvas first.
+        </p>
+      )}
+
+      {running && (
+        <div className="space-y-1 rounded-md border border-border bg-muted/40 px-2.5 py-2">
+          <p className="break-words text-[12px] text-foreground">“{running.instruction}”</p>
+          {/* Only the stable sentence is live: a region carrying the timer would be read out every second. */}
+          <p className="text-[11px] text-muted-foreground">
+            <span role="status">Applying your change to the poster… It keeps going if you leave this page.</span>
+            {running.timer && <span className="ml-1 font-mono tabular-nums">{running.timer}</span>}
+          </p>
+        </div>
+      )}
+
+      {failure && !running && (
+        <div role="alert" className="flex items-start gap-2 rounded-md border border-danger/30 bg-danger/5 px-2.5 py-2 text-[11px] leading-snug text-danger-ink">
+          <span className="min-w-0 flex-1">
+            {failure.message}
+            <span className="block text-muted-foreground">
+              {failure.billed
+                ? 'The image was generated, so this edit was billed. The poster is unchanged — your words are still in the box.'
+                : 'Nothing was billed. Your words are still in the box.'}
+            </span>
+          </span>
+          <button type="button" aria-label="Dismiss" className="shrink-0 opacity-70 hover:opacity-100" onClick={onDismissFailure}>
+            <X className="h-3.5 w-3.5" aria-hidden />
+          </button>
+        </div>
+      )}
+    </section>
   );
+}
+
+/** "Phone", "Phone and Website", "Phone, Website and Tagline". */
+function listOf(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }

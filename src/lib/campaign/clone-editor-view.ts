@@ -8,6 +8,8 @@ import {
   templateBindings,
   UNBOUND_IDENTITY_KINDS,
   type BrandField,
+  type CloneBrandValues,
+  type DayLogoPlacement,
   type DayPosterElementsDoc,
   type ElementBox,
   type TemplateElementKind,
@@ -364,6 +366,15 @@ export function primaryActions(input: { flags: EditorActionFlags; hasPoster: boo
 export const MIN_POSTER_CHANGE_LENGTH = 3;
 export const MAX_POSTER_CHANGE_LENGTH = 500;
 
+/**
+ * An instruction exactly as the server will store and send it
+ * (`normalizePosterChangeInstruction`), so the composer counts what the service
+ * counts and never offers to send something it would refuse.
+ */
+export function foldPosterChange(instruction: string | null | undefined): string {
+  return (instruction ?? '').replace(/\s+/g, ' ').trim();
+}
+
 export interface RevisionAvailability {
   enabled: boolean;
   /** Why not, for the admin; null when enabled. */
@@ -371,8 +382,14 @@ export interface RevisionAvailability {
 }
 
 /**
- * Whether "Fix text" and "Small change" can run on the active poster: the same
- * refusals `clone-fix.ts` makes, checked early so the buttons say why.
+ * Whether "Fix text", the poster chat and "Apply logo placement" can run on the
+ * active poster: the same refusals `clone-fix.ts` makes, checked early so the
+ * buttons say why.
+ *
+ * `logo` is the same chain **minus** the outdated check. Moving the mark redraws
+ * no words and asks no model, so a poster whose words have since changed can
+ * still have its logo put right; everything the other two refuse for, it refuses
+ * for too.
  */
 export function revisionAvailability(input: {
   campaignStatus: string;
@@ -381,23 +398,219 @@ export function revisionAvailability(input: {
   busy: boolean;
   /** The day's slot lock (the screen's `status.lock`). A sent, sending or past day's poster is final. */
   lock?: SlotLock | null;
-}): { fix: RevisionAvailability; edit: RevisionAvailability } {
-  const common = ((): string | null => {
+  /** The admin is looking at an older version than the day's active one. */
+  viewingOlder?: boolean;
+}): { fix: RevisionAvailability; edit: RevisionAvailability; logo: RevisionAvailability } {
+  const blocking = (needsCurrent: boolean): string | null => {
     if (input.generating) return 'A poster is being made for this day.';
     if (input.busy) return 'Another change is running.';
+    if (input.viewingOlder) return 'You are viewing an older version. Select the active one to change it.';
     if (input.lock === 'sent' || input.lock === 'sending' || input.lock === 'past') return `${SLOT_LOCK_LABELS[input.lock]} Its poster can no longer change.`;
     if (input.campaignStatus !== 'ACTIVE') return 'Activate the campaign to change posters.';
     if (!input.poster) return 'Generate a poster first.';
     if (!input.poster.hasArtwork) return 'An uploaded poster cannot be changed with AI.';
-    if (!input.poster.current) return 'This poster is outdated — regenerate it with the new words.';
+    if (needsCurrent && !input.poster.current) return 'This poster is outdated — regenerate it with the new words.';
     return null;
-  })();
+  };
+  const common = blocking(true);
+  const logoReason = blocking(false);
   const issues = textCheckView(input.poster?.textCheck ?? null);
   const fixReason = common ?? (issues.state === 'none' ? 'This poster has no text check.' : issues.state === 'ok' ? 'All text is correct.' : null);
   return {
     fix: { enabled: fixReason === null, reason: fixReason },
     edit: { enabled: common === null, reason: common },
+    logo: { enabled: logoReason === null, reason: logoReason },
   };
+}
+
+// ---------------------------------------------------------------------------
+// What each version did to the poster
+// ---------------------------------------------------------------------------
+
+/**
+ * What made one poster version: the clone itself, an admin's change, a text fix,
+ * a logo move, or an operator's upload. Written by `posterRevisionSummary`
+ * (`clone-fix.ts`), which owns the reading of the stored studio row.
+ */
+export type PosterChangeKind = 'clone' | 'edit' | 'fix' | 'logo' | 'upload';
+
+export interface PosterChangeSummary {
+  kind: PosterChangeKind;
+  /** One line for the admin — for an edit, their own words. */
+  text: string;
+}
+
+/**
+ * The admin's changes that a regeneration would throw away: every instruction
+ * asked of the poster since the last time it was generated whole, oldest first.
+ *
+ * A chat-added footer exists only in one version's pixels — nothing on the day
+ * records it — so regenerating quietly loses it. The Regenerate confirm quotes
+ * these back so the admin knows what they are about to spend again.
+ *
+ * A text fix and a logo move are not at risk: a regeneration writes the day's own
+ * words and reads the day's own stored placement. A version whose change the
+ * loader has not mapped counts as a fresh start, which errs towards warning about
+ * less than was really lost rather than about changes that never happened.
+ */
+export function chatAdditionsAtRisk(versions: readonly { versionNumber: number; change?: PosterChangeSummary | null }[]): string[] {
+  const oldestFirst = [...versions].sort((a, b) => a.versionNumber - b.versionNumber);
+  let additions: string[] = [];
+  for (const version of oldestFirst) {
+    const change = version.change ?? null;
+    if (!change || change.kind === 'clone' || change.kind === 'upload') additions = [];
+    else if (change.kind === 'edit') additions.push(change.text);
+  }
+  return additions;
+}
+
+// ---------------------------------------------------------------------------
+// Brand Canvas details an instruction asks for
+// ---------------------------------------------------------------------------
+
+/** The Brand Canvas fields an instruction can ask a poster to carry. */
+export type BrandFactField = 'companyName' | 'tagline' | 'phone' | 'website';
+
+/**
+ * The words that name each Brand Canvas field in an admin's own instruction.
+ *
+ * Small on purpose: every row here is a word an admin plainly means the client's
+ * own detail by, so a match is safe to answer with the exact value. "Footer" and
+ * the contact wordings imply both a phone number and a website, because that is
+ * what a footer on these posters is. Anything not listed — "contact no", "ph" —
+ * simply gets no facts block, and the model is still forbidden to invent one:
+ * the composer's help line tells the admin to say "phone" or "website".
+ *
+ * It lives here, in the pure view model, because both sides need it from one
+ * table: the service builds the facts block for the prompt
+ * (`brandFactsForInstruction` in `clone-fix.ts`), and the composer warns the
+ * admin before they spend when Brand Canvas has no such detail to copy.
+ */
+export const BRAND_FACT_KEYWORDS: ReadonlyArray<{ word: string; fields: readonly BrandFactField[] }> = [
+  { word: 'phone', fields: ['phone'] },
+  { word: 'mobile', fields: ['phone'] },
+  { word: 'number', fields: ['phone'] },
+  { word: 'call', fields: ['phone'] },
+  { word: 'whatsapp', fields: ['phone'] },
+  { word: 'telephone', fields: ['phone'] },
+  { word: 'website', fields: ['website'] },
+  { word: 'site', fields: ['website'] },
+  { word: 'web', fields: ['website'] },
+  { word: 'url', fields: ['website'] },
+  { word: 'domain', fields: ['website'] },
+  { word: 'link', fields: ['website'] },
+  { word: 'business name', fields: ['companyName'] },
+  { word: 'company name', fields: ['companyName'] },
+  { word: 'brand name', fields: ['companyName'] },
+  { word: 'our name', fields: ['companyName'] },
+  { word: 'clinic name', fields: ['companyName'] },
+  { word: 'shop name', fields: ['companyName'] },
+  { word: 'tagline', fields: ['tagline'] },
+  { word: 'slogan', fields: ['tagline'] },
+  { word: 'strapline', fields: ['tagline'] },
+  { word: 'footer', fields: ['phone', 'website'] },
+  { word: 'contact details', fields: ['phone', 'website'] },
+  { word: 'contact bar', fields: ['phone', 'website'] },
+  { word: 'contact strip', fields: ['phone', 'website'] },
+];
+
+/** The field's own name, as Brand Canvas and the editor label it. */
+export const BRAND_FACT_LABELS: Record<BrandFactField, string> = {
+  companyName: 'Business name',
+  tagline: 'Tagline',
+  phone: 'Phone',
+  website: 'Website',
+};
+
+/** Brand Canvas reading order, so a footer's details are listed as the canvas lists them. */
+export const BRAND_FACT_ORDER: readonly BrandFactField[] = ['companyName', 'tagline', 'phone', 'website'];
+
+/**
+ * The Brand Canvas fields an instruction names, in Brand Canvas reading order.
+ *
+ * Whole words only, case insensitively: "number" is found in "phone number" but
+ * not in "numbers", and "site" not inside "website".
+ */
+export function brandFactFieldsInInstruction(instruction: string): BrandFactField[] {
+  const wanted = new Set<BrandFactField>();
+  for (const row of BRAND_FACT_KEYWORDS) {
+    const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${row.word.split(/\s+/).join('\\s+')}(?![\\p{L}\\p{N}])`, 'iu');
+    if (pattern.test(instruction)) for (const field of row.fields) wanted.add(field);
+  }
+  return BRAND_FACT_ORDER.filter((field) => wanted.has(field));
+}
+
+/**
+ * The details an instruction asks for that Brand Canvas has left empty, by
+ * their labels — nothing to copy character for character, so the model would
+ * make one up.
+ *
+ * Advisory only: the chat still sends, because the admin may well be asking for
+ * a footer that carries something else entirely. The warning exists because an
+ * invented phone number on a client's poster is the one mistake nobody spots
+ * until it has been sent.
+ */
+export function missingBrandFactsForInstruction(instruction: string, brand: CloneBrandValues): string[] {
+  return brandFactFieldsInInstruction(instruction)
+    .filter((field) => !(brand[field] ?? '').replace(/\s+/g, ' ').trim())
+    .map((field) => BRAND_FACT_LABELS[field]);
+}
+
+// ---------------------------------------------------------------------------
+// Logo placement
+// ---------------------------------------------------------------------------
+
+export type LogoAnchor = NonNullable<DayLogoPlacement['anchor']>;
+export type LogoVAnchor = NonNullable<DayLogoPlacement['vAnchor']>;
+
+/**
+ * The size slider's window. Narrower than `dayLogoPlacementSchema`'s stored
+ * 0.5–3: below 0.6 the mark stops reading as a logo, and past 2.5 it fills the
+ * template's box entirely — both are reachable by hand in a stored document, and
+ * neither is worth a slider stop.
+ */
+export const LOGO_SCALE_MIN = 0.6;
+export const LOGO_SCALE_MAX = 2.5;
+export const LOGO_SCALE_STEP = 0.1;
+
+export const LOGO_ANCHORS: readonly LogoAnchor[] = ['left', 'center', 'right'];
+export const LOGO_VANCHORS: readonly LogoVAnchor[] = ['top', 'middle', 'bottom'];
+
+const ANCHOR_WORDS: Record<LogoAnchor, string> = { left: 'left', center: 'centre', right: 'right' };
+const VANCHOR_WORDS: Record<LogoVAnchor, string> = { top: 'top', middle: 'middle', bottom: 'bottom' };
+
+/** "top left", "middle centre" — how the 3×3 grid names one of its cells. */
+export function logoPositionLabel(anchor: LogoAnchor, vAnchor: LogoVAnchor): string {
+  return `${VANCHOR_WORDS[vAnchor]} ${ANCHOR_WORDS[anchor]}`;
+}
+
+/** "1.4×" — one decimal always, so the readout does not jump about as the slider moves. */
+export function formatLogoScale(scale: number): string {
+  const clamped = Math.min(Math.max(Number.isFinite(scale) ? scale : 1, LOGO_SCALE_MIN), LOGO_SCALE_MAX);
+  return `${clamped.toFixed(1)}×`;
+}
+
+/**
+ * One line for a placement, for the button, the notice and the history row the
+ * service stores (`POSTER_LOGO_PROMPT_PREFIX` + this).
+ */
+export function describeLogoPlacement(placement: DayLogoPlacement | null): string {
+  if (!placement) return 'back to the template’s own position';
+  return `${formatLogoScale(placement.scale ?? 1)} at ${logoPositionLabel(placement.anchor ?? 'center', placement.vAnchor ?? 'middle')}`;
+}
+
+/**
+ * Whether two placements would draw the same mark — what "Apply" compares the
+ * draft against, so a placement already saved cannot be paid for twice in
+ * versions.
+ *
+ * A placement of 1× centred is **not** the same as none: any stored placement
+ * turns off the compositor's clean-part deflation and its lockup square, so
+ * "centred, as asked" and "wherever code decides" are different posters.
+ */
+export function sameLogoPlacement(a: DayLogoPlacement | null | undefined, b: DayLogoPlacement | null | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return (a.scale ?? 1) === (b.scale ?? 1) && (a.anchor ?? 'center') === (b.anchor ?? 'center') && (a.vAnchor ?? 'middle') === (b.vAnchor ?? 'middle');
 }
 
 // ---------------------------------------------------------------------------
@@ -521,4 +734,40 @@ export function rewriteNotice(result: { rewritten: readonly string[]; kept: read
 /** A save refused because the day moved on under this tab (the server's conflict wording). */
 export function isConflictMessage(message: string | null | undefined): boolean {
   return /changed by someone else|changed or started generating meanwhile/i.test(message ?? '');
+}
+
+// ---------------------------------------------------------------------------
+// The Photo box is for the photograph
+// ---------------------------------------------------------------------------
+
+/**
+ * Longest a photo prompt may be and still be read as a request typed into the
+ * wrong box. Past it the words are a photograph being described at length, and a
+ * "phone" in them is something a person in the picture is holding.
+ */
+export const PHOTO_NUDGE_MAX_LENGTH = 200;
+
+/** High-signal only: each of these in a photo prompt is almost certainly an addition asked of the wrong box. */
+const PHOTO_NUDGE_WORDS = ['footer', 'phone', 'website', 'logo', 'qr', 'qr code', 'contact details', 'add text', 'write'] as const;
+
+export const PHOTO_NUDGE_TEXT =
+  'This box describes the photograph only. To add a footer, phone, website or anything else new, ask in the poster chat under the preview.';
+
+/**
+ * The warning shown under the Photo box when what is typed there is not a
+ * photograph at all, or null when it reads like one.
+ *
+ * Day 1 of the Sirah campaign was lost to exactly this: "add footer also with
+ * phone number and website given in the brand canvas" went into the Photo box,
+ * which only ever reaches one sentence — *replace this photograph with a new one
+ * of …* — and is then contradicted by the rule that adds no new text. Advisory
+ * and client-side: the prompt is still sent as typed.
+ */
+export function photoPromptNudge(prompt: string | null | undefined): string | null {
+  const clean = (prompt ?? '').replace(/\s+/g, ' ').trim();
+  if (!clean || clean.length > PHOTO_NUDGE_MAX_LENGTH) return null;
+  const mentioned = PHOTO_NUDGE_WORDS.some((word) =>
+    new RegExp(`(?<![\\p{L}\\p{N}])${word.split(/\s+/).join('\\s+')}(?![\\p{L}\\p{N}])`, 'iu').test(clean),
+  );
+  return mentioned ? PHOTO_NUDGE_TEXT : null;
 }

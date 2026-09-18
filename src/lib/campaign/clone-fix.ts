@@ -2,7 +2,15 @@ import type { PosterApprovalStatus, PosterGenerationStatus } from '@prisma/clien
 
 import { describeBoxPosition } from '@/lib/ai/studio-prompts';
 import { normalizeCheckText } from '@/lib/ai/text-check';
-import { MAX_POSTER_CHANGE_LENGTH, MIN_POSTER_CHANGE_LENGTH } from '@/lib/campaign/clone-editor-view';
+import {
+  brandFactFieldsInInstruction,
+  BRAND_FACT_KEYWORDS,
+  BRAND_FACT_LABELS,
+  MAX_POSTER_CHANGE_LENGTH,
+  MIN_POSTER_CHANGE_LENGTH,
+  type BrandFactField,
+  type PosterChangeSummary,
+} from '@/lib/campaign/clone-editor-view';
 import { SLOT_LOCK_LABELS, slotLockOf } from '@/lib/campaign/board';
 import { bookCampaignDayQuietly, type DeliveryDeps } from '@/lib/campaign/delivery-service';
 import { isVersionCurrent } from '@/lib/campaign/model';
@@ -20,6 +28,7 @@ import {
   parseTextCheck,
   resolveDayElements,
   textCheckIssueCount,
+  type CloneBrandValues,
   type TemplateElementsDoc,
   type TextCheckResult,
 } from '@/lib/types/template-elements';
@@ -76,6 +85,39 @@ import {
 
 /** The "Small change" length window, shared with the editor (`clone-editor-view.ts`). */
 export { MAX_POSTER_CHANGE_LENGTH, MIN_POSTER_CHANGE_LENGTH };
+
+/**
+ * What a revision writes at the front of `PosterStudioGeneration.prompt` when the
+ * words stored there are not an admin's own.
+ *
+ * The admin's instruction is stored exactly as typed, so a row that is not one
+ * has to say so in the only column there is. Writer and reader share these two
+ * constants and `posterRevisionSummary`, so a history row can never be read back
+ * as an instruction the admin never gave.
+ */
+export const POSTER_FIX_PROMPT_PREFIX = 'Fix text — ';
+export const POSTER_LOGO_PROMPT_PREFIX = 'Logo placement — ';
+
+/**
+ * What one stored studio row did to the poster, for the version history: its
+ * kind, and one line of words for the admin.
+ *
+ * A row with no mode at all is an uploaded poster — nothing in Poster Studio made
+ * it. Any mode other than `EDIT` is the clone itself: the poster as the template
+ * first gave it.
+ */
+export function posterRevisionSummary(mode: string | null | undefined, prompt: string | null | undefined): PosterChangeSummary {
+  const text = (prompt ?? '').replace(/\s+/g, ' ').trim();
+  if (!mode) return { kind: 'upload', text: 'Uploaded poster' };
+  if (mode !== 'EDIT') return { kind: 'clone', text: 'Generated from the template' };
+  if (text.startsWith(POSTER_LOGO_PROMPT_PREFIX)) {
+    return { kind: 'logo', text: text.slice(POSTER_LOGO_PROMPT_PREFIX.length).trim() || 'Logo placement changed' };
+  }
+  if (text.startsWith(POSTER_FIX_PROMPT_PREFIX)) {
+    return { kind: 'fix', text: text.slice(POSTER_FIX_PROMPT_PREFIX.length).trim() || 'Text corrected' };
+  }
+  return { kind: 'edit', text: text || 'Changed in Poster Studio' };
+}
 
 /**
  * One line per thing the text check found wrong, in reading order:
@@ -156,23 +198,73 @@ export function buildCloneTextFixPrompt(input: RevisionPromptCommon & { correcti
   ].join('\n\n');
 }
 
+/** One exact detail the poster must carry, copied from Brand Canvas. */
+export interface BrandFact {
+  /** "Phone", "Website" — the Brand Canvas field's own name. */
+  label: string;
+  value: string;
+}
+
 /**
  * One admin instruction applied to a finished clone — `buildEditPrompt`'s "apply
  * the change fully, leave the rest alone", with the clone's own rules: its words
  * stay exactly as written and its logo space stays empty, unless the change asks
  * otherwise.
+ *
+ * **What the change asks for is allowed to be new.** A template has only the
+ * elements the reader found in it, so "add a footer with my phone and website"
+ * can never be satisfied by editing an element — there is none. The closing
+ * sentences therefore say twice what one ambiguous line used to say once: the
+ * first permits exactly what was asked for, the second forbids everything else.
+ *
+ * `facts` are the Brand Canvas details the instruction mentions
+ * (`brandFactsForInstruction`), listed so the model has no reason to invent a
+ * phone number. It is the same value the poster's bound elements print, so the
+ * two can never disagree.
  */
-export function buildCloneEditPrompt(input: RevisionPromptCommon & { instruction: string }): string {
+export function buildCloneEditPrompt(input: RevisionPromptCommon & { instruction: string; facts?: readonly BrandFact[] }): string {
+  const facts = input.facts ?? [];
   return [
     'Edit the attached poster. Make this change:',
     input.instruction.replace(/\s+/g, ' ').trim(),
+    facts.length > 0
+      ? [BRAND_FACTS_LINE, ...facts.map((fact) => `- ${fact.label}: ${fact.value}`)].join('\n')
+      : null,
     'Apply the change fully, and change nothing else. Everything the change does not mention stays exactly as it is: the layout and composition, every text (the same words, spelling, position, typeface, size and colour), the photographs and the people in them, shapes, icons, buttons and colours.',
     input.hasLogoBox ? LOGO_SPACE_LINE : null,
     frameLine(input.orientation),
-    'Do not add any logos, badges, QR codes or watermarks, and no new text unless the change asks for it. Spell any text the change asks for exactly as written.',
+    [
+      'If the change asks for something the poster does not have yet — a line of text, a bar, a strip, a contact detail — draw it, in the poster’s own typefaces and colours, placed where it covers no face, no logo and no existing text.',
+      'Add nothing the change did not ask for: no new logo, badge, QR code, watermark, icon, stock graphic or extra wording, and spell every text the change asks for exactly as written.',
+    ].join(' '),
   ]
     .filter((part): part is string => part !== null)
     .join('\n\n');
+}
+
+/** Introduces the Brand Canvas details an instruction asked for. */
+const BRAND_FACTS_LINE = 'Use these exact details, copied character for character — do not invent, reformat, abbreviate or re-space them:';
+
+/**
+ * The keyword table and the field names, re-exported from the pure view model
+ * that owns them: the composer warns the admin from the same table this prompt
+ * is built with, so the two can never drift.
+ */
+export { BRAND_FACT_KEYWORDS, type BrandFactField };
+
+/**
+ * The Brand Canvas details an instruction asks the poster to carry, with their
+ * exact values — nothing for an instruction that names none, and nothing for a
+ * field Brand Canvas has left empty (there is no exact value to give, and the
+ * composer warns the admin before they send).
+ */
+export function brandFactsForInstruction(instruction: string, brand: CloneBrandValues): BrandFact[] {
+  const facts: BrandFact[] = [];
+  for (const field of brandFactFieldsInInstruction(instruction)) {
+    const value = brand[field]?.replace(/\s+/g, ' ').trim();
+    if (value) facts.push({ label: BRAND_FACT_LABELS[field], value });
+  }
+  return facts;
 }
 
 /** An instruction as stored and sent: whitespace collapsed; refused when too short or too long. */
@@ -340,13 +432,21 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
     const folderId = await deps.resolveFolder(canvas.companyName);
 
     const elements = materializeDayElements(doc, parseDayPosterElements(day.posterElements), template.id, day, { businessName: canvas.companyName });
-    const resolved = resolveDayElements(doc, elements, cloneBrandValues(canvas, logo !== null), day.imagePrompt);
+    const brand = cloneBrandValues(canvas, logo !== null);
+    const resolved = resolveDayElements(doc, elements, brand, day.imagePrompt);
     const hasLogoBox = resolved.some((item) => item.action.type === 'logo');
 
     const sentPrompt =
       revision.type === 'fix'
         ? buildCloneTextFixPrompt({ corrections, orientation: shape.orientation, hasLogoBox })
-        : buildCloneEditPrompt({ instruction: revision.instruction, orientation: shape.orientation, hasLogoBox });
+        : buildCloneEditPrompt({
+            instruction: revision.instruction,
+            orientation: shape.orientation,
+            hasLogoBox,
+            // The same Brand Canvas values the poster's bound elements print, so
+            // what the chat adds and what the template already carries agree.
+            facts: brandFactsForInstruction(revision.instruction, brand),
+          });
 
     let image: { bytes: Buffer; mimeType: string };
     try {
@@ -370,7 +470,8 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
 
     let finalBytes: Buffer;
     try {
-      finalBytes = await deps.composeIdentity(rendered.bytes, { resolved, logo, drawIdentityText: false });
+      // As for a generation: the day's stored placement decides where the mark goes.
+      finalBytes = await deps.composeIdentity(rendered.bytes, { resolved, logo, drawIdentityText: false, placement: elements.logo ?? null });
     } catch (error) {
       throw new StudioError('composition', "The client's logo could not be placed on the changed poster, so nothing was saved.", { cause: error });
     }
@@ -404,7 +505,8 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
       const generation = await tx.posterStudioGeneration.create({
         data: {
           mode: 'EDIT',
-          prompt: (revision.type === 'fix' ? `Fix text — ${corrections.join(' ')}` : revision.instruction).slice(0, 4_000),
+          // The admin's own words for an edit; for a fix, the prefix the history reads back (`posterRevisionSummary`).
+          prompt: (revision.type === 'fix' ? `${POSTER_FIX_PROMPT_PREFIX}${corrections.join(' ')}` : revision.instruction).slice(0, 4_000),
           sentPrompt,
           aspectRatio: source.aspectRatio,
           size: source.size,
@@ -493,8 +595,12 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
  * restating the revision, the active version and both template columns. Both
  * steps run in one transaction, so the queue worker — which takes QUEUED rows —
  * never sees the momentary QUEUED state. Throws a conflict when the day moved on.
+ *
+ * Exported for `clone-logo.ts`, which re-composites the mark on the poster that
+ * exists: it changes the day's active version exactly as a revision does, so it
+ * must hold the same claim and be refused by the same one.
  */
-async function claimForRevision(
+export async function claimForRevision(
   db: CampaignDb,
   day: {
     id: string;

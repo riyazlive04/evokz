@@ -18,6 +18,7 @@ import {
 } from '@/lib/campaign/clone-editor';
 import { loadTemplateEditorScreen, type TemplateEditorLoad } from '@/lib/campaign/clone-editor-screen';
 import { editCampaignDayPoster, fixCampaignDayPosterText, MAX_POSTER_CHANGE_LENGTH, type PosterRevisionResult } from '@/lib/campaign/clone-fix';
+import { setCampaignDayLogoPlacement, type LogoPlacementResult } from '@/lib/campaign/clone-logo';
 import { cloneTemplatesIntoCampaign, type CloneIntoQueueResult } from '@/lib/campaign/clone-queue';
 import {
   changeCampaignDayTemplate,
@@ -30,7 +31,7 @@ import { MAX_CAMPAIGN_DAYS } from '@/lib/campaign/model';
 import { CampaignDomainError } from '@/lib/campaign/service';
 import { MissingEnvError } from '@/lib/env';
 import { prisma } from '@/lib/prisma';
-import { MAX_ELEMENT_TEXT } from '@/lib/types/template-elements';
+import { dayLogoPlacementSchema, MAX_ELEMENT_TEXT } from '@/lib/types/template-elements';
 
 /**
  * Clone-mode campaign actions: filling days with cloned templates, editing and
@@ -288,5 +289,25 @@ export async function editCampaignDayPosterAction(dayId: string, instruction: st
     return { ok: true, data: result };
   } catch (error) {
     return toFailure(error, 'Changing the poster');
+  }
+}
+
+/**
+ * "Apply logo placement": the active poster re-composited with the admin's size
+ * and corner for the client's mark, saved as a new version. No model call, so
+ * nothing is billed and it takes seconds; null puts the mark back where the
+ * compositor itself would place it.
+ */
+export async function setCampaignDayLogoPlacementAction(
+  dayId: string,
+  placement: z.input<typeof dayLogoPlacementSchema> | null,
+): Promise<ActionResult<LogoPlacementResult>> {
+  try {
+    const parsed = dayLogoPlacementSchema.nullable().parse(placement);
+    const result = await setCampaignDayLogoPlacement(prisma, uuid.parse(dayId), parsed);
+    revalidateAdmin();
+    return { ok: true, data: result };
+  } catch (error) {
+    return toFailure(error, 'Placing the logo');
   }
 }

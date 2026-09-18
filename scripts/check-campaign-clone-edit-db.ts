@@ -6,6 +6,7 @@
  *                                      (src/lib/campaign/clone-template-change.ts)
  *   - `fixCampaignDayPosterText` / `editCampaignDayPoster`
  *                                      (src/lib/campaign/clone-fix.ts)
+ *   - `setCampaignDayLogoPlacement`    (src/lib/campaign/clone-logo.ts)
  *   - their server actions             (src/app/admin/campaigns/clone-actions.ts)
  *
  * No model is called. The image model, Google Drive, the logo download and the
@@ -157,6 +158,7 @@ async function suite(): Promise<void> {
   const screenModule = await import('@/lib/campaign/clone-editor-screen');
   const change = await import('@/lib/campaign/clone-template-change');
   const fixModule = await import('@/lib/campaign/clone-fix');
+  const logoModule = await import('@/lib/campaign/clone-logo');
   const posters = await import('@/lib/campaign/poster-generation-service');
   const cloneActions = await import('@/app/admin/campaigns/clone-actions');
   const delivery = await import('@/lib/campaign/delivery-service');
@@ -564,6 +566,139 @@ async function suite(): Promise<void> {
     t('…the day is FAILED with the reason, its poster still v2, nothing stored', afterFailure.generationStatus === 'FAILED' && /safety policy/.test(afterFailure.errorMessage ?? '') && afterFailure.activePosterVersionId === v2.id && drive.size === filesBefore && (await tx.posterVersion.count({ where: { calendarDayId: d10.id } })) === 2);
     const retried = await fixModule.fixCampaignDayPosterText(tx, d10.id, { deps });
     t('…and can be tried again (a fix after the failure runs)', retried.outcome === 'revised' && (await day(10)).generationStatus === 'SUCCEEDED');
+  }
+
+  // =======================================================================
+  section('logo placement: free, no model, no usage');
+  // =======================================================================
+  {
+    // Logo box e1 is x 0.05 y 0.03 w 0.12 h 0.07 of a 1280×1600 clone, so the mark
+    // is fitted into pixels 64..218 × 48..160, inset by 7. The fake logo is 200×100,
+    // which fits to 140×70: centred by default at y 69..139, and pushed to the
+    // bottom-right corner at y 83..153. One probe in each band therefore says
+    // exactly where the mark landed, with no tolerance to argue about.
+    const placement = { scale: 1, anchor: 'right', vAnchor: 'bottom' } as const;
+    const RED = snapshot([255, 0, 0]);
+    const WHITE = snapshot([255, 255, 255]);
+    const marked = async (bytes: Buffer) => snapshot([await pixelOf(bytes, 100, 150), await pixelOf(bytes, 100, 75)]);
+    const PLACED = snapshot([[255, 0, 0], [255, 255, 255]]);
+    const CENTRED = snapshot([[255, 255, 255], [255, 0, 0]]);
+
+    const before = await day(10);
+    const v3 = await tx.posterVersion.findUniqueOrThrow({ where: { id: before.activePosterVersionId! }, include: { studioGeneration: true } });
+    const parent = v3.studioGeneration!;
+    t('fixture: the poster on day 10 has the mark where code put it', (await marked(drive.get(parent.finalImageDriveFileId!)!.body)) === CENTRED);
+
+    const rendersBefore = renders.length;
+    const checksBefore = textChecks.length;
+    const usageBefore = usageCalls;
+    const usageRowsBefore = await tx.usageEvent.count({ where: { calendarId: d10.id } });
+    readFiles.length = 0;
+
+    const result = await logoModule.setCampaignDayLogoPlacement(tx, d10.id, placement, { deps, ...load });
+    t('placing the logo made a new version', result.outcome === 'placed' && result.versionNumber === 4 && /No AI, nothing billed/.test(result.message), snapshot(result));
+
+    const after = await day(10);
+    const v4 = await tx.posterVersion.findUniqueOrThrow({ where: { id: result.outcome === 'placed' ? result.versionId : '' }, include: { studioGeneration: true } });
+    const g4 = v4.studioGeneration!;
+    t('no image model call, no usage recorded, no text check run', renders.length === rendersBefore && usageCalls === usageBefore && (await tx.usageEvent.count({ where: { calendarId: d10.id } })) === usageRowsBefore && textChecks.length === checksBefore);
+    t('the mark is exactly where the controls said it would be', (await marked(drive.get(g4.finalImageDriveFileId!)!.body)) === PLACED);
+    t('…composited onto the RAW artwork, read from the parent’s own file', readFiles.includes(parent.imageDriveFileId) && !readFiles.includes(parent.finalImageDriveFileId!));
+    t('v4: POSTER_STUDIO from v3, the same template and — deliberately — the same content revision', v4.source === 'POSTER_STUDIO' && v4.parentVersionId === v3.id && v4.templateId === v3.templateId && v4.contentRevision === v3.contentRevision);
+    t('the day’s content revision did not move, so a current poster stays current', after.contentRevision === before.contentRevision && after.activePosterVersionId === v4.id && after.generationStatus === 'SUCCEEDED');
+    t('studio row: an EDIT with no model and no prompt sent', g4.mode === 'EDIT' && g4.model === 'none' && g4.quality === 'none' && g4.prompt === `${fixModule.POSTER_LOGO_PROMPT_PREFIX}1.0× at bottom right` && /no image model call/.test(g4.sentPrompt));
+    t('…the parent’s raw file is shared, not copied, and only the FINAL is new', g4.imageDriveFileId === parent.imageDriveFileId && g4.parentGenerationId === parent.id && g4.finalImageDriveFileId !== parent.finalImageDriveFileId && /-logo-/.test(drive.get(g4.finalImageDriveFileId!)!.fileName));
+    t('the previous version’s text check is carried over verbatim — not one glyph moved', snapshot(parseTextCheck(v4.textCheck)) === snapshot(parseTextCheck(v3.textCheck)) && parseTextCheck(v4.textCheck) !== null);
+    t('the placement is stored on the day', snapshot(parseDayPosterElements(after.posterElements)?.logo) === snapshot(placement));
+    t('the history reads it back as a logo move, not as an admin’s instruction', snapshot(fixModule.posterRevisionSummary(g4.mode, g4.prompt)) === snapshot({ kind: 'logo', text: '1.0× at bottom right' }));
+
+    const screen = await screenModule.loadTemplateEditorScreen(tx, d10.id, load);
+    if (screen.kind === 'editor') {
+      const versions = screen.screen.versions;
+      t('the editor view says what each version did and carries its raw artwork', snapshot(versions.map((version) => version.change?.kind)) === snapshot(['logo', 'fix', 'edit', 'clone']) && versions.every((version) => (version.rawImageUrl ?? '').includes('variant=raw')));
+      t('…and the active version’s raw artwork, for the placement preview', (screen.screen.activeVersion?.rawImageUrl ?? '').includes('variant=raw') && screen.screen.activeVersion?.imageUrl !== screen.screen.activeVersion?.rawImageUrl);
+      t('…with the trimmed Brand Canvas logo the preview draws', (screen.screen.brand.logoTrimmedUrl ?? '').includes('trim=1'));
+    } else {
+      t('the editor view loads after a logo placement', false, screen.kind);
+    }
+
+    // The placement lives on the day, so the next full generation reads it too.
+    checkMode = 'ok';
+    const regenerated = await posters.generateCampaignDayPoster(tx, campaignId, d10.id, { ...load, mode: 'regenerate', explicit: true, deps });
+    const v5 = await tx.posterVersion.findFirstOrThrow({ where: { calendarDayId: d10.id }, orderBy: { versionNumber: 'desc' }, include: { studioGeneration: true } });
+    t('a regeneration afterwards still honours the placement', regenerated.outcome === 'generated' && (await marked(drive.get(v5.studioGeneration!.finalImageDriveFileId!)!.body)) === PLACED, snapshot(regenerated));
+
+    // Put it back: no stored placement means the compositor decides again.
+    const reset = await logoModule.setCampaignDayLogoPlacement(tx, d10.id, null, { deps, ...load });
+    const cleared = await day(10);
+    t('resetting removes the placement and re-centres the mark', reset.outcome === 'placed' && parseDayPosterElements(cleared.posterElements)?.logo === undefined, snapshot(reset));
+    const v6 = await tx.posterVersion.findFirstOrThrow({ where: { calendarDayId: d10.id }, orderBy: { versionNumber: 'desc' }, include: { studioGeneration: true } });
+    t('…and its history row says so', (await marked(drive.get(v6.studioGeneration!.finalImageDriveFileId!)!.body)) === CENTRED && v6.studioGeneration!.prompt === `${fixModule.POSTER_LOGO_PROMPT_PREFIX}back to the template’s own position`);
+    t('still no image model call for any of it', renders.length === rendersBefore + 1 && RED !== WHITE);
+  }
+
+  // =======================================================================
+  section('logo placement: refusals');
+  // =======================================================================
+  {
+    const rendersBefore = renders.length;
+    const d5 = await rowAt(5);
+    await expectDomainError('an uploaded poster has no artwork to re-composite', 'invalid-transition', () => logoModule.setCampaignDayLogoPlacement(tx, d5.id, { scale: 1.2 }, { deps, ...load }), /no artwork to re-composite/);
+    await expectDomainError('a day with no poster is refused', 'invalid-transition', async () => logoModule.setCampaignDayLogoPlacement(tx, (await rowAt(7)).id, { scale: 1.2 }, { deps, ...load }), /no poster/);
+
+    // Unlike Fix text and the chat, an outdated poster is allowed: moving the mark
+    // redraws no words. Day 6's poster was outdated by an edit further up.
+    const d6row = await day(6);
+    const outdated = await logoModule.setCampaignDayLogoPlacement(tx, d6row.id, { scale: 1.2, anchor: 'left', vAnchor: 'top' }, { deps, ...load });
+    t('an outdated poster can still have its logo put right', outdated.outcome === 'placed' && (await day(6)).contentRevision === d6row.contentRevision, snapshot(outdated));
+
+    const booking = await tx.campaignDelivery.create({ data: { campaignId, calendarDayId: d10.id, posterVersionId: (await day(10)).activePosterVersionId!, scheduledFor: NOW, status: 'SENT', attempts: 1, sentAt: NOW } });
+    await expectDomainError('a sent poster’s logo cannot be moved', 'invalid-transition', () => logoModule.setCampaignDayLogoPlacement(tx, d10.id, { scale: 1.2 }, { deps, ...load }), /Sent/);
+    await tx.campaignDelivery.update({ where: { id: booking.id }, data: { status: 'SENDING', sendingStartedAt: NOW } });
+    await expectDomainError('…nor one being sent', 'invalid-transition', () => logoModule.setCampaignDayLogoPlacement(tx, d10.id, { scale: 1.2 }, { deps, ...load }), /Being sent/);
+    await tx.campaignDelivery.delete({ where: { id: booking.id } });
+    const later = addZonedDays(today, 30, TZ);
+    await expectDomainError('…nor a past day’s', 'invalid-transition', () => logoModule.setCampaignDayLogoPlacement(tx, d10.id, { scale: 1.2 }, { deps, now: later, timeZone: TZ }), /passed/);
+
+    await tx.contentCalendar.update({ where: { id: d10.id }, data: { generationStatus: 'GENERATING', posterGenerationStartedAt: new Date() } });
+    await expectDomainError('…nor a day already being generated', 'conflict', () => logoModule.setCampaignDayLogoPlacement(tx, d10.id, { scale: 1.2 }, { deps, ...load }), /being generated/);
+    await tx.contentCalendar.update({ where: { id: d10.id }, data: { generationStatus: 'SUCCEEDED', posterGenerationStartedAt: null } });
+
+    await changeCampaignStatus(tx, campaignId, 'PAUSED');
+    await expectDomainError('…nor a paused campaign’s', 'invalid-transition', () => logoModule.setCampaignDayLogoPlacement(tx, d10.id, { scale: 1.2 }, { deps, ...load }), /activate/);
+    await changeCampaignStatus(tx, campaignId, 'ACTIVE');
+    t('no refusal reached the image model', renders.length === rendersBefore);
+
+    // The action runs the real pipeline, whose logo resolver would fetch the
+    // client's logo — which this check forbids — so it is exercised on a day the
+    // service refuses before it reads anything. Its successful path is the
+    // service's own, above, with the fakes.
+    const action = await asAction(async () => cloneActions.setCampaignDayLogoPlacementAction((await rowAt(7)).id, { scale: 1.4, anchor: 'left', vAnchor: 'top' }));
+    t('the placement action reports a refusal, without an API key and without spending', !action.ok && /no poster/.test(action.error) && renders.length === rendersBefore, snapshot(action));
+    const malformed = await asAction(() => cloneActions.setCampaignDayLogoPlacementAction(d10.id, { scale: 99 } as never));
+    t('…and refuses a scale outside the stored window', !malformed.ok, snapshot(malformed));
+  }
+
+  // =======================================================================
+  section('logo placement: a lost claim saves nothing');
+  // =======================================================================
+  {
+    const d8row = await day(8);
+    const versionsBefore = await tx.posterVersion.count({ where: { calendarDayId: d8.id } });
+    const studioRowsBefore = await tx.posterStudioGeneration.count();
+    const filesBefore = drive.size;
+    const otherClaim = new Date(Date.now() + 60_000);
+    // The claim goes stale while the mark is being composited: another run has the day.
+    onCompose = async () => {
+      await tx.contentCalendar.update({ where: { id: d8.id }, data: { generationStatus: 'GENERATING', posterGenerationStartedAt: otherClaim } });
+    };
+    const lost = await logoModule.setCampaignDayLogoPlacement(tx, d8.id, { scale: 1.5 }, { deps, ...load });
+    const after = await day(8);
+    t('the placement reports the lost claim and saves nothing', lost.outcome === 'failed' && /another run took over this day/i.test(lost.message), snapshot(lost));
+    t('…no version, no studio row, and the file it stored was binned', (await tx.posterVersion.count({ where: { calendarDayId: d8.id } })) === versionsBefore && (await tx.posterStudioGeneration.count()) === studioRowsBefore && drive.size === filesBefore);
+    t('…the placement was not written to the day either', parseDayPosterElements((await day(8)).posterElements)?.logo === undefined && after.activePosterVersionId === d8row.activePosterVersionId);
+    t('…and the other run’s claim was not marked FAILED over', after.generationStatus === 'GENERATING' && after.posterGenerationStartedAt?.getTime() === otherClaim.getTime());
+    await tx.contentCalendar.update({ where: { id: d8.id }, data: { generationStatus: 'SUCCEEDED', posterGenerationStartedAt: d8row.posterGenerationStartedAt } });
   }
 
   // =======================================================================

@@ -382,7 +382,11 @@ function cloneChangeLine(
       return `${item.label} (${where}): erase ${quoted} and close the space naturally.`;
     case 'logo':
       if (action.name) {
-        return `${item.label} (${where}${shows}): remove this logo and all of its lettering, keeping the badge or pill shape behind it. At the left end of the badge, leave a square as tall as the badge as clean, empty background; the client's logo is placed there afterwards. Write "${action.name}" in the rest of the badge, in the style of the original lettering.`;
+        // The left third, not a square: a wide mark fitted into a square lands
+        // far smaller than the badge has room for. `lockupMarkBox` measures the
+        // same third, and the two must always say the same thing — otherwise the
+        // mark is composited over the name the model wrote.
+        return `${item.label} (${where}${shows}): remove this logo and all of its lettering, keeping the badge or pill shape behind it. At the left end of the badge, leave the left third of it as clean, empty background; the client's logo is placed there afterwards. Write "${action.name}" in the rest of the badge, in the style of the original lettering.`;
       }
       return `${item.label} (${where}${shows}): remove this logo mark completely and leave its area as clean, empty background matching its surroundings; the client's logo is placed there afterwards.`;
     case 'photo': {
