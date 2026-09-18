@@ -30,6 +30,12 @@ export interface MappingTemplate {
   categoryId: string;
   isActive: boolean;
   /**
+   * Whether the template may be picked automatically. False keeps it out of Auto
+   * Map and the daily rotation while leaving it assignable by hand — a festival
+   * design, used on its day and never on an ordinary one.
+   */
+  autoAssign: boolean;
+  /**
    * Width ÷ height of the template image, measured at upload. 0 means
    * unmeasured: it fits any campaign, ranked after a measured match.
    */
@@ -89,9 +95,15 @@ export function templateBlocker(template: MappingTemplate, target: Pick<MappingT
   return null;
 }
 
-/** Whether Auto Map may put this template on a day of this campaign. */
+/**
+ * Whether Auto Map may put this template on a day of this campaign.
+ *
+ * `autoAssign` is read here and nowhere else in the mapper: a template out of the
+ * rotation is never *chosen* for a day, but it stays assignable — `templateBlocker`
+ * does not know about it, so pinning one by hand raises no issue on the board.
+ */
 export function isAutoCompatible(template: MappingTemplate, target: MappingTarget): boolean {
-  return templateBlocker(template, target) === null && aspectFit(template.aspect, target.aspect) !== 'mismatch';
+  return template.autoAssign && templateBlocker(template, target) === null && aspectFit(template.aspect, target.aspect) !== 'mismatch';
 }
 
 const NAMED_ASPECTS: ReadonlyArray<readonly [string, number]> = [

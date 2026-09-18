@@ -10,7 +10,7 @@ import type {
 } from '@prisma/client';
 
 import { assertStudioImageConfigured, renderStudioImage, type StudioImageRequest, type StudioImageResult } from '@/lib/ai/openai-images';
-import { buildClonePrompt, cloneAccentColors } from '@/lib/ai/studio-prompts';
+import { buildClonePrompt, cloneAccentColors, parsePaletteSource } from '@/lib/ai/studio-prompts';
 import { checkCloneText } from '@/lib/ai/text-check';
 import { SLOT_LOCK_LABELS, slotLockOf } from '@/lib/campaign/board';
 import { resolveContentStrategy } from '@/lib/campaign/content-strategy';
@@ -603,7 +603,7 @@ export async function generateCampaignDayPoster(
 
     const template = await db.categoryTemplate.findUnique({
       where: { id: day.mapping.templateId! },
-      select: { id: true, label: true, gDriveFileId: true, width: true, height: true, elements: true },
+      select: { id: true, label: true, gDriveFileId: true, width: true, height: true, elements: true, paletteSource: true },
     });
     if (!template) throw new StudioError('validation', 'The mapped template no longer exists. Map another template to this day.');
     const doc = parseTemplateElements(template.elements);
@@ -634,6 +634,8 @@ export async function generateCampaignDayPoster(
     const sentPrompt = buildClonePrompt({
       resolved,
       brandColors: cloneAccentColors(canvas.brand.colors),
+      // A festival template keeps its own palette; everything else recolours to the brand.
+      paletteSource: parsePaletteSource(template.paletteSource),
       identity: 'ai',
       orientation: output.orientation,
       correction: rejectionGuidance(day.activeVersion?.approvalStatus === 'REJECTED' ? day.activeVersion.reviewNote : null),

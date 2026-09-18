@@ -263,13 +263,14 @@ export async function loadCampaignBoard(db: CampaignDb, campaignId: string, opti
   }
   const templateRows = await db.categoryTemplate.findMany({
     where: { OR: [{ categoryId: campaign.categoryId }, { id: { in: [...referenced] } }] },
-    select: { id: true, label: true, categoryId: true, isActive: true, width: true, height: true, elements: true },
+    select: { id: true, label: true, categoryId: true, isActive: true, autoAssign: true, width: true, height: true, elements: true },
   });
   const templates: MappingTemplate[] = templateRows.map((row) => ({
     id: row.id,
     label: row.label,
     categoryId: row.categoryId,
     isActive: row.isActive,
+    autoAssign: row.autoAssign,
     aspect: row.width && row.height && row.width > 0 && row.height > 0 ? row.width / row.height : 0,
   }));
   const templatesById = new Map(templates.map((template) => [template.id, template]));

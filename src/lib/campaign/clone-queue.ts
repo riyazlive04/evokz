@@ -27,20 +27,22 @@ import {
  * Clone into queue — the campaign's days filled with its vertical's templates.
  *
  * When a campaign is created, and whenever an admin presses "Fill empty days",
- * the vertical's active templates that have been read are laid across the days
- * in upload order, cycling. Each filled day gets its template
- * (`posterTemplateId`) and a fresh copy of the template's words
- * (`posterElements`, with the template's business name swapped for the
- * client's), so it is ready to generate: its content status is READY because
- * the template's words are ready content. No model is called and nothing is
+ * the vertical's active templates that have been read and are in the daily
+ * rotation (`autoAssign`) are laid across the days in upload order, cycling.
+ * Each filled day gets its template (`posterTemplateId`) and a fresh copy of the
+ * template's words (`posterElements`, with the template's business name swapped
+ * for the client's), so it is ready to generate: its content status is READY
+ * because the template's words are ready content. No model is called and nothing is
  * generated here.
  *
  * **Existing content is kept.** A day that already has a usable template — one
  * an operator selected, or an Auto Map suggestion, whose elements have been read
- * — is filled from that template, not the cycle's. A day with content but no
- * elements yet (the AI content calendar's headline, supporting text and CTA) has
- * that content seeded into the matching elements (`seedDayElementsFromLegacy`)
- * instead of overwritten, and a day's image prompt is never cleared.
+ * — is filled from that template, not the cycle's; that includes a template out
+ * of the rotation, which is how a festival day survives a later "Fill empty
+ * days". A day with content but no elements yet (the AI content calendar's
+ * headline, supporting text and CTA) has that content seeded into the matching
+ * elements (`seedDayElementsFromLegacy`) instead of overwritten, and a day's
+ * image prompt is never cleared.
  *
  * `planCloneQueue` is the pure planner; `cloneTemplatesIntoCampaign` loads,
  * plans and writes, each write a conditional update that restates what was read.
@@ -206,7 +208,7 @@ export interface CloneIntoQueueResult {
  * changed meanwhile is reported as a conflict and left alone.
  *
  * Refused for a completed or cancelled campaign. A vertical with no read, active
- * template fills nothing and says so (`templates: 0`).
+ * template in the rotation fills nothing and says so (`templates: 0`).
  */
 export async function cloneTemplatesIntoCampaign(
   db: CampaignDb,
@@ -265,15 +267,33 @@ export async function cloneTemplatesIntoCampaign(
   const rows = await db.categoryTemplate.findMany({
     where: { categoryId: campaign.categoryId, isActive: true },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    select: { id: true, elements: true },
+    select: { id: true, elements: true, autoAssign: true },
   });
+  /*
+   * Two sets, and the difference matters.
+   *
+   * `docs` is every readable template of the vertical — what a day may already
+   * hold, and what its words are cloned from. `rotation` is the subset the cycle
+   * may choose from: `autoAssign: false` takes a template out of it without
+   * retiring it, so a festival design is chosen by hand on its day and never
+   * cycled onto an ordinary one.
+   *
+   * Filtering the query itself would be worse than useless: a day pinned to a
+   * festival design would then look like a day with no usable template, and this
+   * very run would clone an ordinary one over it.
+   */
   const docs = new Map<string, TemplateElementsDoc>();
+  const rotation: string[] = [];
   for (const row of rows) {
     const doc = parseTemplateElements(row.elements);
-    if (doc) docs.set(row.id, doc);
+    if (!doc) continue;
+    docs.set(row.id, doc);
+    if (row.autoAssign) rotation.push(row.id);
   }
-  result.templates = docs.size;
-  if (docs.size === 0) return result;
+  // What fills empty days: a vertical whose every template is out of the rotation
+  // fills nothing, exactly as one with no read template does.
+  result.templates = rotation.length;
+  if (rotation.length === 0) return result;
 
   const brand = await loadCloneBrand(db, campaign.clientId);
 
@@ -306,7 +326,7 @@ export async function cloneTemplatesIntoCampaign(
   }
 
   const byId = new Map(campaign.days.map((day) => [day.id, day]));
-  const assignments = [...planCloneQueue(planned, [...docs.keys()]), ...ownTemplate].sort((a, b) => a.dayNumber - b.dayNumber);
+  const assignments = [...planCloneQueue(planned, rotation), ...ownTemplate].sort((a, b) => a.dayNumber - b.dayNumber);
   for (const assignment of assignments) {
     const day = byId.get(assignment.dayId)!;
     const doc = docs.get(assignment.templateId)!;

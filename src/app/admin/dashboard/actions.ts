@@ -1297,6 +1297,61 @@ export async function renameVerticalTemplate(
 }
 
 /**
+ * Keeps a template's own colours, or lets its clones recolour to the client's brand.
+ *
+ * Writes `CategoryTemplate.paletteSource` and nothing else. It suppresses one
+ * sentence of the clone prompt — a festival design comes out in its festive gold
+ * instead of the client's blue. The business name, phone and website still come
+ * from Brand Canvas, and the client's logo is still composited by code.
+ */
+export async function setTemplatePaletteSource(
+  templateId: string,
+  keepOwnColours: boolean,
+): Promise<ActionResult<{ keepsOwnColours: boolean }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+    const keep = z.boolean().parse(keepOwnColours);
+
+    const updated = await prisma.categoryTemplate.updateMany({
+      where: { id },
+      data: { paletteSource: keep ? 'template' : 'client' },
+    });
+    if (updated.count === 0) return failure('That template no longer exists.');
+
+    revalidateAdmin();
+    return success({ keepsOwnColours: keep });
+  } catch (error) {
+    return toFailure(error, 'Changing the template colours');
+  }
+}
+
+/**
+ * Takes a template out of the daily rotation, or puts it back.
+ *
+ * Writes `CategoryTemplate.autoAssign` and nothing else. Out of the rotation,
+ * "Fill empty days" and Auto Map never choose it, while the day editor's Change
+ * template still offers it: a festival design is used on the day it belongs to
+ * and never lands on an ordinary one. Days already using it keep it.
+ */
+export async function setTemplateAutoAssign(
+  templateId: string,
+  autoAssign: boolean,
+): Promise<ActionResult<{ autoAssign: boolean }>> {
+  try {
+    const id = z.string().uuid().parse(templateId);
+    const allowed = z.boolean().parse(autoAssign);
+
+    const updated = await prisma.categoryTemplate.updateMany({ where: { id }, data: { autoAssign: allowed } });
+    if (updated.count === 0) return failure('That template no longer exists.');
+
+    revalidateAdmin();
+    return success({ autoAssign: allowed });
+  } catch (error) {
+    return toFailure(error, 'Changing the template rotation');
+  }
+}
+
+/**
  * Removes one reference template.
  *
  * The row goes first and the Drive file second. Reversing it risks a row

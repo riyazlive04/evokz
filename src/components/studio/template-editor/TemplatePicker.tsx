@@ -15,7 +15,8 @@ import { cn } from '@/lib/utils';
  * The day's template: a thumbnail, its name, and "Change".
  *
  * "Change" opens a grid of the vertical's active templates whose elements have
- * been read, with what each one holds. Choosing one hands it to the editor,
+ * been read, with what each one holds — including the ones kept out of the daily
+ * rotation, which is the only way a festival design ever reaches a day. Choosing one hands it to the editor,
  * which confirms (when the day's words were changed) and re-clones the day. The
  * list is loaded when the dialog opens, so it is never stale.
  */
@@ -131,6 +132,23 @@ export function TemplatePicker({
                           {choice.aspectLabel ? `${choice.aspectLabel} · ` : ''}
                           {choice.summary}
                         </span>
+                        {/* The vertical's own two flags, read straight through from the
+                            template card. Nothing is filtered on them: a festival design
+                            is chosen here on purpose, and the chips say it was deliberate. */}
+                        {(choice.keepsOwnColours || choice.outOfRotation) && (
+                          <span className="flex flex-wrap gap-1 pt-0.5">
+                            {choice.keepsOwnColours && (
+                              <span className="rounded-full border border-border bg-muted px-1.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                Own colours
+                              </span>
+                            )}
+                            {choice.outOfRotation && (
+                              <span className="rounded-full border border-border bg-muted px-1.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                Not in rotation
+                              </span>
+                            )}
+                          </span>
+                        )}
                         {!choice.usable && <span className="text-[10px] text-warning-ink">Clones cannot be made in this shape.</span>}
                       </span>
                     </button>

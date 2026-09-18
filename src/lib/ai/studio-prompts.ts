@@ -231,6 +231,18 @@ export function buildVariationPrompt(input: VariationPromptInput): string {
 // Clone
 // ---------------------------------------------------------------------------
 
+/**
+ * Where a clone's colours come from — the stored `CategoryTemplate.paletteSource`.
+ * `client` recolours the design's accents to Brand Canvas; `template` keeps the
+ * design exactly as its designer coloured it.
+ */
+export type PaletteSource = 'client' | 'template';
+
+/** The stored column as one of its two values; anything else is the default, `client`. */
+export function parsePaletteSource(value: string | null | undefined): PaletteSource {
+  return value === 'template' ? 'template' : 'client';
+}
+
 export interface ClonePromptInput {
   /** Every template element with what the day does to it, from `resolveDayElements`. */
   resolved: readonly ResolvedElement[];
@@ -239,6 +251,14 @@ export interface ClonePromptInput {
    * colours. Only accent roles are used — see `cloneAccentColors`.
    */
   brandColors: ReadonlyArray<{ hex: string; role: string }> | null;
+  /**
+   * The template's `CategoryTemplate.paletteSource`. `template` ignores
+   * `brandColors` and keeps the design's own colours — a festival poster stays
+   * festive. It suppresses the recolour sentence and nothing else: the business
+   * name, phone and website still come from Brand Canvas through `resolved`, and
+   * the logo is still composited by code. Absent means `client`, today's behaviour.
+   */
+  paletteSource?: PaletteSource;
   /**
    * Who prints the business name, tagline, phone and website. `ai` gives the
    * image model the exact strings; `code` has it clear those places so
@@ -310,7 +330,9 @@ export function buildClonePrompt(input: ClonePromptInput): string {
     .map((item) => cloneChangeLine(item, input.identity, headline, item === mainPhoto))
     .filter((line): line is string => line !== null);
 
-  const colors = cloneAccentColors(input.brandColors);
+  // A template that keeps its own palette says so by emitting no colours at all:
+  // the empty-palette branch below already asks for every colour to survive.
+  const colors = input.paletteSource === 'template' ? [] : cloneAccentColors(input.brandColors);
   const hasLogo = input.resolved.some((item) => item.action.type === 'logo');
   const correction = input.correction?.trim() || null;
 

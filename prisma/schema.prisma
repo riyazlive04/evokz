@@ -256,6 +256,12 @@ model CategoryTemplate {
   ///
   /// A String rather than an enum, matching `imageSizePreset`: presentation data
   /// whose catalogue may grow, where a migration per addition is the wrong trade.
+  ///
+  /// `template` suppresses the recolour sentence of the clone prompt and nothing
+  /// else. The business name, tagline, phone and website still bind from Brand
+  /// Canvas, and the client's logo is still composited by code afterwards — a
+  /// festival poster keeps its festive gold and still carries the client's mark.
+  /// Do not widen it into "ignore the brand".
   paletteSource String @default("client")
 
   // ---- Campaign mapping metadata (Phase 1 foundation) ----------------------
@@ -270,6 +276,19 @@ model CategoryTemplate {
   /// Enforced only by the campaign domain (`src/lib/campaign/`). The legacy
   /// rotation in `ai-pipeline.ts` does not read it yet.
   isActive     Boolean  @default(true)
+  /// Whether this template may be picked automatically.
+  ///
+  /// False keeps it out of the daily rotation — "Fill empty days" and Auto Map
+  /// never choose it — while leaving it fully assignable by hand, which is what
+  /// a festival design needs: Diwali is used on the day the operator names and
+  /// never lands on an ordinary Tuesday. `isActive: false` cannot serve this;
+  /// it blocks assignment altogether, so the template could not be used at all.
+  ///
+  /// Read in exactly two places: the rotation query in `cloneTemplatesIntoCampaign`
+  /// (`src/lib/campaign/clone-queue.ts`) and `isAutoCompatible`
+  /// (`src/lib/campaign/template-mapping.ts`). The template pickers deliberately
+  /// do not filter on it.
+  autoAssign   Boolean  @default(true)
   /// Content-type keys this template suits — pillar keys of the vertical's
   /// content strategy (src/lib/campaign/content-strategy.ts). Empty means "any"
   /// — every existing row. Strings rather than an enum: each vertical owns its keys.

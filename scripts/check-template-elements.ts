@@ -1071,6 +1071,19 @@ async function main() {
   t('a background colour never reaches the prompt', !recoloured.includes('#F6F7F9') && !recoloured.includes('#222222') && recoloured.includes('primary #1F6FEB, secondary #0D2447, accent #F0A81E'));
   t('recolouring keeps every area’s lightness', recoloured.includes('Keep the lightness of every area: dark areas and backgrounds stay dark, light ones stay light.'));
   t('only background colours keep the template colours', buildClonePrompt({ resolved, brandColors: [{ hex: '#F6F7F9', role: 'background' }], identity: 'ai', orientation: 'x' }).includes('keep every colour exactly as in the original'));
+
+  // `paletteSource: 'template'` — a festival design keeps its own colours. It must
+  // suppress the recolour sentence and nothing else, and the default path must be
+  // byte-identical to what every existing poster already gets.
+  const festive = buildClonePrompt({ resolved, brandColors: palette, paletteSource: 'template', identity: 'ai', orientation: 'vertical 4:5' });
+  t('a template that keeps its palette asks for every colour to survive', festive.includes('Colours: keep every colour exactly as in the original.') && !festive.includes('recolour'));
+  t('…and no brand hex reaches the prompt', !/#[0-9a-f]{3,8}/i.test(festive), (festive.match(/#[0-9A-Fa-f]{3,8}/) ?? []).join(''));
+  t('…while the logo, phone and website actions are unchanged', festive.includes("the client's logo is placed there afterwards") && festive.includes('with "6381780846"') && festive.includes('with "sirahdigital.in"'));
+  const withoutColours = (prompt: string) => prompt.split(/\n\n/).filter((part) => !part.startsWith('Colours:')).join('|');
+  t('…and only the colour line differs from the recoloured prompt', withoutColours(festive) === withoutColours(recoloured));
+  t("'client' is byte-identical to today's prompt", buildClonePrompt({ resolved, brandColors: palette, paletteSource: 'client', identity: 'ai', orientation: 'vertical 4:5' }) === recoloured);
+  t('an absent paletteSource is byte-identical too', buildClonePrompt({ resolved, brandColors: palette, identity: 'ai', orientation: 'vertical 4:5' }) === recoloured);
+  t('keeping the palette with no brand colours changes nothing', buildClonePrompt({ resolved, brandColors: null, paletteSource: 'template', identity: 'ai', orientation: 'vertical 4:5' }) === ai);
   t('the image prompt describes the main photo; the inset gets a subject suited to the headline', ai.includes('Photo 2 (bottom right, portrait of a doctor with arms crossed): replace this photograph with a new realistic one suited to the headline "AUTOMATE BEYOND ROUTINE". This is a new photo shoot, not a retouch'), ai.split('\n').find((line) => line.includes('Photo 2')) ?? '');
   t('every photo line forbids the same person, even a small cut-out', ai.split('\n').filter((line) => line.includes('replace this photograph')).every((line) => line.includes('so nobody from the original is recognisable, even in a small cut-out portrait') && line.includes('a different gender or a clearly different age')));
   const corrected = buildClonePrompt({ resolved, brandColors: null, identity: 'ai', orientation: 'x', correction: '  The previous version was rejected in review for: logo too small.  ' });

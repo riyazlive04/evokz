@@ -45,6 +45,7 @@ const tpl = (id: string, overrides: Partial<MappingTemplate> = {}): MappingTempl
   label: id.toUpperCase(),
   categoryId: V,
   isActive: true,
+  autoAssign: true,
   aspect: PORTRAIT,
   ...overrides,
 });
@@ -73,6 +74,26 @@ t('an active template needs no approval', templateBlocker(tpl('a'), target()) ==
 t('a template from another vertical is blocked first', templateBlocker(tpl('a', { categoryId: 'other', isActive: false }), target()) === 'wrong-vertical');
 t('describeAspect names common shapes', describeAspect(PORTRAIT) === '9:16' && describeAspect(1) === '1:1' && describeAspect(0.8) === '4:5' && describeAspect(0) === 'unmeasured');
 t('isAutoCompatible needs every rule', isAutoCompatible(tpl('a'), target()) && !isAutoCompatible(tpl('a', { aspect: 1 }), target()) && !isAutoCompatible(tpl('a', { isActive: false }), target()));
+// A festival design: out of the rotation, so Auto Map never picks it — and still
+// assignable by hand, which `isActive: false` cannot give.
+t('a template out of the rotation is never picked automatically', !isAutoCompatible(tpl('a', { autoAssign: false }), target()));
+t('…but it is not blocked: it stays assignable by hand', templateBlocker(tpl('a', { autoAssign: false }), target()) === null);
+{
+  const festival = tpl('diwali', { autoAssign: false });
+  const plan = planAutoMap({ days: days(6), templates: [tpl('t1'), festival, tpl('t2')], target: target() });
+  t('Auto Map cycles the rotation only', pick(plan).join(',') === 't1,t2,t1,t2,t1,t2', pick(plan).join(','));
+  const pinned = planAutoMap({
+    days: days(6, () => 'educational', { 3: { posterTemplateId: festival.id } }),
+    templates: [tpl('t1'), festival, tpl('t2')],
+    target: target(),
+  });
+  const pinnedDay = pinned.entries[2]!;
+  t(
+    '…and leaves a day pinned to one by hand alone, with nothing to fix',
+    pinnedDay.templateId === festival.id && pinnedDay.outcome === 'manual' && pinnedDay.conflict === null,
+    `${pinnedDay.templateId} ${pinnedDay.outcome} ${pinnedDay.conflict?.code ?? 'no conflict'}`,
+  );
+}
 
 // ===========================================================================
 section('deterministic auto map');

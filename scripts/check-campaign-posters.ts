@@ -39,7 +39,7 @@ const WINDOW = generationWindow(NOW, 14, TZ);
 const dayAt = (offset: number) => addZonedDays(WINDOW.start, offset, TZ);
 
 const target: MappingTarget = { categoryId: 'v', mode: 'AUTO', aspect: 9 / 16, aspectLabel: '9:16' };
-const tpl = (overrides: Partial<MappingTemplate> = {}): MappingTemplate => ({ id: 't', label: 'T', categoryId: 'v', isActive: true, aspect: 9 / 16, ...overrides });
+const tpl = (overrides: Partial<MappingTemplate> = {}): MappingTemplate => ({ id: 't', label: 'T', categoryId: 'v', isActive: true, autoAssign: true, aspect: 9 / 16, ...overrides });
 const mapped = (template: MappingTemplate | null, source: 'AUTO' | 'MANUAL' = 'AUTO', contentType = 'educational') =>
   dayMappingState(
     { id: 'd', dayNumber: 1, contentType, posterTemplateId: source === 'MANUAL' && template ? template.id : null, suggestedTemplateId: source === 'AUTO' && template ? template.id : null },

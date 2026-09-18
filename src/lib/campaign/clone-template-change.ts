@@ -63,13 +63,20 @@ export interface TemplateChoice {
   current: boolean;
   /** Clones can be made from it (a measurable shape within 1:3–3:1). */
   usable: boolean;
+  /** Its clones keep its own colours instead of recolouring to the brand. */
+  keepsOwnColours: boolean;
+  /** It is out of the daily rotation: only ever chosen by hand, as here. */
+  outOfRotation: boolean;
 }
 
 /**
  * The templates a day may switch to: its vertical's active templates whose
- * elements have been read, in upload order — the same set "Fill empty days"
- * cycles through. Unusable shapes are listed but marked, so a template does not
- * silently go missing from the list.
+ * elements have been read, in upload order. Unusable shapes are listed but
+ * marked, so a template does not silently go missing from the list.
+ *
+ * A template out of the daily rotation (`autoAssign: false`) is listed like any
+ * other and only carries a chip — choosing a festival design for one day is the
+ * whole reason the flag exists, so nothing here filters on it.
  */
 export async function listCampaignDayTemplateChoices(db: CampaignDb, dayId: string): Promise<TemplateChoice[]> {
   const day = await db.contentCalendar.findUnique({
@@ -83,7 +90,7 @@ export async function listCampaignDayTemplateChoices(db: CampaignDb, dayId: stri
   const rows = await db.categoryTemplate.findMany({
     where: { categoryId: day.campaign.categoryId, isActive: true },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    select: { id: true, label: true, width: true, height: true, elements: true },
+    select: { id: true, label: true, width: true, height: true, elements: true, paletteSource: true, autoAssign: true },
   });
 
   const choices: TemplateChoice[] = [];
@@ -99,6 +106,8 @@ export async function listCampaignDayTemplateChoices(db: CampaignDb, dayId: stri
       aspectLabel: size?.aspectLabel ?? null,
       current: row.id === current,
       usable: size !== null,
+      keepsOwnColours: row.paletteSource === 'template',
+      outOfRotation: !row.autoAssign,
     });
   }
   return choices;

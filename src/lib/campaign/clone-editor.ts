@@ -1,6 +1,7 @@
 import { Prisma, type PosterApprovalStatus, type PosterGenerationStatus } from '@prisma/client';
 
 import { generateStructured, getModel, LlmError } from '@/lib/ai/openai';
+import { parsePaletteSource, type PaletteSource } from '@/lib/ai/studio-prompts';
 import { SLOT_LOCK_LABELS, slotLockOf } from '@/lib/campaign/board';
 import { loadCloneBrand, type CloneBrand } from '@/lib/campaign/clone-queue';
 import { bookCampaignDayQuietly, type DeliveryDeps } from '@/lib/campaign/delivery-service';
@@ -84,7 +85,11 @@ export interface CampaignDayCloneEditor {
   elements: DayPosterElementsDoc | null;
   resolved: ResolvedElement[];
   brand: CloneBrandValues & { colors: Array<{ hex: string; role: string }>; logoUrl: string | null; logoTrimmedUrl: string | null };
-  /** `brand` when the clone recolours to brand accent colours; `template` keeps the template's own. */
+  /**
+   * `brand` when the clone recolours to brand accent colours; `template` keeps the
+   * template's own — either because the client has no accent colours, or because
+   * the template is set to keep its palette (`CategoryTemplate.paletteSource`).
+   */
   colourMode: 'brand' | 'template';
   activeVersion: {
     id: string;
@@ -126,7 +131,7 @@ type EditorDayRow = Prisma.ContentCalendarGetPayload<{ select: typeof editorDayS
 
 interface EditorContext {
   row: EditorDayRow & { campaign: NonNullable<EditorDayRow['campaign']> };
-  templateRow: { id: string; label: string; width: number | null; height: number | null } | null;
+  templateRow: { id: string; label: string; width: number | null; height: number | null; paletteSource: PaletteSource } | null;
   doc: TemplateElementsDoc | null;
   brand: CloneBrand;
 }
@@ -138,12 +143,14 @@ async function loadEditorContext(db: CampaignDb, dayId: string): Promise<EditorC
 
   const templateId = effectiveTemplateId(row.campaign.templateMappingMode, row);
   const template = templateId
-    ? await db.categoryTemplate.findUnique({ where: { id: templateId }, select: { id: true, label: true, width: true, height: true, elements: true } })
+    ? await db.categoryTemplate.findUnique({ where: { id: templateId }, select: { id: true, label: true, width: true, height: true, elements: true, paletteSource: true } })
     : null;
   const brand = await loadCloneBrand(db, row.clientId);
   return {
     row: row as EditorContext['row'],
-    templateRow: template ? { id: template.id, label: template.label, width: template.width, height: template.height } : null,
+    templateRow: template
+      ? { id: template.id, label: template.label, width: template.width, height: template.height, paletteSource: parsePaletteSource(template.paletteSource) }
+      : null,
     doc: template ? parseTemplateElements(template.elements) : null,
     brand,
   };
@@ -192,7 +199,9 @@ export async function loadCampaignDayCloneEditor(db: CampaignDb, dayId: string):
     elements,
     resolved: doc && elements ? resolveDayElements(doc, elements, brand.values, row.imagePrompt) : [],
     brand: { ...brand.values, colors: brand.colors, logoUrl: brand.logoUrl, logoTrimmedUrl: brand.logoTrimmedUrl },
-    colourMode: brand.colors.length > 0 ? 'brand' : 'template',
+    // Template-first: a template that keeps its own palette says so whatever the
+    // client's Brand Canvas holds, because its clones are never recoloured.
+    colourMode: templateRow?.paletteSource === 'template' || brand.colors.length === 0 ? 'template' : 'brand',
     activeVersion: active
       ? {
           id: active.id,

@@ -141,6 +141,7 @@ async function suite(): Promise<void> {
   const editor = await import('@/lib/campaign/clone-editor');
   const board = await import('@/lib/campaign/board-service');
   const delivery = await import('@/lib/campaign/delivery-service');
+  const templateChange = await import('@/lib/campaign/clone-template-change');
   const cloneActions = await import('@/app/admin/campaigns/clone-actions');
   const campaignActions = await import('@/app/admin/campaigns/actions');
   const { MissingEnvError } = await import('@/lib/env');
@@ -188,6 +189,10 @@ async function suite(): Promise<void> {
   const tB = await template('B');
   const tC = await template('C');
   const tInactive = await template('Inactive', { isActive: false });
+  // A festival design: active and readable, but out of the daily rotation and
+  // keeping its own colours. Created after A, B and C, so if it ever leaked into
+  // the cycle it would show up as a fourth letter in `sequence()`.
+  const tFestival = await template('Festival', { autoAssign: false, paletteSource: 'template' });
   const tUnread = await template('Unread', { elements: Prisma.DbNull, elementsReadAt: null });
   await tx.categoryTemplate.create({
     data: { categoryId: emptyVertical.id, label: 'check:clone never read', gDriveFileId: 'fixture-template-x', gDriveViewUrl: 'https://drive.invalid/t', mimeType: 'image/png', width: 1080, height: 1350 },
@@ -299,6 +304,46 @@ async function suite(): Promise<void> {
     const unreadCampaign = await createCampaign(tx, { clientId: unreadClient.id, name: 'Unread', startDate: today, timeZone: TZ, durationDays: 3 });
     const none = await cloneQueue.cloneTemplatesIntoCampaign(tx, unreadCampaign.campaignId, load);
     t('a vertical with no read template fills nothing and says so', none.templates === 0 && none.filled.length === 0 && (await tx.contentCalendar.count({ where: { campaignId: unreadCampaign.campaignId, posterTemplateId: { not: null } } })) === 0);
+  }
+
+  // =======================================================================
+  section('a festival template: out of the rotation, assignable by hand');
+  // =======================================================================
+  {
+    const festivalClient = await makeClient('Festival');
+    const festival = await createCampaign(tx, { clientId: festivalClient.id, name: 'Festival', startDate: today, durationDays: 4, timeZone: TZ });
+    const fDay = async (n: number) => (await service.findCampaignDay(tx, festival.campaignId, n))!;
+
+    const filled = await cloneQueue.cloneTemplatesIntoCampaign(tx, festival.campaignId, load);
+    const fRows = await tx.contentCalendar.findMany({ where: { campaignId: festival.campaignId }, orderBy: { dayNumber: 'asc' } });
+    t('Fill empty days counts the rotation only', filled.templates === 3 && snapshot(filled.filled) === snapshot([1, 2, 3, 4]), snapshot(filled));
+    t('…and never puts a template out of the rotation on a day', fRows.every((day) => day.posterTemplateId !== tFestival.id) && fRows.every((day) => [tA.id, tB.id, tC.id].includes(day.posterTemplateId ?? '')));
+
+    // The picker offers it like any other template: choosing it for one day is
+    // the whole reason the flag exists.
+    const choices = await templateChange.listCampaignDayTemplateChoices(tx, (await fDay(3)).id);
+    const festivalChoice = choices.find((choice) => choice.id === tFestival.id);
+    t('the Change-template picker lists it, flagged, never filtered', festivalChoice !== undefined && festivalChoice.outOfRotation && festivalChoice.keepsOwnColours && festivalChoice.usable);
+    t('…and an ordinary template carries neither flag', choices.find((choice) => choice.id === tA.id)?.outOfRotation === false && choices.find((choice) => choice.id === tA.id)?.keepsOwnColours === false);
+
+    const before = await fDay(3);
+    const changed = await templateChange.changeCampaignDayTemplate(tx, before.id, tFestival.id, { ...load, expectedRevision: before.contentRevision });
+    const after = await fDay(3);
+    const stored = parseDayPosterElements(after.posterElements);
+    t('Change template accepts it by hand', changed.templateId === tFestival.id && changed.changed && after.posterTemplateId === tFestival.id);
+    t('…and clones its words like any other template', stored?.templateId === tFestival.id && after.headline === 'Headline of Festival' && after.contentStatus === 'READY' && stored.values.every((value) => value.source === 'template'));
+
+    // The re-run is the whole point: Diwali stays on the day it was put on.
+    const again = await cloneQueue.cloneTemplatesIntoCampaign(tx, festival.campaignId, load);
+    const rerun = await fDay(3);
+    t('a re-run leaves the day holding it alone', snapshot(again.skipped.alreadyCloned) === snapshot([1, 2, 3, 4]) && again.filled.length === 0, snapshot(again));
+    t('…with its template, words and revision untouched', rerun.posterTemplateId === tFestival.id && rerun.headline === 'Headline of Festival' && rerun.contentRevision === after.contentRevision);
+
+    // The editor reads the flag: no brand swatches are offered for a day whose
+    // template keeps its own colours, though the client has accent colours.
+    const view = await editor.loadCampaignDayCloneEditor(tx, rerun.id);
+    t('the editor shows the template’s own colours', view.colourMode === 'template' && view.brand.colors.length > 0);
+    t('…and a day on an ordinary template still shows the brand’s', (await editor.loadCampaignDayCloneEditor(tx, (await fDay(2)).id)).colourMode === 'brand');
   }
 
   // =======================================================================

@@ -9,6 +9,8 @@ import {
   deleteVerticalTemplate,
   readTemplateElementsAction,
   renameVerticalTemplate,
+  setTemplateAutoAssign,
+  setTemplatePaletteSource,
   uploadVerticalTemplate,
 } from '@/app/admin/dashboard/actions';
 import { setTemplateActiveAction } from '@/app/admin/campaigns/actions';
@@ -50,6 +52,10 @@ export interface VerticalTemplateRow {
   height: number | null;
   /** Whether campaign days may be newly mapped to this template. */
   isActive: boolean;
+  /** Its clones keep the template's own colours instead of recolouring to the client's brand. */
+  keepsOwnColours: boolean;
+  /** Whether "Fill empty days" and Auto Map may pick it. False leaves it assignable by hand only. */
+  autoAssign: boolean;
   /** Days of open campaigns currently using it (manual or auto). */
   campaignDays: number;
   /** What its element reading found, or why there is none. */
@@ -266,6 +272,8 @@ function TemplateCard({ template }: { template: VerticalTemplateRow }) {
           </p>
         )}
 
+        <TemplateFlagChips template={template} />
+
         <TemplateElementsLine template={template} />
 
         <TemplateStatus template={template} />
@@ -440,11 +448,101 @@ function TemplateElementsLine({ template }: { template: VerticalTemplateRow }) {
 }
 
 /**
- * Active or inactive, and how many campaign days use it.
+ * The two per-template flags, read at a glance.
+ *
+ * Neither is a fault, so both are quiet: a festival template is recognisable in
+ * the grid without reading its switches. The Change-template picker shows the
+ * same two chips on the same template.
+ */
+function TemplateFlagChips({ template }: { template: VerticalTemplateRow }) {
+  if (!template.keepsOwnColours && template.autoAssign) return null;
+
+  return (
+    <div className="-mt-1 flex flex-wrap gap-1.5">
+      {template.keepsOwnColours && (
+        <Badge variant="slate" className="px-2 py-0 text-[10px]" title="Its posters keep this template's colours; the brand colours are not applied.">
+          Own colours
+        </Badge>
+      )}
+      {!template.autoAssign && (
+        <Badge variant="slate" className="px-2 py-0 text-[10px]" title="Fill empty days and Auto Map never pick it; it is still chosen by hand.">
+          Not in rotation
+        </Badge>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One flag of a template, as a tick box that writes itself.
+ *
+ * Never optimistic: the box shows the stored value and only moves once the write
+ * has returned and the page has refreshed, so a refused change cannot leave the
+ * card claiming something the database does not say. The failure prints under it.
+ */
+function TemplateFlag({
+  templateId,
+  label,
+  hint,
+  checked,
+  run,
+}: {
+  templateId: string;
+  label: string;
+  hint: string;
+  checked: boolean;
+  run: (templateId: string, value: boolean) => Promise<{ ok: boolean; error?: string }>;
+}) {
+  const router = useRouter();
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  return (
+    <div>
+      <label className="flex items-start gap-2 text-[11px] text-foreground">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-3.5 w-3.5 accent-brand-to"
+          checked={checked}
+          disabled={pending}
+          onChange={async (event) => {
+            const next = event.target.checked;
+            setPending(true);
+            setError(null);
+            const result = await run(templateId, next);
+            setPending(false);
+            if (result.ok) router.refresh();
+            else setError(result.error ?? 'That did not save.');
+          }}
+        />
+        <span className="min-w-0">
+          {label}
+          <span className="mt-0.5 block text-[10px] leading-snug text-muted-foreground">{hint}</span>
+        </span>
+      </label>
+      {error && (
+        <p role="alert" className="mt-0.5 text-[10px] text-danger-ink">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Active or inactive, how many campaign days use it, and the two flags that make
+ * a festival design safe.
  *
  * Deactivating retires a template without deleting it: campaign days already
  * mapped to it keep it and are flagged "Template inactive — action required" on
  * their calendar, so nothing is replaced behind anyone's back.
+ *
+ * The two tick boxes are a different thing entirely, and neither retires
+ * anything. "Keep this template's own colours" stops its posters being
+ * recoloured to the client's brand — the client's logo, phone and website are
+ * still applied. "Not in the daily rotation" keeps it out of Fill empty days and
+ * Auto Map while leaving it assignable by hand, which is exactly what a Diwali or
+ * Christmas design needs.
  */
 function TemplateStatus({ template }: { template: VerticalTemplateRow }) {
   const router = useRouter();
@@ -495,6 +593,23 @@ function TemplateStatus({ template }: { template: VerticalTemplateRow }) {
           {active.error}
         </p>
       )}
+
+      <div className="space-y-1.5 pt-0.5">
+        <TemplateFlag
+          templateId={template.id}
+          label="Keep this template's own colours"
+          hint="Its posters are not recoloured to the client's brand. The logo, phone and website are still applied."
+          checked={template.keepsOwnColours}
+          run={setTemplatePaletteSource}
+        />
+        <TemplateFlag
+          templateId={template.id}
+          label="Not in the daily rotation"
+          hint="Fill empty days and Auto Map never pick it. You can still choose it for one day."
+          checked={!template.autoAssign}
+          run={(id, value) => setTemplateAutoAssign(id, !value)}
+        />
+      </div>
     </div>
   );
 }

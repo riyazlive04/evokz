@@ -74,6 +74,7 @@ interface TemplateRow {
   label: string;
   categoryId: string;
   isActive: boolean;
+  autoAssign: boolean;
   width: number | null;
   height: number | null;
   createdAt: Date;
@@ -84,6 +85,7 @@ const templateSelect = {
   label: true,
   categoryId: true,
   isActive: true,
+  autoAssign: true,
   width: true,
   height: true,
   createdAt: true,
@@ -100,6 +102,7 @@ function toMappingTemplates(rows: readonly TemplateRow[]): Array<MappingTemplate
     label: row.label,
     categoryId: row.categoryId,
     isActive: row.isActive,
+    autoAssign: row.autoAssign,
     aspect: row.width && row.height && row.width > 0 && row.height > 0 ? row.width / row.height : 0,
     createdAt: row.createdAt,
   }));

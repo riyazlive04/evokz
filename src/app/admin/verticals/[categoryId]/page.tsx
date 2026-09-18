@@ -80,6 +80,9 @@ export default async function VerticalDetailPage({
           width: true,
           height: true,
           isActive: true,
+          // The two per-template flags the card's switches write.
+          paletteSource: true,
+          autoAssign: true,
           // The reading itself, not just a flag: the card summarises it and its
           // dialog draws every element over the image. At most 40 elements each.
           // `prompt` is deliberately not loaded — the template prompt box is
@@ -133,6 +136,8 @@ export default async function VerticalDetailPage({
     width: template.width,
     height: template.height,
     isActive: template.isActive,
+    keepsOwnColours: template.paletteSource === 'template',
+    autoAssign: template.autoAssign,
     elements: templateElementsState(template),
     campaignDays: campaignDaysFor(template.id),
   }));
