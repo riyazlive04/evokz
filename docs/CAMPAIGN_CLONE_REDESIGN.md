@@ -1,6 +1,6 @@
 # Template clones and the campaign board
 
-**Branch:** `feature/ai-poster-studio` · **Commit:** `730e083` (local only: not pushed, merged or deployed)
+**Branch:** `feature/ai-poster-studio` · **Commits:** `730e083`, `ff78c08` (local only: not pushed, merged or deployed)
 **Date:** 17 September 2026
 
 ## 1. In one paragraph
@@ -135,6 +135,23 @@ Campaign posters used to be new designs that were only "inspired" by a template,
 
 ---
 
+### 3.10 Poster chat (changing a finished poster)
+- **Where:** an always-visible box under the poster in the template editor. It replaces the old collapsed "Small change".
+- **What it does:** you describe **one** change — "add a footer strip with my phone and website", "dim the background", "make the logo area cleaner" — and the AI edits the poster you are looking at. It is saved as a new version.
+- **Cost:** one high-quality image edit, about 2 minutes, billed to the client. The cost line sits under the box, and there is no confirm dialog.
+- **Adding things the template lacks:** this is the only way to add a footer, a contact line or a bar that the template never had. The element fields above can only change, hide or restore what the template has.
+- **Exact details:** when your instruction mentions the phone, website, business name or tagline, those exact Brand Canvas values are handed to the model, so digits and addresses are never invented. Say "phone" or "website" plainly. If Brand Canvas has no such value, the box warns you first.
+- **Important limit:** chat changes live on that poster only. **Regenerate rebuilds from the template and loses them** — the Regenerate dialog names what would be lost. **Fix text** may also remove them, since chat-added words are not in the Words fields.
+- Sent, sending and past days cannot be changed.
+
+### 3.11 Logo placement
+- **Where:** Brand details → Logo placement, in the template editor.
+- **Controls:** a size slider, a 3×3 position grid, and "Reset to template position".
+- **Live preview:** the logo is drawn over the poster's raw artwork exactly where it will land, using the same code the poster uses.
+- **Apply:** "Apply logo placement — free, no AI". It re-composites the poster from its raw artwork in seconds. No AI call, nothing billed. It is saved as a new version.
+- **It sticks:** the placement is stored on the day, so regenerating or editing words keeps it. Changing the template clears it, because a different template has a different logo box.
+- **Better defaults:** the logo's transparent padding is trimmed, a wide badge keeps its left third instead of being forced into a square, and there is a minimum size, so the default placement is far better than before.
+
 ## 4. Retired (removed from the product)
 - **Campaign page:** Template mapping (Auto Map / Manual Map), the AI content calendar, the content strategy editor, bulk content import, and the old health/review/delivery/generation sections.
 - **Old daily poster maker:** cron phases 1–3, Generate Now (`/admin/demo`), the approvals route, `/api/poster/preview`, layout reading on upload, layout approval, plates and the HTML poster renderers.
@@ -221,6 +238,11 @@ Cron every minute ──► sync bookings ──► send due WhatsApp ──► 
 - **One poster:** click **Generate** in the editor or on the card.
 - **Many posters:** click **Generate all not generated (N)** on the board and confirm.
 - **Render time:** about 1–2 minutes each. Keep the board open for fastest progress; the background worker also continues on its own.
+
+### Step 8b: Fix the logo or ask for a change
+- **Logo wrong size or position?** Brand details → Logo placement: set the size and corner, watch the preview, then **Apply logo placement — free, no AI**. Seconds, no cost.
+- **Need something the template hasn't got** (a footer with your phone and website, a different background mood)? Type it in the **poster chat** under the preview and press Enter. One change per message, about 2 minutes, one billed image edit.
+- Remember: a later **Regenerate** starts from the template again and loses chat additions.
 
 ### Step 9: Review each poster
 1. Open the poster, or look at the card. Check the **Text check** badge.
