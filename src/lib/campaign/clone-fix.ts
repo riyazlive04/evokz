@@ -351,7 +351,7 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
       suggestedTemplateId: true,
       generationStatus: true,
       posterGenerationStartedAt: true,
-      campaign: { select: { id: true, status: true } },
+      campaign: { select: { id: true, status: true, deliveryTime: true } },
       delivery: { select: { status: true, scheduledFor: true } },
       activePosterVersion: {
         select: {
@@ -373,10 +373,8 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
   if (day.campaign.status !== 'ACTIVE') {
     throw new CampaignDomainError('invalid-transition', `The campaign is ${day.campaign.status.toLowerCase()} — activate it to change posters.`);
   }
-  // A sent poster is what the client received, one being sent is on its way, and
-  // a past day is over: none of them is ever changed.
-  const lock = slotLockOf(day, now, options.timeZone ?? getAppTimeZone());
-  if (lock === 'sent' || lock === 'sending' || lock === 'past') {
+  const lock = slotLockOf(day, now, options.timeZone ?? getAppTimeZone(), day.campaign.deliveryTime);
+  if (lock) {
     throw new CampaignDomainError('invalid-transition', `${SLOT_LOCK_LABELS[lock]} Its poster can no longer change.`);
   }
   const active = day.activePosterVersion;
@@ -436,6 +434,13 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
     const resolved = resolveDayElements(doc, elements, brand, day.imagePrompt);
     const hasLogoBox = resolved.some((item) => item.action.type === 'logo');
 
+    const chatFacts = revision.type === 'edit' ? brandFactsForInstruction(revision.instruction, brand) : [];
+    const extraExpected: Array<{ elementId: string; label: string; expected: string }> = chatFacts.map((fact) => ({
+      elementId: `chat:${fact.label.toLowerCase().replace(/\s+/g, '-')}`,
+      label: fact.label,
+      expected: fact.value,
+    }));
+
     const sentPrompt =
       revision.type === 'fix'
         ? buildCloneTextFixPrompt({ corrections, orientation: shape.orientation, hasLogoBox })
@@ -445,7 +450,7 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
             hasLogoBox,
             // The same Brand Canvas values the poster's bound elements print, so
             // what the chat adds and what the template already carries agree.
-            facts: brandFactsForInstruction(revision.instruction, brand),
+            facts: chatFacts,
           });
 
     let image: { bytes: Buffer; mimeType: string };
@@ -487,7 +492,14 @@ async function revisePoster(db: CampaignDb, dayId: string, revision: Revision, o
     // Advisory, as for generation: a failed read-back leaves the poster unchecked.
     let textCheck: TextCheckResult | null = null;
     try {
-      textCheck = await deps.checkText({ bytes: finalBytes, mimeType: 'image/png', resolved, templateDoc: doc, bill: { clientId: day.clientId, calendarId: day.id } });
+      textCheck = await deps.checkText({
+        bytes: finalBytes,
+        mimeType: 'image/png',
+        resolved,
+        templateDoc: doc,
+        extraExpected: extraExpected.length > 0 ? extraExpected : undefined,
+        bill: { clientId: day.clientId, calendarId: day.id },
+      });
     } catch (error) {
       console.error(`[campaign:poster-fix] text check failed for day ${day.dayNumber}; the poster is saved unchecked:`, error instanceof Error ? error.message : error);
     }

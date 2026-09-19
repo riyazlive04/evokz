@@ -219,6 +219,11 @@ export function CampaignBoard({ board }: { board: BoardView }) {
             <>
               <p>This is one AI image generation, billed to this client.</p>
               <p>The new version replaces the current poster and needs approval again (unless auto-approve is on). The current one stays in the day&apos;s history.</p>
+              {day.poster?.source === 'POSTER_STUDIO' && (
+                <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[12px] font-medium text-amber-600 dark:text-amber-400">
+                  ⚠️ This poster contains custom chat edits (e.g. custom footer or details) which will be discarded on regenerate.
+                </p>
+              )}
             </>
           ),
           confirmLabel: 'Generate new version',

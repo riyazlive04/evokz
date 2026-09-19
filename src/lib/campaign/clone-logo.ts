@@ -116,7 +116,7 @@ export async function setCampaignDayLogoPlacement(
       suggestedTemplateId: true,
       generationStatus: true,
       posterGenerationStartedAt: true,
-      campaign: { select: { id: true, status: true } },
+      campaign: { select: { id: true, status: true, deliveryTime: true } },
       delivery: { select: { status: true, scheduledFor: true } },
       activePosterVersion: {
         select: {
@@ -140,8 +140,8 @@ export async function setCampaignDayLogoPlacement(
   if (day.campaign.status !== 'ACTIVE') {
     throw new CampaignDomainError('invalid-transition', `The campaign is ${day.campaign.status.toLowerCase()} — activate it to change posters.`);
   }
-  const lock = slotLockOf(day, now, options.timeZone ?? getAppTimeZone());
-  if (lock === 'sent' || lock === 'sending' || lock === 'past') {
+  const lock = slotLockOf(day, now, options.timeZone ?? getAppTimeZone(), day.campaign.deliveryTime);
+  if (lock) {
     throw new CampaignDomainError('invalid-transition', `${SLOT_LOCK_LABELS[lock]} Its poster can no longer change.`);
   }
   const active = day.activePosterVersion;

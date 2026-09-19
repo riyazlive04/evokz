@@ -761,8 +761,9 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
     endLongAction();
     await afterWrite({ resetDraft: false });
     if (!result.ok) {
-      // A refusal never reached the model, so nothing was billed.
-      setChatFailure({ message: result.error, billed: false });
+      // Domain refusals before spend never reach the model; unexpected server or network failures during the edit may have been billed.
+      const isPreFlightRefusal = /campaign|activate|can no longer change|being generated|no poster|uploaded|outdated|not made from|no longer exists|not read|cannot be edited|Describe one change|validation|Brand Canvas/i.test(result.error);
+      setChatFailure({ message: result.error, billed: !isPreFlightRefusal });
       return false;
     }
     if (result.data.outcome === 'revised') {

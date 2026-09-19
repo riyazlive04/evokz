@@ -96,10 +96,11 @@ export async function checkCloneText(input: {
   mimeType: string;
   resolved: readonly ResolvedElement[];
   templateDoc: TemplateElementsDoc;
+  extraExpected?: Array<{ elementId: string; label: string; expected: string; box?: TemplateElementsDoc['elements'][number]['box'] }>;
   bill?: UsageContext;
 }): Promise<TextCheckResult> {
   const model = textCheckModel();
-  const expected = expectedTexts(input.resolved, input.templateDoc);
+  const expected = expectedTexts(input.resolved, input.templateDoc, input.extraExpected);
 
   const png = await sharp(input.bytes)
     .resize({ width: MODEL_SHORT_EDGE, height: MODEL_SHORT_EDGE, fit: 'outside', withoutEnlargement: true })
@@ -155,6 +156,7 @@ export interface ExpectedText {
 export function expectedTexts(
   resolved: readonly ResolvedElement[],
   templateDoc: TemplateElementsDoc,
+  extraExpected?: Array<{ elementId: string; label: string; expected: string; box?: TemplateElementsDoc['elements'][number]['box'] }>,
 ): ExpectedText[] {
   const template = new Map(templateDoc.elements.map((element) => [element.id, element]));
   const out: ExpectedText[] = [];
@@ -165,6 +167,13 @@ export function expectedTexts(
       item.action.type === 'replace' ? item.action.text : item.action.type === 'keep' ? element.text : null;
     if (!text?.trim()) continue;
     out.push({ elementId: element.id, label: item.label, expected: text, box: element.box });
+  }
+  if (extraExpected) {
+    for (const item of extraExpected) {
+      if (!item.expected?.trim()) continue;
+      const box = item.box ?? { x: 0, y: 0.82, w: 1, h: 0.18 };
+      out.push({ elementId: item.elementId, label: item.label, expected: item.expected, box });
+    }
   }
   return out;
 }

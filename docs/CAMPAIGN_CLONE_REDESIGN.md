@@ -187,27 +187,27 @@ Open the client's Brand Canvas: logo, tagline, contact phone, website. Only the 
 ### Step 5 — Create the campaign
 On the client page: campaign name, first day, number of content days. The days fill with template copies immediately — no AI, no cost.
 
-### Step 6 — Look at the board
+### Step 6 — Activate the campaign
+Press **Activate** in the campaign header. Poster generation, poster chat, text fixes, and logo placement are all enabled once the campaign is active.
+
+### Step 7 — Look at the board
 Open the campaign: seven cards per page, each showing its template dimmed. Use the filters, the search, the week arrows and **Today**. Drag a card to reorder, or use **Move to day…**. If a day is empty, press **Fill empty days**.
 
-### Step 7 — Adjust the words (optional)
+### Step 8 — Adjust the words (optional)
 Press **Rewrite all drafts** for fresh wording across the week, or open one day with **Edit** and change the headline, **Remove** a feature, **Reset** one to the template's words, or type an **Image prompt** ("smiling family at a dental clinic"). Leave the prompt empty to let the AI choose a suitable photo. Brand details are read-only here — use **Edit in Brand Canvas**.
 
-### Step 8 — Generate
+### Step 9 — Generate
 **Generate** on one poster, or **Generate all not generated** for the week. About 1–2 minutes each. Keep the board open for the fastest run; the background worker continues anyway.
 
-### Step 9 — Fix what's wrong
+### Step 10 — Fix what's wrong
 - **Logo wrong size or place?** Brand details → Logo placement → set it → **Apply** (free, seconds).
 - **Need something the template hasn't got** — a footer with your phone and website, a different mood? Type it in the **poster chat** under the preview and press Enter.
 - **A word came out wrong?** **Fix text**.
 - **Not right at all?** **Regenerate**, or **Reject…** with a note.
 - **Prefer an earlier attempt?** Click it in the Versions strip; the top button becomes **Approve v1**.
 
-### Step 10 — Approve
-**Approve** on the card or in the editor, or **Approve all needing approval** on the board. Turn on **Auto-approve** in the header to skip this for future posters.
-
-### Step 11 — Activate
-Press **Activate**. From then on every approved poster books itself and shows **Scheduled** with its send time.
+### Step 11 — Approve
+**Approve** on the card or in the editor, or **Approve all needing approval** on the board. Each approved poster books itself and shows **Scheduled** with its send time. Turn on **Auto-approve** in the header to skip this for future posters.
 
 ### Step 12 — Delivery
 At the delivery time the poster is sent to the client on WhatsApp and the card turns **Sent**. A failure shows **Failed** — press **Retry** or wait for the automatic retry. **Send now** sends an approved poster immediately.

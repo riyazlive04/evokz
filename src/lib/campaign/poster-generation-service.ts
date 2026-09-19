@@ -1049,7 +1049,7 @@ export async function activateCampaignDayPosterVersion(
   if (day.activePosterVersionId === version.id) return { changed: false, versionNumber: version.versionNumber, booking: null };
 
   const lock = slotLockOf(day, now, options.timeZone ?? getAppTimeZone(), day.campaign.deliveryTime);
-  if (lock === 'sent' || lock === 'sending' || lock === 'past') {
+  if (lock) {
     throw new CampaignDomainError('invalid-transition', `${SLOT_LOCK_LABELS[lock]} Its poster can no longer change.`);
   }
   if (day.generationStatus === 'QUEUED' || isGenerationInProgress(day.generationStatus, day.posterGenerationStartedAt, now)) {

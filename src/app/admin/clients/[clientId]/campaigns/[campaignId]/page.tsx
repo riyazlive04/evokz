@@ -78,6 +78,7 @@ export default async function CampaignBoardPage({
           imageUrl: day.activeVersion.imageUrl,
           approvalStatus: day.activeVersion.approvalStatus,
           current: day.activeVersion.current,
+          source: day.activeVersion.source,
         }
       : null,
     textCheckIssues: day.textCheckIssues,

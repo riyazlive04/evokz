@@ -26,6 +26,7 @@ export interface BoardDayView {
     imageUrl: string | null;
     approvalStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
     current: boolean;
+    source?: 'PIPELINE' | 'POSTER_STUDIO' | 'MANUAL_UPLOAD';
   } | null;
   textCheckIssues: number;
   status: BoardStatus;
