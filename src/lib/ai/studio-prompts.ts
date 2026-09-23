@@ -1,3 +1,4 @@
+import type { StudioFestival } from '@/lib/poster-studio/festivals';
 import { STUDIO_ASPECT_RATIOS, type StudioAspectRatio } from '@/lib/poster-studio/limits';
 import {
   isBrandBound,
@@ -18,6 +19,8 @@ import {
  *   EDIT       the change, applied fully, and the untouched areas left alone
  *   VARIATION  a new creative direction for the same campaign: the message and
  *              brand mood survive, the concept, imagery and layout do not
+ *   MIX        the first image kept, with elements the operator names taken
+ *              from a second image (`buildMixPrompt`)
  *   CLONE      the attached template reproduced exactly, with only a numbered
  *              list of its elements changed (`buildClonePrompt`)
  *
@@ -55,6 +58,11 @@ interface CommonInput {
    * afterwards. Omitted or null leaves every prompt exactly as it was.
    */
   identityBandFraction?: number | null;
+  /**
+   * A festival or observance to theme the image for (`STUDIO_FESTIVALS`).
+   * Omitted or null leaves every prompt exactly as it was.
+   */
+  festival?: StudioFestival | null;
 }
 
 export interface GeneratePromptInput extends CommonInput {
@@ -122,6 +130,7 @@ export function buildGeneratePrompt(input: GeneratePromptInput): string {
     if (templatePrompt) sections.push(templatePromptSection(templatePrompt));
   }
   if (input.brand) sections.push(brandSection(input.brand, 'apply', band !== null));
+  if (input.festival) sections.push(festivalSection(input.festival, 'create', input.textFree));
   if (band !== null) sections.push(identitySection(band));
   sections.push(textSection(input.textFree));
   sections.push(noInventedBrandingSection('create', band !== null));
@@ -144,6 +153,7 @@ export function buildEditPrompt(input: EditPromptInput): string {
     input.instruction.trim(),
     'Apply the change fully. If it replaces a subject, a scene, the main artwork or another large region, redraw that region completely as described — do not keep, blend in or ghost the old content there.',
     'Leave every area the change does not touch as it is: its composition, colours, lighting, typography and existing text, spelled exactly as it appears. Do not redesign or restyle unrelated parts of the image.',
+    input.festival ? festivalSection(input.festival, 'edit', input.textFree) : null,
     `Output frame: ${STUDIO_ASPECT_RATIOS[input.aspectRatio].orientation}. If the attached image has a different shape, extend or crop its background naturally; never stretch or distort it.`,
     band !== null ? identitySection(band) : null,
     input.textFree ? 'Do not add any new text, letters or numbers.' : null,
@@ -220,11 +230,46 @@ export function buildVariationPrompt(input: VariationPromptInput): string {
   );
 
   if (input.brand) sections.push(brandSection(input.brand, 'preserve', band !== null));
+  if (input.festival) sections.push(festivalSection(input.festival, 'create', input.textFree));
   if (band !== null) sections.push(identitySection(band));
   sections.push(variationTextSection(input.textFree));
   sections.push(noInventedBrandingSection('create', band !== null, 'source'));
 
   return sections.join('\n\n');
+}
+
+export interface MixPromptInput extends CommonInput {
+  /** What to take from the element reference and where it goes on the base. */
+  instruction: string;
+}
+
+/**
+ * Mix: the first attached image is the poster being worked on, the second only
+ * a source of the elements the instruction names.
+ *
+ * Built like an edit, because the base must survive — the edit endpoint already
+ * leans towards keeping its first image. The risk particular to Mix is the
+ * second image leaking in wholesale: its layout, its colours, its wording or its
+ * branding. So the reference is named as a parts bin, everything it holds that
+ * the instruction does not name is ruled out, and taken elements are restyled to
+ * sit naturally in the base rather than pasted as a cut-out.
+ */
+export function buildMixPrompt(input: MixPromptInput): string {
+  const band = input.identityBandFraction ?? null;
+  return [
+    'Two images are attached. Image 1 is the BASE: the poster to change. Image 2 is the ELEMENT REFERENCE: a source of specific elements only.',
+    `Take from image 2 only what this instruction names, and apply it to image 1:\n${input.instruction.trim()}`,
+    'Carry each named element over faithfully — its shape, detail, pattern, colours and character — then fit it to the base: scale, position, lighting and perspective that sit naturally in image 1, so it reads as part of the design rather than a pasted cut-out.',
+    'Ignore everything else in image 2: its layout, background, people, products, colours and wording, unless the instruction names them. Never copy image 2’s logos, brand or company names, contact details, QR codes, badges or seals.',
+    'Keep image 1 as it is everywhere the instruction does not reach: its composition, subject, colours, lighting, typography and existing text, spelled exactly as it appears. Do not redesign or restyle it.',
+    input.festival ? festivalSection(input.festival, 'edit', input.textFree) : null,
+    `Output frame: ${STUDIO_ASPECT_RATIOS[input.aspectRatio].orientation}. If image 1 has a different shape, extend or crop its background naturally; never stretch or distort it.`,
+    band !== null ? identitySection(band) : null,
+    input.textFree ? 'Do not add any new text, letters or numbers.' : null,
+    noInventedBrandingSection('edit', band !== null),
+  ]
+    .filter((part): part is string => part !== null)
+    .join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +584,26 @@ function noInventedBrandingSection(
     'Ordinary illustrations, pictograms and decorative icons that belong to the scene or explain the message are fine, as long as they do not look like a brand mark.',
   );
   return lines.join('\n');
+}
+
+/**
+ * A festival theme. `create` builds the festive look into a new design; `edit`
+ * (Edit, Mix) adds it as accents around a design that must otherwise survive.
+ *
+ * The greeting is the only festival wording allowed, spelled out so the model
+ * does not improvise a second, misspelled one — and none at all when the
+ * operator asked for text-free artwork.
+ */
+function festivalSection(festival: StudioFestival, intent: 'create' | 'edit', textFree: boolean): string {
+  return [
+    intent === 'create'
+      ? `Festival theme: this poster is for ${festival.label}. Give it a tasteful ${festival.label} treatment — ${festival.styleHint}. The brief's message stays the focus; the festive elements frame and support it.`
+      : `Festival theme: also give the image a tasteful ${festival.label} treatment — ${festival.styleHint} — as decorative accents that fit the existing design. Do not cover or replace its text, its main subject or the areas the change above leaves alone.`,
+    textFree
+      ? 'Do not write a festival greeting or any other festival text.'
+      : `You may include the greeting "${festival.greeting}", spelled exactly like this. Do not add any other festival text.`,
+    'Keep the festive imagery respectful: no deities or religious figures drawn as people, and no religious text.',
+  ].join('\n');
 }
 
 function formatSection(aspectRatio: StudioAspectRatio): string {

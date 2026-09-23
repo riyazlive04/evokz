@@ -103,6 +103,7 @@ export async function trashUnreferencedStudioFiles(
             { imageDriveFileId: fileId },
             { finalImageDriveFileId: fileId },
             { referenceDriveFileId: fileId },
+            { elementReferenceDriveFileId: fileId },
           ],
         },
       });

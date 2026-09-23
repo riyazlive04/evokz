@@ -83,7 +83,8 @@ t('a configurable window: 7 days', generationWindow(NOW, 7, TZ).end.toISOString(
 section('formats, claims and Brand Canvas');
 // ===========================================================================
 t('9:16, 1:1 and 16:9 outputs map to Poster Studio formats', studioAspectFor(1080 / 1920) === '9:16' && studioAspectFor(1) === '1:1' && studioAspectFor(1920 / 1080) === '16:9');
-t('4:5 and 3:4 outputs are unsupported', studioAspectFor(0.8) === null && studioAspectFor(0.75) === null && studioAspectFor(0) === null);
+t('4:5 and 2:3 outputs map to the formats campaign templates use', studioAspectFor(0.8) === '4:5' && studioAspectFor(1024 / 1536) === '2:3');
+t('3:4 outputs are unsupported', studioAspectFor(0.75) === null && studioAspectFor(0) === null);
 t('QUEUED and a fresh GENERATING claim are in progress', isGenerationInProgress('QUEUED', null, NOW) && isGenerationInProgress('GENERATING', new Date(NOW.getTime() - 60_000), NOW));
 t('a GENERATING claim older than the stale limit is not', !isGenerationInProgress('GENERATING', new Date(NOW.getTime() - STALE_GENERATION_MS - 1), NOW) && !isGenerationInProgress('GENERATING', null, NOW));
 t('SUCCEEDED / FAILED are not in progress', !isGenerationInProgress('SUCCEEDED', NOW, NOW) && !isGenerationInProgress('FAILED', NOW, NOW));

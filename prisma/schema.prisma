@@ -437,6 +437,7 @@ model Client {
   usageEvents   UsageEvent[]
   studioPosters PosterStudioGeneration[]
   campaigns     Campaign[]
+  studioBatches PosterStudioBatch[]
   createdAt     DateTime                 @default(now())
   updatedAt     DateTime                 @updatedAt
 
@@ -554,8 +555,10 @@ model Campaign {
   /// for the next N days, not for the whole campaign. Not implemented yet.
   generationWindowDays Int                    @default(14)
 
-  days       ContentCalendar[]
-  deliveries CampaignDelivery[]
+  days          ContentCalendar[]
+  deliveries    CampaignDelivery[]
+  /// Bulk Poster Studio runs that fill this campaign's days.
+  studioBatches PosterStudioBatch[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -731,6 +734,8 @@ model ContentCalendar {
   /// This day's one delivery record (Phase 6). At most one, ever — see
   /// `CampaignDelivery.calendarDayId`.
   delivery                  CampaignDelivery?
+  /// Bulk Poster Studio rows that write their image to this day.
+  studioBatchItems          PosterStudioBatchItem[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -844,6 +849,7 @@ enum PosterStudioMode {
   EDIT // A targeted change to an existing image
   VARIATION // A new design derived from an existing image
   CLONE // The campaign template itself, with only its words, photo and identity changed
+  MIX // A base image with named elements taken from a second, element-reference image
 }
 
 /// Which version of a client's Brand Canvas logo a studio poster drew.
@@ -929,12 +935,29 @@ model PosterStudioGeneration {
   referenceDriveFileId String?
   referenceMimeType    String?
 
-  /// Set only for EDIT and VARIATION made from a history item. A GENERATE that
+  /// MIX only: the second input image, whose named elements were carried onto
+  /// the base (`referenceDriveFileId`). Shared like the reference, never copied.
+  elementReferenceDriveFileId String?
+  elementReferenceMimeType    String?
+
+  /// Festival key from src/lib/poster-studio/festivals.ts whose treatment was
+  /// added to the prompt, e.g. "diwali". Null for an ordinary poster.
+  festival String?
+
+  /// Set for EDIT, VARIATION and MIX made from a history item, and for a Customize
+  /// redo of one. A GENERATE that
   /// borrowed a history image as a style reference is not its child.
   parentGenerationId String?
   // SetNull: deleting a parent must not delete the edits made from it.
   parent             PosterStudioGeneration?  @relation("PosterStudioLineage", fields: [parentGenerationId], references: [id], onDelete: SetNull)
   children           PosterStudioGeneration[] @relation("PosterStudioLineage")
+
+  /// Set when a bulk run made this image. Bulk images are shown on their batch,
+  /// not in the studio History. SetNull: a removed batch leaves its images.
+  batchItemId         String?
+  batchItem           PosterStudioBatchItem?  @relation("BatchItemImages", fields: [batchItemId], references: [id], onDelete: SetNull)
+  /// Batch rows whose latest image this is.
+  latestForBatchItems PosterStudioBatchItem[] @relation("BatchItemLatest")
 
   clientId String?
   // SetNull, matching UsageEvent: a removed client's drafts stay reviewable.
@@ -951,6 +974,111 @@ model PosterStudioGeneration {
 
   @@index([createdAt])
   @@index([clientId, createdAt])
+  @@index([batchItemId])
+}
+
+/// Where a bulk Poster Studio run puts its images.
+enum PosterStudioBatchTarget {
+  STUDIO // Studio images only; "Day" is a label
+  CAMPAIGN // Day N is campaign day N: each image is saved to that day as a new poster version
+}
+
+enum PosterStudioBatchStatus {
+  DRAFT // Uploaded and under review; nothing queued, nothing spent
+  RUNNING // Items are queued; the open page and the cron sweep generate them
+  PAUSED // Queued items wait; nothing new starts (operator, or a billing/credential stop)
+  DONE // Nothing is queued or generating
+  CANCELLED // The operator stopped it; queued items were released
+}
+
+/// One bulk run from a spreadsheet of Day + Prompt rows.
+///
+/// The batch holds the defaults; each item may override them. Items use
+/// `PosterGenerationStatus` as their queue, exactly as campaign days do: QUEUED
+/// is "waiting for a worker", and `startedAt` is the claim token.
+model PosterStudioBatch {
+  id   String @id @default(uuid())
+  name String
+
+  target PosterStudioBatchTarget
+
+  /// STUDIO: optional, for Brand Canvas identity. CAMPAIGN: the campaign's client.
+  clientId   String?
+  client     Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  campaignId String?
+  campaign   Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  // ---- Defaults for every item ---------------------------------------------
+  aspectRatio      String
+  /// low | medium | high; null uses POSTER_STUDIO_IMAGE_QUALITY.
+  quality          String?
+  textFree         Boolean                      @default(false)
+  festival         String?
+  overlayElements  String[]                     @default([])
+  logoBackground   PosterStudioLogoBackground   @default(ORIGINAL)
+  footerBackground PosterStudioFooterBackground @default(AUTO)
+
+  status         PosterStudioBatchStatus @default(DRAFT)
+  /// Why the run stopped by itself (billing, credentials), for the operator.
+  pausedReason   String?
+  /// The uploaded file's name, for the operator's reference.
+  sourceFileName String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+
+  items PosterStudioBatchItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+/// One row of a bulk run: one prompt, one image (and later redos of it).
+model PosterStudioBatchItem {
+  id      String            @id @default(uuid())
+  batchId String
+  batch   PosterStudioBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  /// Row order in the sheet, from 1.
+  position  Int
+  /// The sheet's Day cell as written ("Day 3", "Diwali", "12").
+  dayLabel  String
+  /// The day number when the cell is one. Required for a CAMPAIGN batch.
+  dayNumber Int?
+  prompt    String @db.Text
+
+  // ---- Per-row overrides (null: the batch default) ---------------------------
+  aspectRatio String?
+  festival    String?
+  textFree    Boolean?
+  quality     String?
+
+  status    PosterGenerationStatus @default(NOT_REQUESTED)
+  /// Claim token of the attempt in progress; a stale one is reclaimed.
+  startedAt DateTime?
+  attempts  Int                    @default(0)
+  /// The last failure, in operator words.
+  error     String?
+
+  /// The latest image for this row. Earlier ones stay in `images`.
+  generationId String?
+  generation   PosterStudioGeneration?  @relation("BatchItemLatest", fields: [generationId], references: [id], onDelete: SetNull)
+  images       PosterStudioGeneration[] @relation("BatchItemImages")
+
+  /// CAMPAIGN batch: the day this row fills, resolved at upload.
+  calendarDayId   String?
+  calendarDay     ContentCalendar? @relation(fields: [calendarDayId], references: [id], onDelete: SetNull)
+  /// The poster version the latest image became on that day.
+  posterVersionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([batchId, position])
+  @@index([status, startedAt])
+  @@index([calendarDayId])
 }
 
 /// One image of one campaign day. Phase 1 foundation.

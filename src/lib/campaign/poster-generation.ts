@@ -82,7 +82,7 @@ export function isGenerationInProgress(
 // ---------------------------------------------------------------------------
 
 /**
- * The Poster Studio format (9:16, 1:1 or 16:9) for a shape, or null when there
+ * The Poster Studio format (9:16, 1:1, 16:9, 4:5 or 2:3) for a shape, or null when there
  * is none. Only Poster Studio's own Generate/Edit/Variation formats: a campaign
  * clone's shape is its template's (`templateOutputSize`), not one of these.
  */

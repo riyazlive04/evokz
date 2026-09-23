@@ -757,7 +757,7 @@ async function suite(): Promise<void> {
     t('a 4:5 clone saves to a day whose template is 4:5, keeping its source template', v45.templateId === t45.id);
     await expectDomainError('a 9:16 poster is refused on that 4:5 day', 'invalid-input', () => posters.saveStudioPosterToCampaignDay(tx, d11.id, edit.id));
     const context = await posters.loadCampaignDayStudioContext(tx, d11.id);
-    t('the studio context gives the day’s poster shape; no studio format for 4:5', context?.posterAspect === '4:5' && context.aspectRatio === null, snapshot(context && { posterAspect: context.posterAspect, aspectRatio: context.aspectRatio }));
+    t('the studio context gives the day’s poster shape, and 4:5 is a studio format', context?.posterAspect === '4:5' && context.aspectRatio === '4:5', snapshot(context && { posterAspect: context.posterAspect, aspectRatio: context.aspectRatio }));
     const context3 = await posters.loadCampaignDayStudioContext(tx, day.id);
     t('a 9:16 template day maps to the studio 9:16 format', context3?.posterAspect === '9:16' && context3.aspectRatio === '9:16');
 

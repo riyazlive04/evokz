@@ -57,7 +57,7 @@ import { composeCloneIdentity, type CloneIdentityInput } from '@/lib/poster-stud
 import { cloneSizeFor, type CloneSize } from '@/lib/poster-studio/clone-size';
 import { StudioError, type StudioErrorKind } from '@/lib/poster-studio/errors';
 import { prepareCloneTemplateImage, readStudioImageSize } from '@/lib/poster-studio/images';
-import type { StudioAspectRatio } from '@/lib/poster-studio/limits';
+import { STUDIO_ASPECT_RATIO_KEYS, type StudioAspectRatio } from '@/lib/poster-studio/limits';
 import { readStudioFile, resolveStudioFolder, storeStudioFile, trashStudioFiles } from '@/lib/poster-studio/storage';
 import { getAppTimeZone } from '@/lib/time';
 import {
@@ -1223,7 +1223,7 @@ export async function saveStudioPosterToCampaignDay(
  * or — for a day with no template — the client's Poster Studio format. `aspect`
  * is null when neither gives a shape posters can be made in.
  */
-async function dayPosterShape(
+export async function dayPosterShape(
   db: CampaignDb,
   day: { posterTemplateId: string | null; suggestedTemplateId: string | null },
   mode: 'AUTO' | 'MANUAL',
@@ -1249,7 +1249,7 @@ export interface CampaignDayStudioContext {
   clientId: string;
   companyName: string;
   /**
-   * The Poster Studio format (9:16, 1:1, 16:9) matching this day's poster shape,
+   * The Poster Studio format (9:16, 1:1, 16:9, 4:5, 2:3) matching this day's poster shape,
    * for the studio's Generate form; null when the shape is not one of those.
    */
   aspectRatio: StudioAspectRatio | null;
@@ -1289,7 +1289,7 @@ export async function loadCampaignDayStudioContext(db: CampaignDb, dayId: string
   if (!day?.campaign) return null;
 
   const shape = await dayPosterShape(db, day, day.campaign.templateMappingMode, day.client.imageSizePreset);
-  const studioFormats: readonly string[] = ['9:16', '1:1', '16:9'];
+  const studioFormats: readonly string[] = STUDIO_ASPECT_RATIO_KEYS;
   const { strategy } = resolveContentStrategy(day.campaign.category.contentStrategy);
   return {
     dayId: day.id,

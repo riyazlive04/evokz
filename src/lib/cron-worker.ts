@@ -12,6 +12,7 @@ import {
   runQueuedCampaignGenerationsExclusively,
   type ExclusiveGenerationSweep,
 } from '@/lib/campaign/generation-queue';
+import { runQueuedStudioBatchItemsExclusively, type StudioBatchSweep } from '@/lib/poster-studio/batch-service';
 import { prisma } from '@/lib/prisma';
 import { getAppTimeZone } from '@/lib/time';
 
@@ -37,6 +38,9 @@ import { getAppTimeZone } from '@/lib/time';
  *    the queue of campaigns no longer ACTIVE is released. Then, only if no other
  *    sweep is generating (an advisory lock), days are started until
  *    `CRON_GENERATION_BUDGET_MS` has passed; the one in flight finishes.
+ * 4. **Bulk Poster Studio rows.** A batch started from the bulk page is drained
+ *    by the page while it is open; whatever is left is made here, in whatever
+ *    remains of the same budget, one sweep at a time (its own advisory lock).
  *
  * The retired daily poster maker's phases (held-back sends, release at each
  * client's delivery minute, and the pre-generation backlog) no longer run. Its
@@ -58,6 +62,9 @@ export interface DispatchSummary {
   campaignBooked: number;
   /** Another sweep was already generating, so this one skipped generation. */
   campaignGenerationBusy: boolean;
+  /** Bulk Poster Studio rows made (and failed) by this sweep. */
+  studioBatchGenerated: number;
+  studioBatchFailed: number;
 }
 
 /** The sweep's steps, replaceable in tests (which check their order and isolation). */
@@ -67,6 +74,8 @@ export interface DispatchSteps {
   releaseInactiveQueues(): Promise<number>;
   /** `budgetMs`: what is left of the generation budget once the steps before it ran. */
   runGeneration(now: Date, budgetMs: number): Promise<ExclusiveGenerationSweep>;
+  /** `budgetMs`: what is left once campaign generation has had its turn. */
+  runStudioBatches(now: Date, budgetMs: number): Promise<StudioBatchSweep>;
 }
 
 export const defaultDispatchSteps: DispatchSteps = {
@@ -74,6 +83,7 @@ export const defaultDispatchSteps: DispatchSteps = {
   runDeliveries: (now) => runDueCampaignDeliveries(prisma, defaultDeliveryDeps({ now: () => now })),
   releaseInactiveQueues: () => releaseQueuedForInactiveCampaigns(prisma),
   runGeneration: (now, budgetMs) => runQueuedCampaignGenerationsExclusively(prisma, { now, budgetMs }),
+  runStudioBatches: (_now, budgetMs) => runQueuedStudioBatchItemsExclusively(prisma, { budgetMs }),
 };
 
 export async function executeIntervalDispatch(
@@ -119,8 +129,19 @@ export async function executeIntervalDispatch(
     console.error('[ace:cron] campaign generation sweep failed', error instanceof Error ? error.message : error);
   }
 
+  // ---- 4. Bulk Poster Studio rows -------------------------------------------
+  let studioBatches: StudioBatchSweep = { generated: 0, failed: 0, lockHeld: false };
+  const studioBudget = Math.max(0, CRON_GENERATION_BUDGET_MS - (Date.now() - sweepStartedAt));
+  if (studioBudget > 0) {
+    try {
+      studioBatches = await steps.runStudioBatches(now, studioBudget);
+    } catch (error) {
+      console.error('[ace:cron] bulk studio sweep failed', error instanceof Error ? error.message : error);
+    }
+  }
+
   console.info(
-    `[ace:cron] tz=${timeZone} generated=${campaignGeneration.generated.length}${campaignGeneration.lockHeld ? ' (another sweep is generating)' : ''} ` +
+    `[ace:cron] tz=${timeZone} studioBatch=${studioBatches.generated}/${studioBatches.failed}${studioBatches.lockHeld ? ' (busy)' : ''} generated=${campaignGeneration.generated.length}${campaignGeneration.lockHeld ? ' (another sweep is generating)' : ''} ` +
       `generationFailed=${campaignGeneration.failed.length} booked=${campaignBookings.booked + campaignBookings.repinned} ` +
       `sent=${campaignDeliveries.sent.length} failed=${campaignDeliveries.failed.length} skipped=${campaignDeliveries.skipped.length}`,
   );
@@ -135,5 +156,7 @@ export async function executeIntervalDispatch(
     campaignGenerationFailed: campaignGeneration.failed.length,
     campaignBooked: campaignBookings.booked + campaignBookings.repinned,
     campaignGenerationBusy: campaignGeneration.lockHeld,
+    studioBatchGenerated: studioBatches.generated,
+    studioBatchFailed: studioBatches.failed,
   };
 }

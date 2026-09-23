@@ -23,7 +23,8 @@ import { prisma } from '@/lib/prisma';
  *             identity overlay was drawn
  *             "raw": exactly what the image model returned — what Edit and
  *             Variation send back to it
- *             "reference": the input image sent with the request
+ *             "reference": the input image sent with the request (Mix: the base)
+ *             "element-reference": Mix only — the image elements were taken from
  *   w         preview width, 1–2048 (default 640), re-encoded as WebP
  *   full      serve the stored file untouched
  *   download  with full, send it as an attachment
@@ -48,7 +49,10 @@ export async function GET(
 
   const search = request.nextUrl.searchParams;
   const requestedVariant = search.get('variant');
-  const variant = requestedVariant === 'reference' || requestedVariant === 'raw' ? requestedVariant : 'final';
+  const variant =
+    requestedVariant === 'reference' || requestedVariant === 'raw' || requestedVariant === 'element-reference'
+      ? requestedVariant
+      : 'final';
 
   let row;
   try {
@@ -61,6 +65,8 @@ export async function GET(
         finalImageMimeType: true,
         referenceDriveFileId: true,
         referenceMimeType: true,
+        elementReferenceDriveFileId: true,
+        elementReferenceMimeType: true,
       },
     });
   } catch (error) {
@@ -71,10 +77,14 @@ export async function GET(
   if (!row) return new NextResponse('Not found', { status: 404 });
 
   const useFinal = variant === 'final' && row.finalImageDriveFileId !== null;
-  const fileId =
-    variant === 'reference' ? row.referenceDriveFileId : useFinal ? row.finalImageDriveFileId : row.imageDriveFileId;
-  const storedMimeType =
-    variant === 'reference' ? row.referenceMimeType : useFinal ? row.finalImageMimeType : row.imageMimeType;
+  const [fileId, storedMimeType] =
+    variant === 'reference'
+      ? [row.referenceDriveFileId, row.referenceMimeType]
+      : variant === 'element-reference'
+        ? [row.elementReferenceDriveFileId, row.elementReferenceMimeType]
+        : useFinal
+          ? [row.finalImageDriveFileId, row.finalImageMimeType]
+          : [row.imageDriveFileId, row.imageMimeType];
   if (!fileId || !storedMimeType) return new NextResponse('Not found', { status: 404 });
 
   const full = search.get('full') === '1';
@@ -103,7 +113,8 @@ export async function GET(
 
     if (download) {
       const extension = storedMimeType === 'image/webp' ? 'webp' : storedMimeType === 'image/jpeg' ? 'jpg' : 'png';
-      const suffix = variant === 'reference' ? '-input' : variant === 'raw' ? '-raw' : '';
+      const suffix =
+        variant === 'reference' ? '-input' : variant === 'element-reference' ? '-element' : variant === 'raw' ? '-raw' : '';
       const name = `poster-studio-${params.generationId.slice(0, 8)}${suffix}.${extension}`;
       headers['Content-Disposition'] = `attachment; filename="${name}"`;
     }

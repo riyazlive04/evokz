@@ -5,10 +5,12 @@ import {
   AlertCircle,
   AlertTriangle,
   Building2,
+  Combine,
   Check,
   CheckCircle2,
   Copy,
   Minus,
+  Shapes,
   Download,
   ExternalLink,
   Image as ImageIcon,
@@ -33,6 +35,7 @@ import {
 import { CampaignDayStudioBanner } from '@/components/campaign/CampaignDayStudioBanner';
 import type { CampaignDayStudioContext } from '@/lib/campaign/poster-generation-service';
 import type { StudioBrandCanvasSummary } from '@/lib/poster-studio/brand-context';
+import { findStudioFestival } from '@/lib/poster-studio/festivals';
 import type { StudioHistoryItem } from '@/lib/poster-studio/history';
 import {
   MAX_STUDIO_IMAGE_BYTES,
@@ -49,8 +52,18 @@ import {
   type StudioLogoBackground,
   type StudioMode,
   type StudioOverlayElement,
+  type StudioQuality,
 } from '@/lib/poster-studio/limits';
 import { cn } from '@/lib/utils';
+
+import { BrandCanvasPanel, defaultOverlayElements } from './BrandCanvasPanel';
+import {
+  CustomizePanel,
+  FestivalSelect,
+  QualitySelect,
+  settingsFromImage,
+  type CustomizeSettings,
+} from './CustomizePanel';
 
 interface PosterStudioWorkspaceProps {
   clients: Array<{ id: string; companyName: string }>;
@@ -72,7 +85,8 @@ interface PosterStudioWorkspaceProps {
 type Attachment =
   | { kind: 'upload'; file: File; label: string }
   | { kind: 'generation-output'; generationId: string; label: string }
-  | { kind: 'generation-reference'; generationId: string; label: string };
+  | { kind: 'generation-reference'; generationId: string; label: string }
+  | { kind: 'generation-element-reference'; generationId: string; label: string };
 
 const MODE_COPY: Record<
   StudioMode,
@@ -141,15 +155,39 @@ const MODE_COPY: Record<
     missingImage:
       'Variation needs a parent image. Upload an image, or choose Vary on a poster in History.',
   },
+  MIX: {
+    tab: 'Mix',
+    summary: 'Take specific elements from a reference image and add them to a base poster.',
+    promptLabel: 'What to take, and where it goes',
+    placeholder:
+      'e.g. Take the gold diya border from the reference and run it around the edge of the base poster. Keep everything else.',
+    imageLabel: 'Base image',
+    imageRequired: true,
+    imageHint: 'The poster to change. Everything your instruction does not mention is kept.',
+    uploadCta: 'Upload base image',
+    button: 'Mix elements',
+    working: 'Mixing elements…',
+    done: 'Elements mixed and saved to History.',
+    missingImage: 'Mix needs a base image. Upload the poster to change, or choose Mix on a poster in History.',
+  },
 };
 
-const MODES: StudioMode[] = ['GENERATE', 'EDIT', 'VARIATION'];
+const MODES: StudioMode[] = ['GENERATE', 'EDIT', 'VARIATION', 'MIX'];
+
+/** Mix's second slot. Only the named elements are taken from this image. */
+const ELEMENT_SLOT_COPY = {
+  label: 'Element reference',
+  hint: 'Only the elements your instruction names are taken from this image — never its layout, wording or branding.',
+  uploadCta: 'Upload reference image',
+  missing: 'Mix needs a reference image to take elements from. Upload it, or choose "Mix ref" on a poster in History.',
+};
 
 const MODE_BADGE: Record<StudioHistoryItem['mode'], string> = {
   GENERATE: 'Generated',
   EDIT: 'Edit',
   VARIATION: 'Variation',
   CLONE: 'Template clone',
+  MIX: 'Mix',
 };
 
 export function PosterStudioWorkspace({
@@ -171,10 +209,14 @@ export function PosterStudioWorkspace({
     GENERATE: campaignDay && !campaignSource ? campaignDay.brief : '',
     EDIT: '',
     VARIATION: '',
+    MIX: '',
   });
   const [aspectRatio, setAspectRatio] = useState<StudioAspectRatio>(campaignDay?.aspectRatio ?? '9:16');
   const [clientId, setClientId] = useState(campaignDay?.clientId ?? '');
   const [textFree, setTextFree] = useState(false);
+  const [festival, setFestival] = useState<string | null>(null);
+  /** Null: the server's configured quality. */
+  const [qualityChoice, setQualityChoice] = useState<StudioQuality | null>(null);
   const [attachment, setAttachment] = useState<Attachment | null>(
     campaignDay && campaignSource
       ? {
@@ -184,7 +226,8 @@ export function PosterStudioWorkspace({
         }
       : null,
   );
-  const [uploadPreviewUrl, setUploadPreviewUrl] = useState<string | null>(null);
+  /** Mix only: the image whose named elements are carried onto `attachment`. */
+  const [elementAttachment, setElementAttachment] = useState<Attachment | null>(null);
 
   const [history, setHistory] = useState<StudioHistoryItem[]>(initialHistory);
   const [currentId, setCurrentId] = useState<string | null>(campaignSource ?? initialHistory[0]?.id ?? null);
@@ -210,7 +253,6 @@ export function PosterStudioWorkspace({
   const [logoBackground, setLogoBackground] = useState<StudioLogoBackground>('ORIGINAL');
   const [footerBackground, setFooterBackground] = useState<StudioFooterBackground>('AUTO');
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
 
   const copy = MODE_COPY[mode];
@@ -289,48 +331,27 @@ export function PosterStudioWorkspace({
     };
   }, [clientId]);
 
-  // Object URLs are created and revoked by the same effect, so a StrictMode
-  // remount cannot revoke a URL an <img> is still showing.
-  useEffect(() => {
-    if (attachment?.kind !== 'upload') {
-      setUploadPreviewUrl(null);
-      return;
-    }
-    const url = URL.createObjectURL(attachment.file);
-    setUploadPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [attachment]);
-
-  const attachmentPreview = !attachment
-    ? null
-    : attachment.kind === 'upload'
-      ? uploadPreviewUrl
-      : studioImageUrl(attachment.generationId, {
-          // A history poster is sent to the model as its RAW artwork, so that is
-          // what the attachment shows.
-          variant: attachment.kind === 'generation-reference' ? 'reference' : 'raw',
-          width: 160,
-        });
-
-  const handleFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    // Cleared so choosing the same file again still fires a change.
-    event.target.value = '';
-    if (!file) return;
-
+  /** Checks a chosen file against the studio's limits: the problem, or null when it can be sent. */
+  const checkFile = (file: File): string | null => {
     if (!(STUDIO_IMAGE_MIME_TYPES as readonly string[]).includes(file.type)) {
-      setError(`"${file.name}" is not a supported format. Use a PNG, JPEG or WebP image.`);
-      return;
+      return `"${file.name}" is not a supported format. Use a PNG, JPEG or WebP image.`;
     }
     if (file.size > MAX_STUDIO_IMAGE_BYTES) {
-      setError(
-        `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${MAX_STUDIO_IMAGE_MB} MB.`,
-      );
+      return `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is ${MAX_STUDIO_IMAGE_MB} MB.`;
+    }
+    return null;
+  };
+
+  const attachFile = (file: File, target: 'base' | 'element') => {
+    const problem = checkFile(file);
+    if (problem) {
+      setError(problem);
       return;
     }
-
     setError(null);
-    setAttachment({ kind: 'upload', file, label: file.name });
+    const next: Attachment = { kind: 'upload', file, label: file.name };
+    if (target === 'element') setElementAttachment(next);
+    else setAttachment(next);
   };
 
   const handleGenerate = async () => {
@@ -347,6 +368,10 @@ export function PosterStudioWorkspace({
     }
     if (copy.missingImage && !attachment) {
       setError(copy.missingImage);
+      return;
+    }
+    if (mode === 'MIX' && !elementAttachment) {
+      setError(ELEMENT_SLOT_COPY.missing);
       return;
     }
     if (clientId && brandLoading) {
@@ -377,6 +402,8 @@ export function PosterStudioWorkspace({
     formData.set('overlayElements', clientId ? overlayElements.join(',') : '');
     formData.set('logoBackground', logoBackground);
     formData.set('footerBackground', footerBackground);
+    formData.set('festival', festival ?? '');
+    formData.set('quality', qualityChoice ?? '');
     if (!attachment) {
       formData.set('sourceKind', 'none');
     } else if (attachment.kind === 'upload') {
@@ -386,8 +413,44 @@ export function PosterStudioWorkspace({
       formData.set('sourceKind', attachment.kind);
       formData.set('sourceGenerationId', attachment.generationId);
     }
+    const element = mode === 'MIX' ? elementAttachment : null;
+    if (!element) {
+      formData.set('elementSourceKind', 'none');
+    } else if (element.kind === 'upload') {
+      formData.set('elementSourceKind', 'upload');
+      formData.set('elementImage', element.file);
+    } else {
+      formData.set('elementSourceKind', element.kind);
+      formData.set('elementSourceGenerationId', element.generationId);
+    }
 
     const submitted = attachment;
+    await submitRequest(formData, copy.done, (generation) => {
+      // The upload is in Drive now. Point at the stored copy so the next request
+      // reuses it instead of uploading the same file again.
+      if (submitted?.kind === 'upload' && generation.hasReference) {
+        setAttachment({
+          kind: 'generation-reference',
+          generationId: generation.id,
+          label: submitted.label,
+        });
+      }
+      if (element?.kind === 'upload' && generation.hasElementReference) {
+        setElementAttachment({
+          kind: 'generation-element-reference',
+          generationId: generation.id,
+          label: element.label,
+        });
+      }
+    });
+  };
+
+  /** Sends one studio request and shows its outcome; shared by the form and Customize. */
+  const submitRequest = async (
+    formData: FormData,
+    doneMessage: string,
+    onSaved?: (generation: StudioHistoryItem) => void,
+  ) => {
     setLoading(true);
 
     try {
@@ -404,18 +467,8 @@ export function PosterStudioWorkspace({
       const generation = result.generation;
       setHistory((previous) => [generation, ...previous.filter((item) => item.id !== generation.id)]);
       selectItem(generation.id);
-
-      // The upload is in Drive now. Point at the stored copy so the next request
-      // reuses it instead of uploading the same file again.
-      if (submitted?.kind === 'upload' && generation.hasReference) {
-        setAttachment({
-          kind: 'generation-reference',
-          generationId: generation.id,
-          label: submitted.label,
-        });
-      }
-
-      setSuccess(copy.done);
+      onSaved?.(generation);
+      setSuccess(doneMessage);
     } catch {
       // A thrown action means the request itself failed — most often an expired
       // session (the middleware answers 401) or a dropped connection.
@@ -427,7 +480,51 @@ export function PosterStudioWorkspace({
     }
   };
 
-  const attachHistoryImage = (item: StudioHistoryItem, nextMode: 'EDIT' | 'VARIATION') => {
+  /**
+   * Customize: the same request that made `item` — its mode, prompt and stored
+   * input images — with the new settings. The result is a new History item,
+   * recorded as a child of `item`; `item` itself is never changed.
+   */
+  const handleCustomize = async (item: StudioHistoryItem, settings: CustomizeSettings) => {
+    setError(null);
+    setSuccess(null);
+    setWarning(null);
+    setUnsaved(null);
+    setLogoBackgroundRefused(false);
+    if (item.mode === 'CLONE') return;
+
+    const formData = new FormData();
+    formData.set('mode', item.mode);
+    formData.set('prompt', settings.prompt);
+    formData.set('aspectRatio', settings.aspectRatio);
+    formData.set('clientId', settings.clientId ?? '');
+    formData.set('textFree', settings.textFree ? '1' : '0');
+    formData.set('overlayElements', settings.clientId ? settings.overlayElements.join(',') : '');
+    formData.set('logoBackground', settings.logoBackground);
+    formData.set('footerBackground', settings.footerBackground);
+    formData.set('festival', settings.festival ?? '');
+    formData.set('quality', settings.quality ?? '');
+    formData.set('sourceKind', item.hasReference ? 'generation-reference' : 'none');
+    formData.set('sourceGenerationId', item.hasReference ? item.id : '');
+    formData.set('elementSourceKind', item.hasElementReference ? 'generation-element-reference' : 'none');
+    formData.set('elementSourceGenerationId', item.hasElementReference ? item.id : '');
+    formData.set('redoOfGenerationId', item.id);
+
+    await submitRequest(formData, 'Customized poster saved to History. The original is kept.');
+  };
+
+  /** Mix's second slot, from History: the poster's raw artwork is the element source. */
+  const attachHistoryElement = (item: StudioHistoryItem) => {
+    setMode('MIX');
+    setElementAttachment({ kind: 'generation-output', generationId: item.id, label: `History · ${describeItem(item)}` });
+    setError(null);
+    setSuccess(null);
+    if (typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const attachHistoryImage = (item: StudioHistoryItem, nextMode: 'EDIT' | 'VARIATION' | 'MIX') => {
     setMode(nextMode);
     // Keep the poster's Brand Canvas: an edit or variation of a client's poster
     // is composited with that client's identity again.
@@ -476,6 +573,9 @@ export function PosterStudioWorkspace({
       if (currentId === item.id) setCurrentId(remaining[0]?.id ?? null);
       if (attachment && attachment.kind !== 'upload' && attachment.generationId === item.id) {
         setAttachment(null);
+      }
+      if (elementAttachment && elementAttachment.kind !== 'upload' && elementAttachment.generationId === item.id) {
+        setElementAttachment(null);
       }
     } catch {
       setError('The poster could not be deleted. Your session may have expired — reload the page and try again.');
@@ -562,7 +662,7 @@ export function PosterStudioWorkspace({
             <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
               <Sliders className="w-3.5 h-3.5 text-brand-to" /> Mode
             </label>
-            <div className="grid grid-cols-3 gap-1 bg-muted/60 p-1 rounded-lg border border-border text-xs">
+            <div className="grid grid-cols-4 gap-1 bg-muted/60 p-1 rounded-lg border border-border text-xs">
               {MODES.map((option) => (
                 <button
                   key={option}
@@ -583,80 +683,29 @@ export function PosterStudioWorkspace({
             <p className="text-[11px] text-muted-foreground leading-snug">{copy.summary}</p>
           </div>
 
-          {/* Input image */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                <ImageIcon className="w-3.5 h-3.5 text-brand-to" /> {copy.imageLabel}
-              </label>
-              <span
-                className={cn(
-                  'text-[10px] font-medium',
-                  copy.imageRequired && !attachment ? 'text-destructive' : 'text-muted-foreground',
-                )}
-              >
-                {copy.imageRequired ? 'Required' : 'Optional'}
-              </span>
-            </div>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={STUDIO_IMAGE_MIME_TYPES.join(',')}
-              onChange={handleFileSelected}
-              className="hidden"
+          {/* Input image(s) */}
+          <AttachmentSlot
+            label={copy.imageLabel}
+            required={copy.imageRequired}
+            hint={copy.imageHint}
+            uploadCta={copy.uploadCta}
+            attachment={attachment}
+            disabled={loading}
+            onFile={(file) => attachFile(file, 'base')}
+            onRemove={() => setAttachment(null)}
+          />
+          {mode === 'MIX' && (
+            <AttachmentSlot
+              label={ELEMENT_SLOT_COPY.label}
+              required
+              hint={ELEMENT_SLOT_COPY.hint}
+              uploadCta={ELEMENT_SLOT_COPY.uploadCta}
+              attachment={elementAttachment}
+              disabled={loading}
+              onFile={(file) => attachFile(file, 'element')}
+              onRemove={() => setElementAttachment(null)}
             />
-
-            {attachment ? (
-              <div className="relative border border-border bg-muted/40 rounded-lg p-2 flex items-center gap-3">
-                {attachmentPreview ? (
-                  // eslint-disable-next-line @next/next/no-img-element -- a local object URL or a session-gated Drive proxy; next/image can serve neither
-                  <img
-                    src={attachmentPreview}
-                    alt="Attached input"
-                    onError={(event) => {
-                      event.currentTarget.style.visibility = 'hidden';
-                    }}
-                    className="w-12 h-16 object-cover rounded border border-border shadow-sm bg-muted shrink-0"
-                  />
-                ) : (
-                  <div className="w-12 h-16 rounded border border-border bg-muted shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-foreground truncate">{attachment.label}</p>
-                  <p className="text-[10px] text-muted-foreground leading-snug">{copy.imageHint}</p>
-                </div>
-                <button
-                  type="button"
-                  disabled={loading}
-                  onClick={() => setAttachment(null)}
-                  aria-label="Remove attached image"
-                  className="p-1 text-muted-foreground hover:text-destructive rounded-md transition-colors disabled:opacity-50"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                disabled={loading}
-                onClick={() => fileInputRef.current?.click()}
-                className={cn(
-                  'w-full border border-dashed bg-background rounded-lg p-4 text-center transition-colors disabled:opacity-60',
-                  copy.imageRequired
-                    ? 'border-destructive/40 hover:border-destructive/70'
-                    : 'border-input hover:border-primary/50',
-                )}
-              >
-                <Upload className="w-5 h-5 text-muted-foreground mx-auto mb-1" />
-                <p className="text-xs font-medium text-foreground">{copy.uploadCta}</p>
-                <p className="text-[10px] text-muted-foreground">
-                  PNG, JPEG or WebP, up to {MAX_STUDIO_IMAGE_MB} MB
-                  {copy.imageRequired ? ' — or pick a poster in History' : ''}
-                </p>
-              </button>
-            )}
-          </div>
+          )}
 
           {/* Prompt */}
           <div className="space-y-1.5">
@@ -763,6 +812,18 @@ export function PosterStudioWorkspace({
             </div>
           </div>
 
+          {/* Festival and quality */}
+          <div className="grid grid-cols-2 gap-3">
+            <FestivalSelect id="studio-festival" value={festival} onChange={setFestival} disabled={loading} />
+            <QualitySelect
+              id="studio-quality"
+              value={qualityChoice}
+              defaultQuality={quality}
+              onChange={setQualityChoice}
+              disabled={loading}
+            />
+          </div>
+
           {/* Text-free artwork */}
           <label className="flex items-start justify-between gap-3 border-t border-border pt-4 cursor-pointer">
             <span>
@@ -803,7 +864,7 @@ export function PosterStudioWorkspace({
           </button>
 
           <p className="text-[10px] text-muted-foreground text-center">
-            {model} · quality {quality} · saved to Google Drive
+            {model} · quality {qualityChoice ?? quality} · saved to Google Drive
           </p>
         </div>
 
@@ -896,6 +957,15 @@ export function PosterStudioWorkspace({
                 </button>
                 <button
                   type="button"
+                  disabled={loading}
+                  onClick={() => attachHistoryImage(current, 'MIX')}
+                  title="Use this poster as the base of a Mix"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  <Combine className="w-3.5 h-3.5" /> Mix
+                </button>
+                <button
+                  type="button"
                   disabled={loading || deletingId === current.id}
                   onClick={() => handleDelete(current)}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-destructive hover:border-destructive/40 disabled:opacity-50"
@@ -903,6 +973,25 @@ export function PosterStudioWorkspace({
                   <Trash2 className="w-3.5 h-3.5" /> {deletingId === current.id ? 'Deleting…' : 'Delete'}
                 </button>
               </div>
+
+              {current.mode === 'CLONE' ? null : current.mode !== 'GENERATE' && !current.hasReference ? (
+                <p className="w-full text-[11px] text-muted-foreground">
+                  This poster&rsquo;s input image is not stored, so it cannot be customized. Upload the image again
+                  instead.
+                </p>
+              ) : (
+                <CustomizePanel
+                  id={`customize-${current.id}`}
+                  initial={settingsFromImage(current)}
+                  clients={clients}
+                  defaultQuality={quality}
+                  disabled={loading}
+                  note={`Makes a new ${MODE_BADGE[current.mode].toLowerCase()} image from the same ${
+                    current.hasReference ? 'inputs' : 'prompt'
+                  } — one more generation. This poster stays in History.`}
+                  onApply={(settings) => void handleCustomize(current, settings)}
+                />
+              )}
 
               <GenerationDetails
                 item={current}
@@ -986,7 +1075,7 @@ export function PosterStudioWorkspace({
                     </span>
                   </button>
 
-                  <div className="mt-2 pt-1.5 border-t border-border grid grid-cols-4 text-[11px]">
+                  <div className="mt-2 pt-1.5 border-t border-border grid grid-cols-6 text-[11px]">
                     <button
                       type="button"
                       disabled={loading}
@@ -1002,6 +1091,26 @@ export function PosterStudioWorkspace({
                       className="flex items-center justify-center gap-1 rounded-md py-1.5 text-muted-foreground hover:text-brand-to hover:bg-muted font-medium disabled:opacity-50"
                     >
                       <Copy className="w-3.5 h-3.5" /> Vary
+                    </button>
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => attachHistoryImage(item, 'MIX')}
+                      aria-label="Use as the base of a Mix"
+                      title="Mix: use as the base"
+                      className="flex items-center justify-center rounded-md py-1.5 text-muted-foreground hover:text-primary hover:bg-muted disabled:opacity-50"
+                    >
+                      <Combine className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => attachHistoryElement(item)}
+                      aria-label="Use as the element reference of a Mix"
+                      title="Mix ref: take elements from this poster"
+                      className="flex items-center justify-center rounded-md py-1.5 text-muted-foreground hover:text-primary hover:bg-muted disabled:opacity-50"
+                    >
+                      <Shapes className="w-3.5 h-3.5" />
                     </button>
                     <a
                       href={studioImageUrl(item.id, { download: true })}
@@ -1070,7 +1179,22 @@ function GenerationDetails({
               }}
               className="w-12 h-16 object-cover rounded border border-border bg-muted"
             />
-            <p className="text-[9px] text-muted-foreground text-center">Input</p>
+            <p className="text-[9px] text-muted-foreground text-center">{item.mode === 'MIX' ? 'Base' : 'Input'}</p>
+          </div>
+        )}
+        {item.hasElementReference && (
+          <div className="shrink-0 space-y-1">
+            {/* eslint-disable-next-line @next/next/no-img-element -- session-gated Drive proxy */}
+            <img
+              src={studioImageUrl(item.id, { variant: 'element-reference', width: 160 })}
+              alt="Element reference"
+              loading="lazy"
+              onError={(event) => {
+                event.currentTarget.style.visibility = 'hidden';
+              }}
+              className="w-12 h-16 object-cover rounded border border-border bg-muted"
+            />
+            <p className="text-[9px] text-muted-foreground text-center">Elements</p>
           </div>
         )}
         <div className="min-w-0 space-y-1">
@@ -1080,6 +1204,7 @@ function GenerationDetails({
           <p className="text-[10px] text-muted-foreground">
             {item.model} · quality {item.quality} · {item.size}
             {item.textFree ? ' · text-free' : ''}
+            {item.festival ? ` · ${findStudioFestival(item.festival)?.label ?? item.festival}` : ''}
           </p>
           {item.hasFinal ? (
             <p className="text-[10px] text-muted-foreground">
@@ -1107,11 +1232,11 @@ function GenerationDetails({
                 onClick={onSelectParent}
                 className="text-[10px] text-brand-to hover:underline font-medium"
               >
-                {item.mode === 'EDIT' ? 'Edited from' : 'Variation of'} an earlier poster — view it
+                {lineageLabel(item.mode)} an earlier poster — view it
               </button>
             ) : (
               <p className="text-[10px] text-muted-foreground">
-                {item.mode === 'EDIT' ? 'Edited from' : 'Variation of'} an earlier poster
+                {lineageLabel(item.mode)} an earlier poster
               </p>
             ))}
         </div>
@@ -1125,6 +1250,153 @@ function GenerationDetails({
           {item.sentPrompt}
         </p>
       </details>
+    </div>
+  );
+}
+
+/** How a child poster relates to the parent it was made from. */
+function lineageLabel(mode: StudioHistoryItem['mode']): string {
+  switch (mode) {
+    case 'EDIT':
+      return 'Edited from';
+    case 'MIX':
+      return 'Mixed onto';
+    case 'GENERATE':
+      return 'Regenerated from';
+    default:
+      return 'Variation of';
+  }
+}
+
+/**
+ * One input image slot: the attached image with a remove button, or an upload
+ * button. The object URL for an upload is created and revoked by the same
+ * effect, so a StrictMode remount cannot revoke a URL an <img> is still showing.
+ */
+function AttachmentSlot({
+  label,
+  required,
+  hint,
+  uploadCta,
+  attachment,
+  disabled,
+  onFile,
+  onRemove,
+}: {
+  label: string;
+  required: boolean;
+  hint: string;
+  uploadCta: string;
+  attachment: Attachment | null;
+  disabled: boolean;
+  onFile: (file: File) => void;
+  onRemove: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [uploadPreviewUrl, setUploadPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (attachment?.kind !== 'upload') {
+      setUploadPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(attachment.file);
+    setUploadPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [attachment]);
+
+  const preview = !attachment
+    ? null
+    : attachment.kind === 'upload'
+      ? uploadPreviewUrl
+      : studioImageUrl(attachment.generationId, {
+          // A history poster is sent to the model as its RAW artwork, so that is
+          // what the attachment shows.
+          variant:
+            attachment.kind === 'generation-reference'
+              ? 'reference'
+              : attachment.kind === 'generation-element-reference'
+                ? 'element-reference'
+                : 'raw',
+          width: 160,
+        });
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
+          <ImageIcon className="w-3.5 h-3.5 text-brand-to" /> {label}
+        </label>
+        <span
+          className={cn(
+            'text-[10px] font-medium',
+            required && !attachment ? 'text-destructive' : 'text-muted-foreground',
+          )}
+        >
+          {required ? 'Required' : 'Optional'}
+        </span>
+      </div>
+
+      <input
+        ref={inputRef}
+        type="file"
+        accept={STUDIO_IMAGE_MIME_TYPES.join(',')}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          // Cleared so choosing the same file again still fires a change.
+          event.target.value = '';
+          if (file) onFile(file);
+        }}
+        className="hidden"
+      />
+
+      {attachment ? (
+        <div className="relative border border-border bg-muted/40 rounded-lg p-2 flex items-center gap-3">
+          {preview ? (
+            // eslint-disable-next-line @next/next/no-img-element -- a local object URL or a session-gated Drive proxy; next/image can serve neither
+            <img
+              src={preview}
+              alt={`Attached: ${label}`}
+              onError={(event) => {
+                event.currentTarget.style.visibility = 'hidden';
+              }}
+              className="w-12 h-16 object-cover rounded border border-border shadow-sm bg-muted shrink-0"
+            />
+          ) : (
+            <div className="w-12 h-16 rounded border border-border bg-muted shrink-0" />
+          )}
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-medium text-foreground truncate">{attachment.label}</p>
+            <p className="text-[10px] text-muted-foreground leading-snug">{hint}</p>
+          </div>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={onRemove}
+            aria-label={`Remove ${label.toLowerCase()}`}
+            className="p-1 text-muted-foreground hover:text-destructive rounded-md transition-colors disabled:opacity-50"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => inputRef.current?.click()}
+          className={cn(
+            'w-full border border-dashed bg-background rounded-lg p-4 text-center transition-colors disabled:opacity-60',
+            required ? 'border-destructive/40 hover:border-destructive/70' : 'border-input hover:border-primary/50',
+          )}
+        >
+          <Upload className="w-5 h-5 text-muted-foreground mx-auto mb-1" />
+          <p className="text-xs font-medium text-foreground">{uploadCta}</p>
+          <p className="text-[10px] text-muted-foreground">
+            PNG, JPEG or WebP, up to {MAX_STUDIO_IMAGE_MB} MB
+            {required ? ' — or pick a poster in History' : ''}
+          </p>
+        </button>
+      )}
     </div>
   );
 }
@@ -1164,12 +1436,6 @@ function describeFooter(choice: StudioHistoryItem['footerBackground'], tone: Stu
   const toneLabel = tone === 'LIGHT' ? 'light' : 'dark';
   return choice === 'AUTO' ? `footer auto (${toneLabel})` : `footer ${toneLabel}`;
 }
-
-const FOOTER_OPTIONS: Array<{ value: StudioFooterBackground; label: string }> = [
-  { value: 'AUTO', label: 'Auto' },
-  { value: 'LIGHT', label: 'Light' },
-  { value: 'DARK', label: 'Dark' },
-];
 
 function Banner({
   tone,
@@ -1215,264 +1481,6 @@ const ELEMENT_LABELS: Record<string, string> = {
 
 function describeElement(element: string): string {
   return ELEMENT_LABELS[element] ?? element;
-}
-
-/** Everything the Brand Canvas actually has, ticked by default. Nothing is invented. */
-function defaultOverlayElements(summary: StudioBrandCanvasSummary): StudioOverlayElement[] {
-  const elements: StudioOverlayElement[] = [];
-  if (summary.logo.available && !summary.logo.loadError) elements.push('logo');
-  if (summary.tagline) elements.push('tagline');
-  if (summary.website) elements.push('website');
-  if (summary.phone) elements.push('phone');
-  return elements;
-}
-
-/**
- * The selected client's existing Brand Canvas: what is available, the logo as a
- * poster would draw it, the per-poster logo background, and which exact identity
- * elements the overlay adds. Read-only — Brand Canvas is edited on its own page.
- */
-function BrandCanvasPanel({
-  clientId,
-  summary,
-  loading,
-  error,
-  elements,
-  onElementsChange,
-  logoBackground,
-  onLogoBackgroundChange,
-  footerBackground,
-  onFooterBackgroundChange,
-  disabled,
-}: {
-  clientId: string;
-  summary: StudioBrandCanvasSummary | null;
-  loading: boolean;
-  error: string | null;
-  elements: StudioOverlayElement[];
-  onElementsChange: (elements: StudioOverlayElement[]) => void;
-  logoBackground: StudioLogoBackground;
-  onLogoBackgroundChange: (value: StudioLogoBackground) => void;
-  footerBackground: StudioFooterBackground;
-  onFooterBackgroundChange: (value: StudioFooterBackground) => void;
-  disabled: boolean;
-}) {
-  if (loading) {
-    return (
-      <div className="rounded-lg border border-border bg-muted/40 p-3 text-[11px] text-muted-foreground flex items-center gap-2">
-        <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading Brand Canvas…
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-[11px] text-destructive">
-        {error}
-      </div>
-    );
-  }
-  if (!summary) return null;
-
-  const logoUsable = summary.logo.available && !summary.logo.loadError;
-  const toggle = (element: StudioOverlayElement, on: boolean) =>
-    onElementsChange(on ? [...elements.filter((e) => e !== element), element] : elements.filter((e) => e !== element));
-
-  const checklist: Array<{ label: string; ok: boolean; detail?: React.ReactNode }> = [
-    { label: 'Logo', ok: logoUsable, detail: summary.logo.loadError ? 'unreadable' : undefined },
-    {
-      label: 'Colors',
-      ok: summary.colors.length > 0,
-      detail:
-        summary.colors.length > 0 ? (
-          <span className="flex gap-0.5">
-            {summary.colors.map((color) => (
-              <span
-                key={`${color.role}-${color.hex}`}
-                title={`${color.role} ${color.hex}`}
-                className="inline-block w-2.5 h-2.5 rounded-sm border border-border"
-                style={{ backgroundColor: color.hex }}
-              />
-            ))}
-          </span>
-        ) : undefined,
-    },
-    { label: 'Typography', ok: summary.typography !== null, detail: summary.typography?.headingFont },
-    { label: 'Tagline', ok: Boolean(summary.tagline) },
-    { label: 'Website', ok: Boolean(summary.website) },
-    { label: 'Phone', ok: Boolean(summary.phone), detail: summary.phoneIsFallback ? 'from WhatsApp' : undefined },
-    { label: 'Layout rules', ok: summary.layoutDirectives.length > 0, detail: summary.layoutDirectives.length || undefined },
-    { label: 'Industry', ok: Boolean(summary.industry), detail: summary.industry ?? undefined },
-  ];
-
-  const selectable: Array<{ element: StudioOverlayElement; label: string; available: boolean; value?: string | null }> = [
-    { element: 'logo', label: 'Logo', available: logoUsable },
-    { element: 'tagline', label: 'Tagline', available: Boolean(summary.tagline), value: summary.tagline },
-    { element: 'website', label: 'Website', available: Boolean(summary.website), value: summary.website },
-    { element: 'phone', label: 'Phone', available: Boolean(summary.phone), value: summary.phone },
-  ];
-
-  return (
-    <div className="rounded-lg border border-border bg-background p-3 space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">Brand Canvas</p>
-        <a
-          href={`/admin/clients/${encodeURIComponent(clientId)}/brand?return=${encodeURIComponent('/admin/poster-studio')}`}
-          className="text-[10px] text-brand-to hover:underline font-medium"
-        >
-          Edit in Brand Canvas
-        </a>
-      </div>
-
-      <ul className="grid grid-cols-2 gap-x-3 gap-y-1">
-        {checklist.map((item) => (
-          <li key={item.label} className="flex items-center gap-1.5 text-[11px] min-w-0">
-            {item.ok ? (
-              <Check className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
-            ) : (
-              <Minus className="w-3 h-3 text-muted-foreground shrink-0" />
-            )}
-            <span className={cn('shrink-0', item.ok ? 'text-foreground' : 'text-muted-foreground')}>{item.label}</span>
-            {item.ok && item.detail !== undefined ? (
-              <span className="text-[10px] text-muted-foreground truncate">{item.detail}</span>
-            ) : !item.ok ? (
-              <span className="text-[10px] text-muted-foreground truncate">{item.detail ?? 'not set'}</span>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-
-      {summary.logo.loadError && <p className="text-[10px] text-destructive leading-snug">{summary.logo.loadError}</p>}
-
-      {logoUsable && elements.includes('logo') && (
-        <div className="flex items-start gap-3">
-          <div
-            className="w-20 h-14 shrink-0 rounded border border-border flex items-center justify-center overflow-hidden"
-            style={{
-              backgroundImage: 'repeating-conic-gradient(rgba(127,127,127,0.25) 0% 25%, transparent 0% 50%)',
-              backgroundSize: '10px 10px',
-            }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element -- session-gated route; the logo's storage is never exposed */}
-            <img
-              key={logoBackground}
-              src={studioClientLogoUrl(clientId, logoBackground)}
-              alt={`${summary.companyName} logo`}
-              className="max-w-full max-h-full object-contain"
-            />
-          </div>
-          <fieldset className="space-y-1 text-[11px]" disabled={disabled}>
-            <legend className="text-[10px] font-medium text-foreground mb-0.5">Logo background</legend>
-            <label className="flex items-center gap-1.5 cursor-pointer">
-              <input
-                type="radio"
-                name="studio-logo-background"
-                checked={logoBackground === 'ORIGINAL'}
-                onChange={() => onLogoBackgroundChange('ORIGINAL')}
-              />
-              Keep original
-            </label>
-            <label
-              className={cn(
-                'flex items-center gap-1.5',
-                summary.logo.removal.possible ? 'cursor-pointer' : 'opacity-60 cursor-not-allowed',
-              )}
-            >
-              <input
-                type="radio"
-                name="studio-logo-background"
-                checked={logoBackground === 'REMOVED'}
-                disabled={!summary.logo.removal.possible}
-                onChange={() => onLogoBackgroundChange('REMOVED')}
-              />
-              Remove background
-            </label>
-            {summary.logo.removal.possible ? (
-              <p className="text-[10px] text-muted-foreground leading-snug">
-                {summary.logo.removal.via === 'brand-canvas-removed'
-                  ? 'Uses the transparent logo already in Brand Canvas.'
-                  : summary.logo.removal.via === 'keyed-for-poster'
-                    ? 'Removed for this poster only; Brand Canvas is not changed.'
-                    : 'This logo is already transparent.'}
-              </p>
-            ) : (
-              <p className="text-[10px] text-muted-foreground leading-snug">{summary.logo.removal.message}</p>
-            )}
-          </fieldset>
-        </div>
-      )}
-
-      <div className="space-y-1 border-t border-border pt-2">
-        <p className="text-[10px] font-medium text-foreground">Exact identity on the poster</p>
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-          {selectable.map((option) => (
-            <label
-              key={option.element}
-              className={cn(
-                'flex items-center gap-1.5 text-[11px] min-w-0',
-                option.available ? 'cursor-pointer text-foreground' : 'text-muted-foreground cursor-not-allowed',
-              )}
-              title={option.value ?? undefined}
-            >
-              <input
-                type="checkbox"
-                disabled={disabled || !option.available}
-                checked={option.available && elements.includes(option.element)}
-                onChange={(event) => toggle(option.element, event.target.checked)}
-              />
-              <span className="shrink-0">{option.label}</span>
-              {option.value && <span className="text-[10px] text-muted-foreground truncate">{option.value}</span>}
-            </label>
-          ))}
-        </div>
-        <p className="text-[10px] text-muted-foreground leading-snug">
-          {elements.length > 0
-            ? `Drawn exactly from Brand Canvas after generation, never by the AI, in a footer along the bottom.${
-                elements.includes('logo') && summary.logo.includesName ? '' : ' The company name is added too.'
-              }`
-            : 'No identity overlay — the poster is the AI artwork only.'}
-        </p>
-      </div>
-
-      {elements.length > 0 && (
-        <div className="space-y-1 border-t border-border pt-2">
-          <p className="text-[10px] font-medium text-foreground" id="studio-footer-label">
-            Footer background
-          </p>
-          <div
-            role="radiogroup"
-            aria-labelledby="studio-footer-label"
-            className="grid grid-cols-3 gap-1 bg-muted/60 p-1 rounded-md border border-border text-[11px]"
-          >
-            {FOOTER_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="radio"
-                aria-checked={footerBackground === option.value}
-                disabled={disabled}
-                onClick={() => onFooterBackgroundChange(option.value)}
-                className={cn(
-                  'py-1 rounded font-medium transition-all disabled:opacity-60',
-                  footerBackground === option.value
-                    ? 'bg-card text-foreground shadow-sm font-semibold'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-[10px] text-muted-foreground leading-snug">
-            {footerBackground === 'AUTO'
-              ? 'Light or dark, chosen from the finished artwork so the footer blends in.'
-              : footerBackground === 'LIGHT'
-                ? 'A light footer with dark text.'
-                : 'A dark footer with light text.'}
-          </p>
-        </div>
-      )}
-    </div>
-  );
 }
 
 function describeItem(item: StudioHistoryItem): string {

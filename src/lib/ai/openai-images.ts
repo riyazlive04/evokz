@@ -64,6 +64,12 @@ export interface StudioImageRequest {
   /** When present the request goes through `images.edit` with this image attached. */
   image?: StudioImageInput | null;
   /**
+   * Further input images sent after `image`, in order. Edit only: the model sees
+   * `image` as the first image and these as the second onwards, which is how
+   * Mix names "the base" and "the element reference". Ignored without `image`.
+   */
+  extraImages?: StudioImageInput[] | null;
+  /**
    * Overrides `POSTER_STUDIO_IMAGE_QUALITY` for this request. Clone mode renders
    * at `high`: small type redrawn at `low` is where a template stops looking like
    * itself.
@@ -134,11 +140,21 @@ export async function renderStudioImage(request: StudioImageRequest): Promise<St
     const response: ImagesResponse = request.image
       ? await client.images.edit({
           model: STUDIO_IMAGE_MODEL,
-          image: await OpenAI.toFile(
-            request.image.bytes,
-            `input.${extensionFor(request.image.mimeType)}`,
-            { type: request.image.mimeType },
-          ),
+          // A single file unless extra images were given, so every existing
+          // caller's request is unchanged.
+          image: request.extraImages?.length
+            ? await Promise.all(
+                [request.image, ...request.extraImages].map((input, index) =>
+                  OpenAI.toFile(input.bytes, `input-${index + 1}.${extensionFor(input.mimeType)}`, {
+                    type: input.mimeType,
+                  }),
+                ),
+              )
+            : await OpenAI.toFile(
+                request.image.bytes,
+                `input.${extensionFor(request.image.mimeType)}`,
+                { type: request.image.mimeType },
+              ),
           prompt: request.prompt,
           n: 1,
           size: request.size,

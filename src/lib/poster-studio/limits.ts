@@ -31,7 +31,15 @@ export const STUDIO_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 export const MIN_STUDIO_PROMPT_LENGTH = 3;
 export const MAX_STUDIO_PROMPT_LENGTH = 4_000;
 
-export const STUDIO_MODES = ['GENERATE', 'EDIT', 'VARIATION'] as const;
+export const STUDIO_MODES = ['GENERATE', 'EDIT', 'VARIATION', 'MIX'] as const;
+
+/**
+ * Per-image quality choices. Absent, a request uses POSTER_STUDIO_IMAGE_QUALITY
+ * (see `getStudioImageQuality`). Mirrors the model's own values minus `auto`,
+ * which would hide what the image cost.
+ */
+export const STUDIO_QUALITIES = ['low', 'medium', 'high'] as const;
+export type StudioQuality = (typeof STUDIO_QUALITIES)[number];
 export type StudioMode = (typeof STUDIO_MODES)[number];
 
 /**
@@ -46,6 +54,11 @@ export type StudioMode = (typeof STUDIO_MODES)[number];
  *   1152x2048 — 72·16 × 128·16, exactly 9:16, downsamples cleanly to 1080x1920
  *   1024x1024 — the standard square size every GPT image model supports
  *   2048x1152 — the 9:16 frame rotated
+ *   1280x1600 — 4:5, the size campaign template clones measured best at
+ *   1024x1536 — 2:3, likewise (see `FIXED_SIZES` in clone-size.ts)
+ *
+ * 4:5 and 2:3 exist so a studio image can be saved to a campaign day whose
+ * template is that shape — Save to Day refuses any other shape.
  *
  * These sizes are only valid for gpt-image-2; `gpt-image-1`/`1.5` accept only
  * the three standard sizes. The model is pinned in `openai-images.ts` for that
@@ -55,6 +68,8 @@ export const STUDIO_ASPECT_RATIOS = {
   '9:16': { label: '9:16 Story', hint: 'Vertical', size: '1152x2048', orientation: 'vertical 9:16' },
   '1:1': { label: '1:1 Square', hint: 'Feed post', size: '1024x1024', orientation: 'square 1:1' },
   '16:9': { label: '16:9 Banner', hint: 'Landscape', size: '2048x1152', orientation: 'horizontal 16:9' },
+  '4:5': { label: '4:5 Portrait', hint: 'Feed portrait', size: '1280x1600', orientation: 'vertical 4:5' },
+  '2:3': { label: '2:3 Poster', hint: 'Print-style', size: '1024x1536', orientation: 'vertical 2:3' },
 } as const;
 
 export type StudioAspectRatio = keyof typeof STUDIO_ASPECT_RATIOS;
@@ -71,6 +86,8 @@ export const STUDIO_SOURCE_KINDS = [
   'generation-output',
   /** The input image stored on an existing generation — reuses an earlier upload. */
   'generation-reference',
+  /** Mix only: the element reference stored on an existing generation — reuses an earlier upload. */
+  'generation-element-reference',
 ] as const;
 
 export type StudioSourceKind = (typeof STUDIO_SOURCE_KINDS)[number];
@@ -134,6 +151,10 @@ export function identityBandFraction(aspectRatio: StudioAspectRatio): number {
       return 0.15;
     case '16:9':
       return 0.18;
+    case '4:5':
+      return 0.14;
+    case '2:3':
+      return 0.13;
   }
 }
 
@@ -160,14 +181,19 @@ export function studioClientLogoUrl(
  *
  *   final      the composited poster when there is one, else the raw artwork (default)
  *   raw        exactly what the image model returned — what Edit and Variation send
- *   reference  the input image sent with the request
+ *   reference  the input image sent with the request (Mix: the base)
+ *   element-reference  Mix only: the second image, elements were taken from
  */
 export function studioImageUrl(
   generationId: string,
-  options: { variant?: 'final' | 'raw' | 'reference'; width?: number; download?: boolean } = {},
+  options: {
+    variant?: 'final' | 'raw' | 'reference' | 'element-reference';
+    width?: number;
+    download?: boolean;
+  } = {},
 ): string {
   const params = new URLSearchParams();
-  if (options.variant === 'reference' || options.variant === 'raw') params.set('variant', options.variant);
+  if (options.variant && options.variant !== 'final') params.set('variant', options.variant);
   if (options.download) {
     params.set('full', '1');
     params.set('download', '1');

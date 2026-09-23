@@ -4,62 +4,41 @@ import type { PosterStudioMode } from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 
-import {
-  assertStudioImageConfigured,
-  renderStudioImage,
-  type StudioImageInput,
-  type StudioImageResult,
-} from '@/lib/ai/openai-images';
-import {
-  buildEditPrompt,
-  buildGeneratePrompt,
-  buildVariationPrompt,
-  VARIATION_APPROACHES,
-} from '@/lib/ai/studio-prompts';
+import { assertStudioImageConfigured } from '@/lib/ai/openai-images';
 import { countCampaignVersionsUsingStudioGeneration } from '@/lib/campaign/poster-generation-service';
-import { MissingEnvError } from '@/lib/env';
 import {
   loadStudioBrandCanvas,
   summarizeStudioBrandCanvas,
-  type StudioBrandCanvas,
   type StudioBrandCanvasSummary,
 } from '@/lib/poster-studio/brand-context';
+import { StudioError } from '@/lib/poster-studio/errors';
+import { STUDIO_FESTIVAL_KEYS, type StudioFestivalKey } from '@/lib/poster-studio/festivals';
 import {
-  composeStudioPoster,
-  prepareStudioOverlay,
-  type ComposedPoster,
-  type StudioOverlayPlan,
-} from '@/lib/poster-studio/compose';
-import { StudioError, type StudioErrorKind } from '@/lib/poster-studio/errors';
+  generateStudioPoster,
+  NO_SOURCE,
+  toStudioError,
+  withStudioDatabase as withDatabase,
+  type ResolvedSource,
+  type StudioGenerateResult,
+} from '@/lib/poster-studio/generate';
+import { toStudioDatabaseError } from '@/lib/poster-studio/history';
+import { prepareStudioInputImage } from '@/lib/poster-studio/images';
 import {
-  studioHistorySelect,
-  toStudioDatabaseError,
-  toStudioHistoryItem,
-  type StudioHistoryItem,
-} from '@/lib/poster-studio/history';
-import { prepareStudioInputImage, readStudioImageSize, reduceVariationSource } from '@/lib/poster-studio/images';
-import {
-  identityBandFraction,
   MAX_STUDIO_PROMPT_LENGTH,
   MIN_STUDIO_PROMPT_LENGTH,
   STUDIO_ASPECT_RATIO_KEYS,
-  STUDIO_ASPECT_RATIOS,
   STUDIO_FOOTER_BACKGROUNDS,
   STUDIO_LOGO_BACKGROUNDS,
   STUDIO_MODES,
   STUDIO_OVERLAY_ELEMENTS,
+  STUDIO_QUALITIES,
   STUDIO_SOURCE_KINDS,
   type StudioAspectRatio,
+  type StudioMode,
+  type StudioSourceKind,
 } from '@/lib/poster-studio/limits';
-import {
-  readStudioFile,
-  resolveStudioFolder,
-  storeStudioFile,
-  trashStudioFiles,
-  trashUnreferencedStudioFiles,
-} from '@/lib/poster-studio/storage';
+import { readStudioFile, trashUnreferencedStudioFiles } from '@/lib/poster-studio/storage';
 import { prisma } from '@/lib/prisma';
-import { recordOpenAiImageUsage } from '@/lib/usage';
 
 /**
  * Server Actions for the AI Poster Studio.
@@ -71,28 +50,7 @@ import { recordOpenAiImageUsage } from '@/lib/usage';
  * reaches the browser as an opaque digest.
  */
 
-export type StudioGenerateResult =
-  | {
-      ok: true;
-      generation: StudioHistoryItem;
-      /**
-       * Set when the raw artwork was generated and saved but the identity overlay
-       * could not be composited afterwards. The pre-flight dry run makes this
-       * unlikely; the raw artwork is kept either way.
-       */
-      warning?: string;
-    }
-  | {
-      ok: false;
-      kind: StudioErrorKind;
-      error: string;
-      /**
-       * Present only when the image was generated — and paid for — but could not
-       * be kept. The one time image bytes travel back to the browser: a single
-       * image, once, so the operator does not lose work they were billed for.
-       */
-      unsaved?: { dataUri: string; fileName: string };
-    };
+export type { StudioGenerateResult };
 
 export type StudioDeleteResult = { ok: true } | { ok: false; error: string };
 
@@ -107,7 +65,7 @@ const optionalUuid = z
   .transform((value) => value || null);
 
 const requestSchema = z.object({
-  mode: z.enum(STUDIO_MODES, { errorMap: () => ({ message: 'Choose Generate, Edit or Variation.' }) }),
+  mode: z.enum(STUDIO_MODES, { errorMap: () => ({ message: 'Choose Generate, Edit, Variation or Mix.' }) }),
   prompt: z
     .string()
     .trim()
@@ -120,6 +78,9 @@ const requestSchema = z.object({
   textFree: z.enum(['0', '1']).transform((value) => value === '1'),
   sourceKind: z.enum(STUDIO_SOURCE_KINDS),
   sourceGenerationId: optionalUuid,
+  /** MIX only: where the element reference — the second image — comes from. */
+  elementSourceKind: z.enum(STUDIO_SOURCE_KINDS),
+  elementSourceGenerationId: optionalUuid,
   /** Comma-separated subset of STUDIO_OVERLAY_ELEMENTS; empty means no identity overlay. */
   overlayElements: z
     .string()
@@ -138,211 +99,76 @@ const requestSchema = z.object({
   footerBackground: z.enum(STUDIO_FOOTER_BACKGROUNDS, {
     errorMap: () => ({ message: 'Choose a footer background: Auto, Light or Dark.' }),
   }),
+  /** Festival key, or empty for none. */
+  festival: z
+    .union([z.literal(''), z.enum(STUDIO_FESTIVAL_KEYS as [StudioFestivalKey, ...StudioFestivalKey[]])], {
+      errorMap: () => ({ message: 'Unknown festival. Choose one from the list.' }),
+    })
+    .transform((value) => value || null),
+  /** Per-image quality, or empty for the server default. */
+  quality: z
+    .union([z.literal(''), z.enum(STUDIO_QUALITIES)], { errorMap: () => ({ message: 'Choose Low, Medium or High quality.' }) })
+    .transform((value) => value || null),
+  /**
+   * Customize: the History item this request remakes with new settings. The new
+   * poster is recorded as its child, whatever its mode.
+   */
+  redoOfGenerationId: optionalUuid,
 });
 
 type StudioRequest = z.infer<typeof requestSchema>;
-
-/** The input image for a request, and how the new row should record it. */
-interface ResolvedSource {
-  image: StudioImageInput | null;
-  /** The input is a fresh upload that still has to be written to Drive. */
-  needsUpload: boolean;
-  /** Drive file already holding the input, when it came from history. */
-  existingFileId: string | null;
-  parentGenerationId: string | null;
-  /** Variation of a History item only: the brief its lineage was generated from. */
-  campaignBrief: string | null;
-}
 
 /** How far up a lineage the Variation brief lookup walks before giving up. */
 const MAX_LINEAGE_HOPS = 8;
 
 export async function generateStudioPosterAction(formData: FormData): Promise<StudioGenerateResult> {
-  let rendered: StudioImageResult | null = null;
-  let persisted = false;
-  const writtenThisRequest: string[] = [];
-
+  let request: StudioRequest;
+  let source: ResolvedSource;
+  let elementSource: ResolvedSource | null = null;
   try {
-    const request = parseRequest(formData);
+    request = parseRequest(formData);
     // Cheapest check first: without a key nothing else is worth doing.
     assertStudioImageConfigured();
-    const client = request.clientId
-      ? await withDatabase(() => loadStudioBrandCanvas(request.clientId!), 'Loading the Brand Canvas')
-      : null;
     // RAW artwork of a history item, never its composited final — see `resolveSource`.
-    const source = await resolveSource(request, formData);
-
-    // ---- Pre-flight: everything deterministic, before any spend -------------
-    // The identity overlay's prerequisites — each selected element present in
-    // Brand Canvas, the logo readable, the chosen logo background achievable,
-    // the brand fonts loadable, and a full dry-run composite.
-    const overlay: StudioOverlayPlan | null =
-      client && request.overlayElements.length > 0
-        ? await prepareStudioOverlay(
-            client,
-            {
-              elements: request.overlayElements,
-              logoBackground: request.logoBackground,
-              footerBackground: request.footerBackground,
-            },
-            request.aspectRatio,
-          )
-        : null;
-
-    // A request whose image cannot be stored must not be paid for.
-    const folderId = await resolveStudioFolder(client?.companyName ?? null);
-
-    const format = STUDIO_ASPECT_RATIOS[request.aspectRatio];
-    const approach = request.mode === 'VARIATION' ? await chooseVariationApproach(source.parentGenerationId) : 0;
-    const sentPrompt = buildPrompt(request, client, source, overlay !== null, approach);
-
-    // Variation sends a reduced preview of its source, so the model takes the
-    // campaign from it rather than the layout (see `reduceVariationSource`). The
-    // stored input stays the full image.
-    const modelImage =
-      request.mode === 'VARIATION' && source.image ? await reduceVariationSource(source.image) : source.image;
-
-    rendered = await renderStudioImage({ prompt: sentPrompt, size: format.size, image: modelImage });
-
-    // Recorded before storage: the money is spent whether or not the image is kept.
-    await recordOpenAiImageUsage(rendered.usage, rendered.model, { clientId: client?.clientId ?? null });
-
-    // Bytes that do not decode are not an image, whatever the response said.
-    // Nothing is stored and nothing is offered for download.
-    const dimensions = await readStudioImageSize(rendered.bytes);
-    if (!dimensions) {
-      rendered = null;
-      throw new StudioError(
-        'provider',
-        'OpenAI returned an image that could not be read. Nothing was saved — try again.',
+    source = await resolveSource(request.mode, request.sourceKind, request.sourceGenerationId, formData.get('image'));
+    if (request.mode === 'MIX') {
+      elementSource = await resolveSource(
+        request.mode,
+        request.elementSourceKind,
+        request.elementSourceGenerationId,
+        formData.get('elementImage'),
+        { lineage: false },
       );
     }
-
-    // ---- FINAL poster: raw artwork + exact Brand Canvas identity ------------
-    let composed: ComposedPoster | null = null;
-    let warning: string | undefined;
-    if (overlay) {
-      try {
-        composed = await composeStudioPoster(rendered.bytes, overlay);
-      } catch (error) {
-        console.error('[studio:action] identity overlay failed after generation:', error);
-        warning =
-          'The artwork was generated and saved, but the brand identity overlay could not be drawn on it. The saved image has no logo or contact details.';
+    if (request.redoOfGenerationId) {
+      const original = await withDatabase(
+        () => prisma.posterStudioGeneration.findUnique({ where: { id: request.redoOfGenerationId! }, select: { id: true } }),
+        'Loading the poster to customize',
+      );
+      if (!original) {
+        throw new StudioError('validation', 'The poster you are customizing no longer exists. Choose another one in History.');
       }
     }
-
-    const stamp = fileStamp();
-    const imageDriveFileId = await storeStudioFile({
-      folderId,
-      fileName: `poster-studio-${stamp}-${request.mode.toLowerCase()}-raw.${extensionFor(rendered.mimeType)}`,
-      body: rendered.bytes,
-      mimeType: rendered.mimeType,
-    });
-    writtenThisRequest.push(imageDriveFileId);
-
-    let finalImageDriveFileId: string | null = null;
-    if (composed) {
-      finalImageDriveFileId = await storeStudioFile({
-        folderId,
-        fileName: `poster-studio-${stamp}-${request.mode.toLowerCase()}-final.png`,
-        body: composed.bytes,
-        mimeType: composed.mimeType,
-      });
-      writtenThisRequest.push(finalImageDriveFileId);
+  } catch (error) {
+    const failure = toStudioError(error);
+    if (failure.kind !== 'validation') {
+      console.error(`[studio:action] ${failure.kind}: ${failure.message}`, failure.cause ?? '');
     }
+    return { ok: false, kind: failure.kind, error: failure.message };
+  }
 
-    let referenceDriveFileId = source.existingFileId;
-    if (source.needsUpload && source.image) {
-      referenceDriveFileId = await storeStudioFile({
-        folderId,
-        fileName: `poster-studio-${stamp}-input.${extensionFor(source.image.mimeType)}`,
-        body: source.image.bytes,
-        mimeType: source.image.mimeType,
-      });
-      writtenThisRequest.push(referenceDriveFileId);
-    }
-
-    const row = await withDatabase(
-      () =>
-        prisma.posterStudioGeneration.create({
-          data: {
-            mode: request.mode,
-            prompt: request.prompt,
-            sentPrompt,
-            aspectRatio: request.aspectRatio,
-            size: format.size,
-            model: rendered!.model,
-            quality: rendered!.quality,
-            textFree: request.textFree,
-            imageDriveFileId,
-            imageMimeType: rendered!.mimeType,
-            width: dimensions.width,
-            height: dimensions.height,
-            referenceDriveFileId,
-            referenceMimeType: referenceDriveFileId ? (source.image?.mimeType ?? null) : null,
-            parentGenerationId: source.parentGenerationId,
-            clientId: client?.clientId ?? null,
-            // Per-poster choices only — the brand values stay on Client.
-            finalImageDriveFileId,
-            finalImageMimeType: composed ? composed.mimeType : null,
-            overlayElements: composed ? composed.drawn : [],
-            overlayPreset: composed && overlay ? overlay.preset : null,
-            logoBackground: composed && overlay?.logo ? overlay.logo.background : null,
-            footerBackground: composed && overlay ? overlay.footerBackground : null,
-            footerTone: composed ? composed.footerTone : null,
-          },
-          select: studioHistorySelect,
-        }),
-      'Saving to history',
-    );
-    // From here on the row references the Drive files: a later failure must
-    // never trash them or tell the operator the poster was not kept.
-    persisted = true;
-
+  const result = await generateStudioPoster(request, source, {
+    elementSource,
+    parentGenerationId: request.redoOfGenerationId,
+  });
+  if (result.ok) {
     try {
       revalidatePath('/admin/poster-studio');
     } catch (error) {
       console.warn('[studio:action] could not revalidate the studio page:', error instanceof Error ? error.message : error);
     }
-    return { ok: true, generation: toStudioHistoryItem(row), ...(warning ? { warning } : {}) };
-  } catch (error) {
-    const failure = toStudioError(error);
-
-    if (persisted) {
-      console.error('[studio:action] poster saved, but the response could not be built:', failure.cause ?? failure.message);
-      return {
-        ok: false,
-        kind: failure.kind,
-        error: 'The poster was generated and saved to History, but the page could not be updated. Reload to see it.',
-      };
-    }
-
-    if (!rendered) {
-      if (failure.kind !== 'validation') {
-        console.error(`[studio:action] ${failure.kind}: ${failure.message}`, failure.cause ?? '');
-      }
-      return { ok: false, kind: failure.kind, error: failure.message };
-    }
-
-    // The image exists and was billed; something after it failed. Remove any
-    // half-saved files so Drive holds nothing the history does not, and hand the
-    // image back once so the operator's paid work is not lost.
-    console.error(
-      `[studio:action] image generated but not kept (${failure.kind}): ${failure.message}`,
-      failure.cause ?? '',
-    );
-    await trashStudioFiles(writtenThisRequest);
-
-    return {
-      ok: false,
-      kind: failure.kind,
-      error: describeUnkeptImage(failure),
-      unsaved: {
-        dataUri: `data:${rendered.mimeType};base64,${rendered.bytes.toString('base64')}`,
-        fileName: `poster-studio-unsaved-${fileStamp()}.${extensionFor(rendered.mimeType)}`,
-      },
-    };
   }
+  return result;
 }
 
 /**
@@ -382,7 +208,12 @@ export async function deleteStudioGenerationAction(id: string): Promise<StudioDe
   try {
     const row = await prisma.posterStudioGeneration.findUnique({
       where: { id: parsed.data },
-      select: { imageDriveFileId: true, finalImageDriveFileId: true, referenceDriveFileId: true },
+      select: {
+        imageDriveFileId: true,
+        finalImageDriveFileId: true,
+        referenceDriveFileId: true,
+        elementReferenceDriveFileId: true,
+      },
     });
     // Already gone is the state the operator asked for.
     if (!row) return { ok: true };
@@ -404,6 +235,7 @@ export async function deleteStudioGenerationAction(id: string): Promise<StudioDe
       row.imageDriveFileId,
       row.finalImageDriveFileId,
       row.referenceDriveFileId,
+      row.elementReferenceDriveFileId,
     ]);
 
     revalidatePath('/admin/poster-studio');
@@ -433,9 +265,14 @@ function parseRequest(formData: FormData): StudioRequest {
     textFree: field('textFree') || '0',
     sourceKind: field('sourceKind') || 'none',
     sourceGenerationId: field('sourceGenerationId'),
+    elementSourceKind: field('elementSourceKind') || 'none',
+    elementSourceGenerationId: field('elementSourceGenerationId'),
     overlayElements: field('overlayElements'),
     logoBackground: field('logoBackground') || 'ORIGINAL',
     footerBackground: field('footerBackground') || 'AUTO',
+    festival: field('festival'),
+    quality: field('quality'),
+    redoOfGenerationId: field('redoOfGenerationId'),
   });
 
   if (!parsed.success) {
@@ -468,11 +305,25 @@ function parseRequest(formData: FormData): StudioRequest {
         'Variation needs a parent image. Upload an image, or choose Vary on a poster in History.',
       );
     }
+    if (request.mode === 'MIX') {
+      throw new StudioError(
+        'validation',
+        'Mix needs a base image. Upload the poster to change, or choose Mix on a poster in History.',
+      );
+    }
   }
 
+  if (request.mode === 'MIX' && request.elementSourceKind === 'none') {
+    throw new StudioError(
+      'validation',
+      'Mix needs a reference image to take elements from. Upload it, or pick one from History.',
+    );
+  }
+
+  const missingHistoryId = (kind: StudioSourceKind, id: string | null) => kind !== 'none' && kind !== 'upload' && !id;
   if (
-    (request.sourceKind === 'generation-output' || request.sourceKind === 'generation-reference') &&
-    !request.sourceGenerationId
+    missingHistoryId(request.sourceKind, request.sourceGenerationId) ||
+    (request.mode === 'MIX' && missingHistoryId(request.elementSourceKind, request.elementSourceGenerationId))
   ) {
     throw new StudioError('validation', 'The selected history image is missing its id. Select it again.');
   }
@@ -480,13 +331,23 @@ function parseRequest(formData: FormData): StudioRequest {
   return request;
 }
 
-async function resolveSource(request: StudioRequest, formData: FormData): Promise<ResolvedSource> {
-  switch (request.sourceKind) {
+/**
+ * One input image of a request. `lineage: false` is for Mix's element reference:
+ * the result is a child of its base, never of the image it borrowed from.
+ */
+async function resolveSource(
+  mode: StudioMode,
+  kind: StudioSourceKind,
+  sourceGenerationId: string | null,
+  file: FormDataEntryValue | null,
+  options: { lineage?: boolean } = {},
+): Promise<ResolvedSource> {
+  const lineage = options.lineage ?? true;
+  switch (kind) {
     case 'none':
-      return { image: null, needsUpload: false, existingFileId: null, parentGenerationId: null, campaignBrief: null };
+      return NO_SOURCE;
 
     case 'upload': {
-      const file = formData.get('image');
       if (!(file instanceof File) || file.size === 0) {
         throw new StudioError('validation', 'Choose an image file to upload.');
       }
@@ -505,8 +366,9 @@ async function resolveSource(request: StudioRequest, formData: FormData): Promis
     }
 
     case 'generation-output':
-    case 'generation-reference': {
-      const sourceId = request.sourceGenerationId!;
+    case 'generation-reference':
+    case 'generation-element-reference': {
+      const sourceId = sourceGenerationId!;
       const row = await withDatabase(
         () =>
           prisma.posterStudioGeneration.findUnique({
@@ -520,6 +382,8 @@ async function resolveSource(request: StudioRequest, formData: FormData): Promis
               imageMimeType: true,
               referenceDriveFileId: true,
               referenceMimeType: true,
+              elementReferenceDriveFileId: true,
+              elementReferenceMimeType: true,
             },
           }),
         'Loading the selected history image',
@@ -531,12 +395,15 @@ async function resolveSource(request: StudioRequest, formData: FormData): Promis
         );
       }
 
-      const useOutput = request.sourceKind === 'generation-output';
+      const useOutput = kind === 'generation-output';
       // `imageDriveFileId` is the RAW artwork. The composited final is never sent
       // back to the model: it would redraw — and so corrupt — the exact logo and
       // contact details, which are composited afresh on the new result instead.
-      const fileId = useOutput ? row.imageDriveFileId : row.referenceDriveFileId;
-      const mimeType = useOutput ? row.imageMimeType : row.referenceMimeType;
+      const [fileId, mimeType] = useOutput
+        ? [row.imageDriveFileId, row.imageMimeType]
+        : kind === 'generation-element-reference'
+          ? [row.elementReferenceDriveFileId, row.elementReferenceMimeType]
+          : [row.referenceDriveFileId, row.referenceMimeType];
       if (!fileId || !mimeType) {
         throw new StudioError('validation', 'That history item has no stored input image to reuse. Upload the image again.');
       }
@@ -547,8 +414,8 @@ async function resolveSource(request: StudioRequest, formData: FormData): Promis
         existingFileId: fileId,
         // Lineage means "made from that poster". Only an edit or a variation of
         // another generation's output is one; a style reference is not.
-        parentGenerationId: useOutput && request.mode !== 'GENERATE' ? row.id : null,
-        campaignBrief: useOutput && request.mode === 'VARIATION' ? await findCampaignBrief(row) : null,
+        parentGenerationId: lineage && useOutput && mode !== 'GENERATE' ? row.id : null,
+        campaignBrief: lineage && useOutput && mode === 'VARIATION' ? await findCampaignBrief(row) : null,
       };
     }
   }
@@ -581,115 +448,4 @@ async function findCampaignBrief(row: {
     console.warn('[studio:action] could not read the campaign brief for a variation:', error instanceof Error ? error.message : error);
   }
   return null;
-}
-
-/**
- * Which of `VARIATION_APPROACHES` a new Variation uses: the next one for its
- * parent, so successive variations of one poster each take a different
- * approach. Offset by the parent id, so first variations of different posters do
- * not all start with the same one. An uploaded source has no parent and rotates
- * with the studio's variation count instead. Deterministic, and recorded in the
- * sent prompt.
- */
-async function chooseVariationApproach(parentGenerationId: string | null): Promise<number> {
-  try {
-    const siblings = await prisma.posterStudioGeneration.count({
-      where: parentGenerationId ? { mode: 'VARIATION', parentGenerationId } : { mode: 'VARIATION' },
-    });
-    const offset = parentGenerationId
-      ? [...parentGenerationId].reduce((sum, character) => sum + character.charCodeAt(0), 0)
-      : 0;
-    return (siblings + offset) % VARIATION_APPROACHES.length;
-  } catch (error) {
-    // Context for the prompt only; never a reason to stop the request.
-    console.warn('[studio:action] could not count earlier variations:', error instanceof Error ? error.message : error);
-    return 0;
-  }
-}
-
-function buildPrompt(
-  request: StudioRequest,
-  client: StudioBrandCanvas | null,
-  source: ResolvedSource,
-  withIdentityOverlay: boolean,
-  variationApproach: number,
-): string {
-  // Only when exact identity will be composited: the model then keeps the band
-  // clear and draws no logo, name, tagline, phone, URL or QR code itself.
-  const identityBand = withIdentityOverlay ? identityBandFraction(request.aspectRatio) : null;
-
-  switch (request.mode) {
-    case 'GENERATE':
-      return buildGeneratePrompt({
-        brief: request.prompt,
-        aspectRatio: request.aspectRatio,
-        textFree: request.textFree,
-        brand: client?.brand ?? null,
-        hasReference: source.image !== null,
-        identityBandFraction: identityBand,
-      });
-    case 'EDIT':
-      // No brand block: an edit preserves the design it is given. The Brand
-      // Canvas still decides what is composited on the result.
-      return buildEditPrompt({
-        instruction: request.prompt,
-        aspectRatio: request.aspectRatio,
-        textFree: request.textFree,
-        identityBandFraction: identityBand,
-      });
-    case 'VARIATION':
-      return buildVariationPrompt({
-        direction: request.prompt,
-        aspectRatio: request.aspectRatio,
-        textFree: request.textFree,
-        brand: client?.brand ?? null,
-        identityBandFraction: identityBand,
-        campaignBrief: source.campaignBrief,
-        approach: variationApproach,
-      });
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-async function withDatabase<T>(run: () => Promise<T>, context: string): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    throw toStudioDatabaseError(error, context);
-  }
-}
-
-function toStudioError(error: unknown): StudioError {
-  if (error instanceof StudioError) return error;
-  if (error instanceof MissingEnvError) {
-    return new StudioError('config', `The server is missing required configuration (${error.key}).`, {
-      cause: error,
-    });
-  }
-  return new StudioError('provider', 'Something went wrong. The details are in the server log.', {
-    cause: error,
-  });
-}
-
-function describeUnkeptImage(failure: StudioError): string {
-  const reason =
-    failure.kind === 'storage'
-      ? 'it could not be saved to Google Drive'
-      : failure.kind === 'database'
-        ? 'it could not be recorded in the database'
-        : 'a later step failed';
-  return `The poster was generated and billed by OpenAI, but ${reason}, so it is not in History. Download it now — it will not be kept. (${failure.message})`;
-}
-
-function extensionFor(mimeType: string): string {
-  if (mimeType === 'image/jpeg') return 'jpg';
-  if (mimeType === 'image/webp') return 'webp';
-  return 'png';
-}
-
-function fileStamp(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-');
 }

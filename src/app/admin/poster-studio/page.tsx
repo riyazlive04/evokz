@@ -1,5 +1,6 @@
 import React from 'react';
-import { AlertTriangle, Sparkles } from 'lucide-react';
+import Link from 'next/link';
+import { AlertTriangle, FileSpreadsheet, Sparkles } from 'lucide-react';
 
 import { PageHeader } from '@/components/admin/PageHeader';
 import { PosterStudioWorkspace } from '@/components/studio/poster-studio-workspace';
@@ -123,7 +124,14 @@ export default async function PosterStudioPage({
         eyebrow="AI Studio"
         title="AI Poster Studio"
         description="Generate marketing posters, guide them with a reference image, and make targeted edits or variations of existing designs."
-      />
+      >
+        <Link
+          href="/admin/poster-studio/bulk"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-foreground hover:bg-muted"
+        >
+          <FileSpreadsheet className="w-3.5 h-3.5 text-brand-to" /> Bulk from Excel
+        </Link>
+      </PageHeader>
       {templateNote && (
         <p role="status" className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-warning-ink">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />

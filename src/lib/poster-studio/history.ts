@@ -17,7 +17,7 @@ export const STUDIO_HISTORY_LIMIT = 24;
 
 export interface StudioHistoryItem {
   id: string;
-  /** Includes CLONE, which only campaign clone generation writes; the studio form offers the other three. */
+  /** Includes CLONE, which only campaign clone generation writes; the studio form offers the other four. */
   mode: PosterStudioMode;
   prompt: string;
   sentPrompt: string;
@@ -26,10 +26,14 @@ export interface StudioHistoryItem {
   model: string;
   quality: string;
   textFree: boolean;
+  /** Festival key the image was themed for, or null. */
+  festival: string | null;
   width: number | null;
   height: number | null;
   /** An input image was sent with the request and is stored on this row. */
   hasReference: boolean;
+  /** Mix only: a second input image — the element reference — is stored on this row. */
+  hasElementReference: boolean;
   /** A composited final poster exists. When false, the raw artwork is the poster. */
   hasFinal: boolean;
   /** Exact Brand Canvas elements the overlay drew — names only. */
@@ -55,9 +59,11 @@ export const studioHistorySelect = {
   model: true,
   quality: true,
   textFree: true,
+  festival: true,
   width: true,
   height: true,
   referenceDriveFileId: true,
+  elementReferenceDriveFileId: true,
   finalImageDriveFileId: true,
   overlayElements: true,
   logoBackground: true,
@@ -82,9 +88,11 @@ export function toStudioHistoryItem(row: HistoryRow): StudioHistoryItem {
     model: row.model,
     quality: row.quality,
     textFree: row.textFree,
+    festival: row.festival,
     width: row.width,
     height: row.height,
     hasReference: row.referenceDriveFileId !== null,
+    hasElementReference: row.elementReferenceDriveFileId !== null,
     hasFinal: row.finalImageDriveFileId !== null,
     overlayElements: row.overlayElements,
     logoBackground: row.logoBackground,
@@ -99,6 +107,8 @@ export function toStudioHistoryItem(row: HistoryRow): StudioHistoryItem {
 
 export async function loadStudioHistory(): Promise<StudioHistoryItem[]> {
   const rows = await prisma.posterStudioGeneration.findMany({
+    // Bulk images live on their batch page; a 50-row run would bury everything else.
+    where: { batchItemId: null },
     orderBy: { createdAt: 'desc' },
     take: STUDIO_HISTORY_LIMIT,
     select: studioHistorySelect,

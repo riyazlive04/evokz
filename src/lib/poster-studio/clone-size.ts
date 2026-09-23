@@ -3,7 +3,7 @@
  *
  * A clone comes out in its template's own shape (a 4:5 template stays 4:5), so
  * the size is chosen per template rather than from the client's output preset
- * or the studio's three formats (`STUDIO_ASPECT_RATIOS`).
+ * or the studio's fixed formats (`STUDIO_ASPECT_RATIOS`).
  *
  * gpt-image-2 takes any `WIDTHxHEIGHT` whose sides are both multiples of 16 and
  * whose ratio is within 1:3–3:1. Output cost and time grow with the pixel count,
