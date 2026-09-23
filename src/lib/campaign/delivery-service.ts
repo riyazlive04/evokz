@@ -7,7 +7,7 @@ import {
 } from '@prisma/client';
 
 import {
-  buildDeliveryCaption,
+  buildDeliveryMessage,
   buildDeliveryFileName,
   canRetryDelivery,
   DELIVERY_STATUS_LABELS,
@@ -18,6 +18,8 @@ import {
   isMissed,
   isStaleClaim,
   isValidRecipient,
+  MAX_CAPTION_LENGTH,
+  normalizeDeliveryLink,
   retryDelayMs,
   STALE_SENDING_MS,
   summarizeDeliveries,
@@ -29,7 +31,7 @@ import {
   isMediaDeliveryConfigured,
   MediaUrlNotConfiguredError,
 } from '@/lib/campaign/delivery-media';
-import { effectiveTemplateId } from '@/lib/campaign/model';
+import { campaignAllowsChanges, effectiveTemplateId } from '@/lib/campaign/model';
 import { CampaignDomainError, runInCampaignTransaction, type CampaignDb } from '@/lib/campaign/service';
 import { getAppTimeZone, startOfZonedDay } from '@/lib/time';
 import { recordWhatsAppUsage } from '@/lib/usage';
@@ -108,6 +110,10 @@ const deliveryDaySelect = {
   headline: true,
   supportingText: true,
   cta: true,
+  // The message: the saved caption and link. `internalNotes` is deliberately
+  // not selected — nothing on the send path can read it.
+  caption: true,
+  deliveryLink: true,
   posterTemplateId: true,
   suggestedTemplateId: true,
   activePosterVersionId: true,
@@ -947,7 +953,11 @@ async function claimAndSend(
     const result = await deps.sendMedia({
       number: recipient,
       mediaUrl,
-      caption: buildDeliveryCaption({
+      // Read from the claimed row's fresh load, so a retry sends the caption
+      // and link as they are saved now.
+      caption: buildDeliveryMessage({
+        caption: fresh.caption,
+        link: fresh.deliveryLink,
         headline: fresh.headline,
         supportingText: fresh.supportingText,
         cta: fresh.cta,
@@ -985,6 +995,98 @@ async function claimAndSend(
   }
 
   return { ok: true, dayNumber: day.dayNumber, providerMessageId };
+}
+
+// ---------------------------------------------------------------------------
+// The message: caption, link and internal notes
+// ---------------------------------------------------------------------------
+
+/** Longest internal note a day keeps. */
+export const MAX_INTERNAL_NOTES_LENGTH = 2000;
+
+export interface DayMessageInput {
+  caption: string;
+  link: string | null;
+  notes: string | null;
+}
+
+export interface DayMessage {
+  caption: string;
+  /** Normalised: `www.x.com` is saved as `https://www.x.com`. */
+  link: string | null;
+  notes: string | null;
+}
+
+/**
+ * Saves the words sent with a day's poster — Caption and Link — and the team's
+ * internal Notes, which are never sent.
+ *
+ * Content beside the poster, not a poster input: the day's revision, its
+ * poster versions, their approval and its booking are all left exactly as they
+ * are, so an approved, scheduled post stays approved and scheduled. The sender
+ * reads the saved caption and link fresh when it claims the delivery, so a
+ * retry sends what is saved at that moment.
+ *
+ * Refused once the day's message is being sent or has been sent — what left
+ * must stay what the record says — and for a closed campaign. The refusal is
+ * part of the update itself, so it holds against a delivery claimed between
+ * the read and the write.
+ */
+export async function saveCampaignDayMessage(
+  db: CampaignDb,
+  campaignId: string,
+  dayId: string,
+  input: DayMessageInput,
+): Promise<DayMessage> {
+  const caption = input.caption.replace(/\r\n?/g, '\n').trim();
+  const notes = (input.notes ?? '').replace(/\r\n?/g, '\n').trim() || null;
+  let link: string | null;
+  try {
+    link = normalizeDeliveryLink(input.link);
+  } catch (error) {
+    throw new CampaignDomainError('invalid-input', error instanceof Error ? error.message : 'That is not a valid web link.');
+  }
+  const messageLength = caption.length + (link ? link.length + 2 : 0);
+  if (messageLength > MAX_CAPTION_LENGTH) {
+    throw new CampaignDomainError(
+      'invalid-input',
+      `WhatsApp allows ${MAX_CAPTION_LENGTH.toLocaleString('en-IN')} characters for the caption and link together; this is ${messageLength.toLocaleString('en-IN')}.`,
+    );
+  }
+  if (notes && notes.length > MAX_INTERNAL_NOTES_LENGTH) {
+    throw new CampaignDomainError('invalid-input', `Keep notes under ${MAX_INTERNAL_NOTES_LENGTH.toLocaleString('en-IN')} characters.`);
+  }
+
+  const day = await db.contentCalendar.findUnique({
+    where: { id: dayId },
+    select: { campaignId: true, dayNumber: true, campaign: { select: { status: true } }, delivery: { select: { status: true } } },
+  });
+  if (!day || day.campaignId !== campaignId || !day.campaign) {
+    throw new CampaignDomainError('not-found', 'That day is not part of this campaign.');
+  }
+  if (!campaignAllowsChanges(day.campaign.status)) {
+    throw new CampaignDomainError('campaign-closed', `The campaign is ${day.campaign.status.toLowerCase()}.`);
+  }
+  const lockedMessage = (status: CampaignDeliveryStatus) =>
+    status === 'SENT'
+      ? `Day ${day.dayNumber} has been sent — its message can no longer change.`
+      : `Day ${day.dayNumber} is being sent right now — its message can no longer change.`;
+  if (day.delivery && (day.delivery.status === 'SENT' || day.delivery.status === 'SENDING')) {
+    throw new CampaignDomainError('invalid-transition', lockedMessage(day.delivery.status));
+  }
+
+  const updated = await db.contentCalendar.updateMany({
+    where: {
+      id: dayId,
+      campaignId,
+      OR: [{ delivery: { is: null } }, { delivery: { is: { status: { notIn: ['SENDING', 'SENT'] } } } }],
+    },
+    data: { caption, deliveryLink: link, internalNotes: notes },
+  });
+  if (updated.count === 0) {
+    throw new CampaignDomainError('invalid-transition', lockedMessage('SENDING'));
+  }
+  return { caption, link, notes };
 }
 
 /** Returns a claimed row to a settled state after a refusal or a failure. */

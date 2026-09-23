@@ -96,6 +96,9 @@ const boardDaySelect = {
   contentStatus: true,
   contentRevision: true,
   headline: true,
+  caption: true,
+  deliveryLink: true,
+  internalNotes: true,
   posterTemplateId: true,
   suggestedTemplateId: true,
   generationStatus: true,
@@ -167,6 +170,21 @@ export interface BoardDay {
   /** One sentence for the card: why it is blocked, what failed, or why it was rejected. */
   note: { tone: 'danger' | 'warning' | 'muted'; text: string } | null;
   actions: BoardDayActions;
+  /**
+   * What is sent with the poster (Caption, Link) and the team's Notes, which
+   * never are. Shown on a post that is ready to send — approved, scheduled, or
+   * a delivery waiting for a retry — and read-only once sent.
+   */
+  message: {
+    caption: string;
+    link: string | null;
+    notes: string | null;
+    /** The post is in the Ready to Send queue (or was sent): the card shows the fields. */
+    shown: boolean;
+    editable: boolean;
+    /** Why the fields are read-only; null while editable. */
+    lockedReason: string | null;
+  };
 }
 
 export interface CampaignBoard {
@@ -471,6 +489,20 @@ export async function loadCampaignBoard(db: CampaignDb, campaignId: string, opti
       status,
       note: noteFor({ day, mapping, status, posterState, missing, regenerate, pinnedToActive }),
       actions,
+      message: {
+        caption: day.caption,
+        link: day.deliveryLink,
+        notes: day.internalNotes,
+        shown: status === 'approved' || status === 'scheduled' || status === 'sent' || (status === 'failed' && pinnedToActive && delivery?.status === 'FAILED'),
+        editable: !closed && delivery?.status !== 'SENDING' && delivery?.status !== 'SENT',
+        lockedReason: closed
+          ? 'The campaign is closed.'
+          : delivery?.status === 'SENT'
+            ? 'Sent — this is the message that went out.'
+            : delivery?.status === 'SENDING'
+              ? 'Being sent right now.'
+              : null,
+      },
     };
   });
 

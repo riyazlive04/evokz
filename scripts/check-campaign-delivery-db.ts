@@ -424,7 +424,10 @@ async function suite(): Promise<void> {
 
     const message = sent.at(-1)!;
     t("the recipient is the client's own WhatsApp number", message.number === '919876500999');
-    t('the caption is the approved content: the day’s own words, kept in its elements', message.caption === 'Headline 1\n\nSupporting 1.\n\nBook a visit', snapshot(message.caption));
+    // The fixture gives every day a saved caption ("Caption"), and a saved
+    // caption is what goes out; check:campaign-delivery-message-db covers the
+    // fallback to headline, text and CTA when there is none.
+    t('the caption is the day’s saved caption', message.caption === 'Caption', snapshot(message.caption));
     t('the file name is the campaign day, with no identifier', message.fileName === 'Campaign_Day_001.png');
     t('the media URL names the approved version', message.mediaUrl.includes(row!.posterVersionId));
     t('the media URL carries no Drive id', !/fake-drive-/.test(message.mediaUrl));

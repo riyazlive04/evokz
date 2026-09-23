@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 
 import { BOARD_STATUS_VARIANT, Chip } from '@/components/campaign/board/board-ui';
+import { DayMessageFields } from '@/components/campaign/board/DayMessageFields';
 import type { BoardDayView } from '@/components/campaign/board/types';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -178,6 +179,7 @@ function CardMenu({ label, items, disabled, onSelect }: { label: string; items: 
  * has answered.
  */
 export function BoardDayCard({
+  campaignId,
   day,
   slot,
   closed,
@@ -188,7 +190,9 @@ export function BoardDayCard({
   onAction,
   onDragStart,
   onDragEnd,
+  onMessageSaved,
 }: {
+  campaignId: string;
   day: BoardDayView;
   slot: { dayNumber: number; dateLabel: string; isToday: boolean };
   closed: boolean;
@@ -201,7 +205,9 @@ export function BoardDayCard({
   onAction: (kind: CardActionKind, day: BoardDayView) => void;
   onDragStart: (event: React.DragEvent<HTMLElement>, day: BoardDayView) => void;
   onDragEnd: () => void;
+  onMessageSaved: () => void;
 }) {
+  const [editingMessage, setEditingMessage] = React.useState(false);
   const primary = primaryActionOf(day);
   const menu = menuActionsOf(day, primary);
   const delivery = day.delivery;
@@ -212,7 +218,7 @@ export function BoardDayCard({
     <article
       aria-label={`Day ${slot.dayNumber}, ${slot.dateLabel}: ${day.statusLabel}${day.headline ? ` — ${day.headline}` : ''}`}
       data-board-day={slot.dayNumber}
-      draggable={draggable}
+      draggable={draggable && !editingMessage}
       onDragStart={(event) => onDragStart(event, day)}
       onDragEnd={onDragEnd}
       className={cn(
@@ -297,6 +303,11 @@ export function BoardDayCard({
           <p className={cn('line-clamp-2 text-[11px] leading-4', NOTE_INK[day.note.tone])} title={day.note.text}>
             {day.note.text}
           </p>
+        )}
+
+        {/* ---- Ready to send: what goes out with the poster ---- */}
+        {day.message.shown && (
+          <DayMessageFields campaignId={campaignId} day={day} onEditingChange={setEditingMessage} onSaved={onMessageSaved} />
         )}
 
         {/* ---- Actions ---- */}

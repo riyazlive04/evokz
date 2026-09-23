@@ -48,6 +48,15 @@ export interface BoardDayView {
   lockLabel: string | null;
   note: { tone: 'danger' | 'warning' | 'muted'; text: string } | null;
   actions: BoardDayActions;
+  /** Caption and Link sent with the poster, and internal Notes that never are. */
+  message: {
+    caption: string;
+    link: string | null;
+    notes: string | null;
+    shown: boolean;
+    editable: boolean;
+    lockedReason: string | null;
+  };
 }
 
 export interface BoardView {

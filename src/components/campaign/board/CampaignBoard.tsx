@@ -529,6 +529,7 @@ export function CampaignBoard({ board }: { board: BoardView }) {
                 }}
               >
                 <BoardDayCard
+                  campaignId={board.campaignId}
                   day={day}
                   slot={{ dayNumber: slot.dayNumber, dateLabel: slot.dateLabel, isToday: slot.isToday }}
                   closed={board.closed}
@@ -539,6 +540,7 @@ export function CampaignBoard({ board }: { board: BoardView }) {
                   onAction={onAction}
                   onDragStart={onDragStart}
                   onDragEnd={onDragEnd}
+                  onMessageSaved={refresh}
                 />
               </li>
             );

@@ -100,6 +100,7 @@ export default async function CampaignBoardPage({
     lockLabel: day.lock ? SLOT_LOCK_LABELS[day.lock] : null,
     note: day.note,
     actions: day.actions,
+    message: day.message,
   }));
 
   const view: BoardView = {

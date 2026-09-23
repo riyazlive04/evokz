@@ -684,6 +684,12 @@ model ContentCalendar {
   headline                  String?                 @db.Text
   supportingText            String?                 @db.Text
   cta                       String?
+  /// Optional link sent on its own line under the WhatsApp caption
+  /// (`buildDeliveryMessage`). Like `caption`, not a poster input: editing it
+  /// never outdates a poster, its approval or its booking.
+  deliveryLink              String?                 @db.Text
+  /// Internal notes for the team about this day's post. Never sent to anyone.
+  internalNotes             String?                 @db.Text
   /// The AUTO mapper's template for this day. Never set by a human; the
   /// operator's choice is `posterTemplateId`, which wins when both are set.
   suggestedTemplateId       String?

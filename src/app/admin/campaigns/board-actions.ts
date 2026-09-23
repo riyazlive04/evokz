@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import type { ActionResult } from '@/app/admin/dashboard/actions';
 import { loadBoardDayDetails, moveCampaignPost, setCampaignApprovalPolicy } from '@/lib/campaign/board-service';
+import { saveCampaignDayMessage, type DayMessage } from '@/lib/campaign/delivery-service';
 import { MAX_CAMPAIGN_DAYS } from '@/lib/campaign/model';
 import { CampaignDomainError } from '@/lib/campaign/service';
 import { prisma } from '@/lib/prisma';
@@ -88,6 +89,31 @@ export async function setCampaignApprovalPolicyAction(
     return { ok: true, data: result };
   } catch (error) {
     return toFailure(error, 'Changing auto-approve');
+  }
+}
+
+const dayMessageSchema = z.object({
+  caption: z.string().max(4000, 'The caption is too long.'),
+  link: z.string().max(2000, 'The link is too long.').nullable(),
+  notes: z.string().max(4000, 'The notes are too long.').nullable(),
+});
+
+/**
+ * Saves a ready-to-send post's Caption and Link — sent with the poster on
+ * WhatsApp — and its internal Notes, which are never sent. Leaves the poster,
+ * its approval and its booking as they are.
+ */
+export async function saveCampaignDayMessageAction(
+  campaignId: string,
+  dayId: string,
+  input: { caption: string; link: string | null; notes: string | null },
+): Promise<ActionResult<DayMessage>> {
+  try {
+    const saved = await saveCampaignDayMessage(prisma, uuid.parse(campaignId), uuid.parse(dayId), dayMessageSchema.parse(input));
+    revalidateAdmin();
+    return { ok: true, data: saved };
+  } catch (error) {
+    return toFailure(error, 'Saving the message');
   }
 }
 

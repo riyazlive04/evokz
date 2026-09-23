@@ -12,6 +12,7 @@ import type { CampaignDeliveryStatus, CampaignStatus, PosterApprovalStatus } fro
 import {
   buildDeliveryCaption,
   buildDeliveryFileName,
+  buildDeliveryMessage,
   canRetryDelivery,
   DELIVERY_REFUSAL_MESSAGES,
   deliveryInstant,
@@ -23,6 +24,7 @@ import {
   MAX_CAPTION_LENGTH,
   MAX_DELIVERY_ATTEMPTS,
   matchesDeliveryFilter,
+  normalizeDeliveryLink,
   parseDeliveryTime,
   retryDelayMs,
   STALE_SENDING_MS,
@@ -189,6 +191,32 @@ section('The message');
 
   const long = buildDeliveryCaption({ headline: 'x'.repeat(2000), supportingText: null, cta: null });
   t('an over-long caption is truncated with an ellipsis', long.length === MAX_CAPTION_LENGTH && long.endsWith('…'), String(long.length));
+
+  // ---- Caption + Link (the saved message) ----
+  const words = { headline: 'Free dental camp', supportingText: 'This Sunday only.', cta: 'Book now' };
+  t('a saved caption replaces the old headline/text/CTA message', buildDeliveryMessage({ ...words, caption: 'Come this Sunday!', link: null }) === 'Come this Sunday!');
+  t('the link follows the caption on its own line', buildDeliveryMessage({ ...words, caption: 'Come this Sunday!', link: 'https://sirahdigital.in' }) === 'Come this Sunday!\n\nhttps://sirahdigital.in');
+  t('no caption: exactly the old message', buildDeliveryMessage({ ...words, caption: '', link: null }) === buildDeliveryCaption(words));
+  t('no caption but a link: the old message, then the link', buildDeliveryMessage({ ...words, caption: '   ', link: 'https://x.in' }) === `${buildDeliveryCaption(words)}\n\nhttps://x.in`);
+  t('an empty day with only a link sends the link', buildDeliveryMessage({ headline: null, supportingText: null, cta: null, caption: null, link: 'https://x.in' }) === 'https://x.in');
+  t('typed line breaks are kept; spaces and blank runs tidied', buildDeliveryMessage({ ...words, caption: 'Line  one\r\n\r\n\r\n\r\n  Line two ', link: null }) === 'Line one\n\nLine two');
+  const longWithLink = buildDeliveryMessage({ ...words, caption: 'y'.repeat(2000), link: 'https://sirahdigital.in/offer' });
+  t('an over-long message is cut in the caption, never in the link', longWithLink.length === MAX_CAPTION_LENGTH && longWithLink.endsWith('\n\nhttps://sirahdigital.in/offer') && longWithLink.includes('…'), String(longWithLink.length));
+  t('the builder has no notes input: notes cannot reach a message', !('notes' in ({ ...words, caption: 'a', link: null } as Record<string, unknown>)));
+
+  t('a bare web address becomes https', normalizeDeliveryLink('www.sirahdigital.in/camp') === 'https://www.sirahdigital.in/camp');
+  t('an http(s) link is kept as typed', normalizeDeliveryLink(' https://sirahdigital.in/a?b=1 ') === 'https://sirahdigital.in/a?b=1' && normalizeDeliveryLink('http://x.in') === 'http://x.in');
+  t('empty is no link', normalizeDeliveryLink('') === null && normalizeDeliveryLink('   ') === null && normalizeDeliveryLink(null) === null);
+  const refuses = (value: string) => {
+    try {
+      normalizeDeliveryLink(value);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  t('other schemes are refused', refuses('javascript:alert(1)') && refuses('mailto:a@b.in') && refuses('ftp://x.in'));
+  t('spaces, credentials, hostless and over-long links are refused', refuses('https://x.in/a b') && refuses('https://user:pw@x.in') && refuses('localhost') && refuses(`https://x.in/${'a'.repeat(600)}`));
 
   t('the file name is day-numbered and padded', buildDeliveryFileName(7, 'image/png') === 'Campaign_Day_007.png');
   t('the extension follows the mime type', buildDeliveryFileName(12, 'image/jpeg') === 'Campaign_Day_012.jpg');

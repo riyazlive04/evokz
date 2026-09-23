@@ -314,6 +314,75 @@ export function buildDeliveryCaption(content: DeliveryContent): string {
   return caption.length > MAX_CAPTION_LENGTH ? `${caption.slice(0, MAX_CAPTION_LENGTH - 1).trimEnd()}…` : caption;
 }
 
+export interface DeliveryMessageContent extends DeliveryContent {
+  /** The day's saved caption (`ContentCalendar.caption`). */
+  caption: string | null;
+  /** The day's saved link (`ContentCalendar.deliveryLink`). */
+  link: string | null;
+}
+
+function truncate(text: string, max: number): string {
+  if (max <= 0) return '';
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+/**
+ * The WhatsApp caption sent with the poster: the day's saved Caption, then its
+ * Link on its own line.
+ *
+ * A day with no caption keeps the message it has always had — headline,
+ * supporting text and CTA (`buildDeliveryCaption`) — so a day nobody wrote a
+ * caption for is not sent bare. Internal notes are not an input here at all:
+ * they can never reach a recipient.
+ *
+ * The link is never cut: when the whole message would pass WhatsApp's caption
+ * limit, the caption is shortened instead. Line breaks the admin typed are kept;
+ * runs of spaces and of blank lines are tidied.
+ */
+export function buildDeliveryMessage(content: DeliveryMessageContent): string {
+  const caption = (content.caption ?? '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const body = caption || buildDeliveryCaption(content);
+  const link = (content.link ?? '').trim();
+  if (!link) return truncate(body, MAX_CAPTION_LENGTH);
+  const room = MAX_CAPTION_LENGTH - link.length - 2;
+  const shortened = truncate(body, room);
+  return shortened ? `${shortened}\n\n${link}` : link.slice(0, MAX_CAPTION_LENGTH);
+}
+
+/** Longest link a day may carry; far below the caption limit so a caption always fits beside it. */
+export const MAX_DELIVERY_LINK_LENGTH = 500;
+
+/**
+ * An admin-typed link, cleaned for sending: `www.example.com/offer` becomes
+ * `https://www.example.com/offer`. Null for an empty value. Throws a message
+ * for anything that is not a plain http(s) web address — no other scheme
+ * (`javascript:`, `mailto:`, …) and no spaces.
+ */
+export function normalizeDeliveryLink(raw: string | null | undefined): string | null {
+  const value = (raw ?? '').trim();
+  if (!value) return null;
+  if (value.length > MAX_DELIVERY_LINK_LENGTH) throw new Error(`Keep the link under ${MAX_DELIVERY_LINK_LENGTH} characters.`);
+  if (/\s/.test(value)) throw new Error('A link cannot contain spaces.');
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(value);
+  if (hasScheme && !/^https?:\/\//i.test(value)) throw new Error('Use a web link that starts with https:// or http://.');
+  let url: URL;
+  try {
+    url = new URL(hasScheme ? value : `https://${value}`);
+  } catch {
+    throw new Error('That is not a valid web link.');
+  }
+  if (!/^https?:$/.test(url.protocol) || !url.hostname.includes('.') || url.username || url.password) {
+    throw new Error('That is not a valid web link.');
+  }
+  return hasScheme ? value : `https://${value}`;
+}
+
 /** `Campaign_Day_007.png` — the file name the recipient sees. */
 export function buildDeliveryFileName(dayNumber: number, mimeType: string): string {
   const extension =
