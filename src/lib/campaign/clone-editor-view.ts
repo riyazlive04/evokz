@@ -399,7 +399,11 @@ export function approveAction(input: {
   campaignStatus: string;
   generating: boolean;
   busy: boolean;
-  /** The day's slot lock (the screen's `status.lock`). A sent, sending or past day's poster is final. */
+  /**
+   * The day's slot lock (the screen's `status.lock`). Any lock reason (sent,
+   * sending, due, past or closed) makes the day's poster final — the same rule
+   * `activateCampaignDayPosterVersion` enforces server-side.
+   */
   lock?: SlotLock | null;
 }): { target: ApproveTarget | null; reason: string | null } {
   const { active, viewed } = input;
@@ -411,7 +415,7 @@ export function approveAction(input: {
     if (input.generating) return 'A poster is being made for this day.';
     if (input.busy) return 'Another change is running.';
     if (input.campaignStatus === 'COMPLETED' || input.campaignStatus === 'CANCELLED') return `The campaign is ${input.campaignStatus}.`;
-    if (input.lock === 'sent' || input.lock === 'sending' || input.lock === 'past') return `${SLOT_LOCK_LABELS[input.lock]} Its poster can no longer change.`;
+    if (input.lock) return `${SLOT_LOCK_LABELS[input.lock]} Its poster can no longer change.`;
     if (!viewed.hasArtwork) return 'This version has no artwork.';
     if (!viewed.current) return 'This poster is outdated — regenerate it before using it.';
     if (viewed.approvalStatus === 'REJECTED') return 'This poster was sent back — edit or regenerate it before using it.';
@@ -459,7 +463,11 @@ export function revisionAvailability(input: {
   poster: { current: boolean; hasArtwork: boolean; textCheck: TextCheckResult | null } | null;
   generating: boolean;
   busy: boolean;
-  /** The day's slot lock (the screen's `status.lock`). A sent, sending or past day's poster is final. */
+  /**
+   * The day's slot lock (the screen's `status.lock`). Any lock reason (sent,
+   * sending, due, past or closed) makes the day's poster final — the same rule
+   * `revisePoster` and `setCampaignDayLogoPlacement` enforce server-side.
+   */
   lock?: SlotLock | null;
   /** The admin is looking at an older version than the day's active one. */
   viewingOlder?: boolean;
@@ -468,7 +476,7 @@ export function revisionAvailability(input: {
     if (input.generating) return 'A poster is being made for this day.';
     if (input.busy) return 'Another change is running.';
     if (input.viewingOlder) return 'You are viewing an older version. Select the active one to change it.';
-    if (input.lock === 'sent' || input.lock === 'sending' || input.lock === 'past') return `${SLOT_LOCK_LABELS[input.lock]} Its poster can no longer change.`;
+    if (input.lock) return `${SLOT_LOCK_LABELS[input.lock]} Its poster can no longer change.`;
     if (input.campaignStatus !== 'ACTIVE') return 'Activate the campaign to change posters.';
     if (!input.poster) return 'Generate a poster first.';
     if (!input.poster.hasArtwork) return 'An uploaded poster cannot be changed with AI.';

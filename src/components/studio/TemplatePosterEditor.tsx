@@ -761,9 +761,17 @@ export function TemplatePosterEditor({ initial }: { initial: TemplateEditorScree
     endLongAction();
     await afterWrite({ resetDraft: false });
     if (!result.ok) {
-      // Domain refusals before spend never reach the model; unexpected server or network failures during the edit may have been billed.
-      const isPreFlightRefusal = /campaign|activate|can no longer change|being generated|no poster|uploaded|outdated|not made from|no longer exists|not read|cannot be edited|Describe one change|validation|Brand Canvas/i.test(result.error);
-      setChatFailure({ message: result.error, billed: !isPreFlightRefusal });
+      // `!result.ok` means the server threw rather than returned — and every
+      // throw this action can make (`editCampaignDayPoster` / `revisePoster`,
+      // clone-fix.ts) happens before the claim or before the paid image call,
+      // so it is never billed. A failure *after* spend is never thrown: it is
+      // caught inside `revisePoster` and comes back as `outcome: 'failed'`
+      // with its own computed `billed`, handled below. Guessing "billed" from
+      // the refusal's wording (a previous version of this code did) silently
+      // mis-scored messages that did not happen to match its pattern — e.g. a
+      // too-short instruction ("Describe the change you want in a few
+      // words.") read as billed although nothing was ever sent to the model.
+      setChatFailure({ message: result.error, billed: false });
       return false;
     }
     if (result.data.outcome === 'revised') {

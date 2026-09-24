@@ -10,7 +10,7 @@
  *
  * Run: npm run check:clone-editor-view
  */
-import { BOARD_STATUSES } from '@/lib/campaign/board';
+import { BOARD_STATUSES, SLOT_LOCK_LABELS } from '@/lib/campaign/board';
 import {
   adjacentDays,
   applyDraftEdits,
@@ -258,7 +258,9 @@ section('status chip and actions');
   t('an older version that cannot be used is refused, each with its own reason', refusals.every((reason) => typeof reason === 'string') && new Set(refusals).size === refusals.length, JSON.stringify(refusals));
   t('\u2026and none of them offers a target', !approveAction({ ...base, viewed: { ...v1, current: false } }).target && !approveAction({ ...base, viewed: v1, lock: 'past' }).target && !approveAction({ ...base, viewed: v1, generating: true }).target);
   t('the outdated and sent-back reasons are the service\u2019s own words', refusals[5] === 'This poster is outdated \u2014 regenerate it before using it.' && refusals[6] === 'This poster was sent back \u2014 edit or regenerate it before using it.');
-  t('a due or closed day still lets an older version be chosen', (['due', 'closed', null] as const).every((lock) => approveAction({ ...base, viewed: v1, lock }).target?.activates === true));
+  t('a locked day (sent, sending, due, past or closed) refuses to activate an older version', (['sent', 'sending', 'due', 'past', 'closed'] as const).every((lock) => approveAction({ ...base, viewed: v1, lock }).target === null && /can no longer change/.test(approveAction({ ...base, viewed: v1, lock }).reason ?? '')));
+  t('…matching activateCampaignDayPosterVersion, which now refuses on any lock reason, not just sent/sending/past', approveAction({ ...base, viewed: v1, lock: 'due' }).reason === `${SLOT_LOCK_LABELS.due} Its poster can no longer change.`);
+  t('with no lock, an older version can still be chosen', approveAction({ ...base, viewed: v1, lock: null }).target?.activates === true);
   t('no poster at all offers nothing', approveAction({ ...base, active: null, approveActive: false }).target === null);
 }
 
@@ -285,9 +287,18 @@ const check = (items: TextCheckResult['items'], leftovers: string[] = []): TextC
     revisionAvailability({ campaignStatus: 'ACTIVE', poster: { ...poster, textCheck: null }, generating: false, busy: false }).fix.reason,
   ];
   t('each refusal says why', reasons.every((reason) => typeof reason === 'string' && reason.length > 5) && /outdated/.test(reasons[3]!) && /Activate/.test(reasons[0]!), JSON.stringify(reasons));
-  const locked = (['sent', 'sending', 'past'] as const).map((lock) => revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, lock }));
-  t('a sent, sending or past day offers neither Fix text nor Small change, and says why', locked.every((entry) => !entry.fix.enabled && !entry.edit.enabled && /can no longer change/.test(entry.edit.reason ?? '')), JSON.stringify(locked.map((entry) => entry.edit.reason)));
-  t('a due or closed day, or no lock, still offers them', (['due', 'closed', null] as const).every((lock) => revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, lock }).edit.enabled));
+  const locked = (['sent', 'sending', 'due', 'past', 'closed'] as const).map((lock) => revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, lock }));
+  t(
+    'a locked day (sent, sending, due, past or closed) offers neither Fix text nor Small change, and says why',
+    locked.every((entry) => !entry.fix.enabled && !entry.edit.enabled && /can no longer change/.test(entry.edit.reason ?? '')),
+    JSON.stringify(locked.map((entry) => entry.edit.reason)),
+  );
+  // Matches the server: `revisePoster` and `setCampaignDayLogoPlacement`
+  // (clone-fix.ts, clone-logo.ts) refuse on any `slotLockOf` reason, not just
+  // sent/sending/past — widened in 0a0ea12, but the view functions here were
+  // left on the narrower set until now.
+  t('…including due and closed, which the server also now refuses', revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, lock: 'due' }).edit.reason === `${SLOT_LOCK_LABELS.due} Its poster can no longer change.`);
+  t('with no lock, both are still offered', revisionAvailability({ campaignStatus: 'ACTIVE', poster, generating: false, busy: false, lock: null }).edit.enabled);
 
   // Moving the mark redraws no words and asks no model, so an outdated poster can
   // still have its logo put right — everything else refuses for the same reasons.

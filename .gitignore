@@ -27,3 +27,10 @@ next-env.d.ts
 tsconfig.tsbuildinfo
 .vercel
 snapshots/
+
+# Phase brief files at the repo root: working notes for one contributor's own
+# reference, deliberately never committed (they were briefly re-added by
+# 0a0ea12 and untracked again in the audit that reviewed that commit).
+# AI_POSTER_HANDOFF.md links to some of these by name; the links stay valid
+# locally even though the files themselves are not in git.
+/vertical*.md
